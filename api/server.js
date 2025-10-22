@@ -48,16 +48,16 @@ async function send(messages, phone, to) {
 
 async function getPrice(sym) {
   const r = await axios.get(hhttps://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
-  if (!r.data && r.data.price) throw new Error('Invalid symbol');
+  if (!r.data || !r.data.price) throw new Error('Invalid symbol');
   return r.data.price;
 }
 async function getSignal(sym) {
   const { data } = await axios.get(`https://api.binance.com/api/v3/klines?symbol=${sym}&interval=1h&limit=200`);
-  const c = data.map(k => Number(k[4]));
-  if (c.length < 50) throw new Error('Too few candles');
+  const c = data.map(k => Number(k [4]));
+  if (c.length < 50) throw new Error('Toofew candles');
   const sma = n => c.slice(-n).reduce((a,b)=>a+b,0)/n
   const sma20 = sma(20), sma50 = sma(50), last = c.at(-1);
-  const signal = (sma20 > sma50 && last > sma50 ) ? 'buy'
+  const signal = (sma20 > sma50 && last > sma50) ? 'buy'
                : (sma20 < sma50 && last < sma50) ? 'sell'
                : 'hold';
   return { signal, sma20, sma50, last };
