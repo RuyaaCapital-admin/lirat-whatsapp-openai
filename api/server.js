@@ -9,6 +9,7 @@ const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v20.0';
 const WHATSAPP_TOKEN   = process.env.WHATSAPP_TOKEN;
 const VERIFY_TOKEN     = process.env.VERIFY_TOKEN;
 const OPENAI_API_KEY    = process.env.OPENAI_API_KEY;
+const WORKFLOW_ID    = process.env.WORKFLOW_ID || 'wf_68f727c14ea08190b41d781adfea66ac0421e4aa99b1c9bb';
 
 const graph = axios.create({
   baseURL: `https://graph.facebook.com/${WHATSAPP_VERSION}`,
@@ -62,21 +63,16 @@ async function getSignal(sym) {
   return { signal, sma20, sma50, last };
 }
 
-async function getOpenAIResponse(message) {
-  if (!OPENAI_API_KEY) return "Sorry, I don't have access to OpenAI. Please set up your OPENAI_API_KEY environment variable.";
+async function getAgentBuilderResponse(message) {
+  if (!OPENAI_API_KEY) {
+    return "Sorry, I don't have access to OpenAI. Please set up your OPENAI_API_KEY environment variable.";
+  }
   
   try {
     const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
+      'https://api.openai.com/v1/agents/workflows/${WORKFLOW_ID}/run',
       {
-        model: 'gpt-3.5-turbo',
-        messages: [
-          { role: 'system', content: 'You are a helpful assistant that helps users with cryptocurrency and financial questions. You are concise and provide accurate information.' },
-          { role: 'user', content: message }
-        ],
-        max_tokens: 1000,
-        temperature: 0.7,
-        stream: false
+        input_as_text: message
       },
       {
         headers: {
@@ -86,13 +82,13 @@ async function getOpenAIResponse(message) {
       }
     );
     
-    if (response.data && response.data.choices && response.data.choices[0]) {
-      return response.data.choices[0].message.content;
+    if (response.data && response.data.output_text) {
+      return response.data.output_text;
     } else {
       return "Sorry, I couldn't generate a response.";
     }
   } catch (error) {
-    console.error('OpenAI error:', error.message);
+    console.error('OpenAI Agent Builder error:', error.message);
     return "Sorry, there was an error processing your request.";
   }
 }
@@ -106,7 +102,7 @@ app.get('/webhook', (req, res) => {
   return res.status(403).send('Forbidden');
 });
 
-// POST /webhook (Messages)
+// POST /webhook (messages)
 app.post('/webhook', async (req, res) => {
   try {
     const change = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0];
@@ -127,20 +123,20 @@ app.post('/webhook', async (req, res) => {
       const p = await getPrice(sym);
       await send([{type:'text', value: `${sym}: ${p}` }], phone, from);
       await markRead(phone, message.id);
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ tok: true });
     }
     if (lower.startsWith('signal ')) {
       const sym = body.split(/\\s/)[1].toUpperCase();
       const r = await getSignal(sym);
-      const txt = `**Signal** ${sym}\nMMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
+      const txt = `**Signal** ${sym}\nSMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
       await send([{type:'text', value: txt}], phone, from);
       await markRead(phone, message.id);
       return res.status(200).json({ ok: true });
     }
 
-    // Fallback to OpenAI for normal chat
+    // Fallback to OpenAI Agent Builder for normal chat
     if (body) {
-      const aiResponse = await getOpenAIResponse(body);
+      const aiResponse = await getAgentBuilderResponse(body);
       await send([{type:'text', value: aiResponse}], phone, from);
     }
 
