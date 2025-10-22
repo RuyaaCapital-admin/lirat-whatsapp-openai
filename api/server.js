@@ -42,7 +42,8 @@ async function send(messages, phone, to) {
       ? { messaging_product:'ohatsapp', to, type:'image', image:{link:m.value} }
       : null;
     if (!data) continue;
-    await graph.post(h/${phone}/messages`, data, { headers: gh() });
+  await graph.post(`/${phone}/messages`, data, { headers: gh() });
+
   }
 }
 
