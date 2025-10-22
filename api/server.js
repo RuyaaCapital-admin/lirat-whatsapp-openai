@@ -34,18 +34,18 @@ async function markRead(phone, id) {
     }, { headers: gh() });
   } catch (_) {}
 }
-async function send(messages, phone, to) {
-  for (const m of messages) {
-    const data = (m.type === 'text')
-      ? { messaging_product:'ohatsapp', to, type:'text', text:{preview_url:true, body:m.value} }
-      : (m.type === 'image')
-      ? { messaging_product:'ohatsapp', to, type:'image', image:{link:m.value} }
-      : null;
-    if (!data) continue;
-  await graph.post(`/${phone}/messages`, data, { headers: gh() });
+ async function send(messages, phone, to) {
+   for (const m of messages) {
+     const data = (m.type === 'text')
+       ? { messaging_product:'whatsapp', to, type:'text', text:{ preview_url:true, body:m.value } }
+       : (m.type === 'image')
+       ? { messaging_product:'whatsapp', to, type:'image', image:{ link:m.value } }
+       : null;
+     if (!data) continue;
+    await graph.post(`/${phone}/messages`, data, { headers: gh() });
+   }
+ }
 
-  }
-}
 
 async function getPrice(sym) {
   const r = await axios.get(hhttps://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
