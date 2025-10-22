@@ -47,7 +47,7 @@ async function send(messages, phone, to) {
 
 async function getPrice(sym) {
   const r = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
-  if (!r.data?.price) throw new Error('Invalid symbol');
+  if (!r.data && r.data.price) throw new Error('Invalid symbol');
   return r.data.price;
 }
 async function getSignal(sym) {
@@ -74,8 +74,8 @@ app.get('/webhook', (req, res) => {
 // POST /webhook (messages)
 app.post('/webhook', async (req, res) => {
   try {
-    const change = req.body?.entry?[0]?.changes?[0];
-    const message = change?.value?.messages?[0];
+    const change = req.body && req.body.entry && req.body.entry[0] && req.body.entry[0].changes && req.body.entry[0].changes[0];
+    const message = change && change.value && change.value.messages && change.value.messages[0];
     if (!message) return res.status(200).json({ ok: true });
 
     const phone = change.value.metadata.phone_number_id;
@@ -83,7 +83,7 @@ app.post('/webhook', async (req, res) => {
 
     await typing(phone, from);
 
-    const body = message.text?.body?.trim() || '';
+    const body = message.text && message.text.body ? message.text.body.trim() : '';
     const lower = body.toLowerCase();
 
     // Commands
@@ -92,12 +92,12 @@ app.post('/webhook', async (req, res) => {
       const p = await getPrice(sym);
       await send([{type:'text', value: `${sym}: ${p}` }], phone, from);
       await markRead(phone, message.id);
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ tok: true });
     }
     if (lower.startsWith('signal ')) {
       const sym = body.split(/\\s/)[1].toUpperCase();
       const r = await getSignal(sym);
-      const txt = `**Signal** ${sym}\nMMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
+      const txt = `**Signal** ${sym}\nSMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
       await send([{type:'text', value: txt}], phone, from);
       await markRead(phone, message.id);
       return res.status(200).json({ ok: true });
@@ -106,21 +106,21 @@ app.post('/webhook', async (req, res) => {
     // Fallback to Voiceflow for normal chat
     if (VF_API_KEY && body) {
       const { data: traces = [] } = await axios.post(
-        https://general-runtime.voiceflow.com/state/user/${from}/interact`,
+        https://general-runtime.voiceflow.com/state/user/${from}/interact",
         { action: { type:'text', payload: body } },
         { headers: { Authorization: VF_API_KEY } }
       );
       const outs = traces
         .filter(t => t.type === 'text')
-        .map(t => ({ type:'text', value: t.payload.body }));
+        .map(t => ({type:'text', value: t.payload.body}));
       if (outs.length) await send(outs, phone, from);
     }
 
     await markRead(phone, message.id);
     return res.status(200).json({ tok: true });
   } catch (e) {
-    console.error(e.response?.data || e.message);
-    return res.status(500).json({ tok: false });
+    console.error(e.response && e.response.data || e.message);
+    return res.status(500).json({ ok: false });
   }
 });
 
