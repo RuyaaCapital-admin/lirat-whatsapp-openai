@@ -1,1 +1,1 @@
-{"functions":{"api/server.js":{"runtime":"nodejs18.x@1.0.0"}},"routes":[{"src":"/(.*)","dest":"/api/server.js"}]}
+{"routes":[{"src":"/(.*)","dest":"/api/server.js"}]}
