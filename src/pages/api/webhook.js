@@ -22,30 +22,42 @@ console.log('[ENV DEBUG] Available env vars:', {
 if (!OPENAI_PROJECT_ID) throw new Error('Missing env: OPENAI_PROJECT_ID');
 if (!WORKFLOW_ID) throw new Error('Missing env: OPENAI_WORKFLOW_ID');
 
-// Use the @openai/agents package for Agent Builder workflows
-import { Agent } from "@openai/agents";
-
-// Create agent instance
-const agent = new Agent({
-  apiKey: process.env.OPENAI_API_KEY,
-  project: OPENAI_PROJECT_ID,
-  workflowId: WORKFLOW_ID,
-});
-
-// Call the workflow using the agents package
+// Call the workflow using direct HTTP API
 export async function callWorkflow(userText, meta = {}) {
   try {
     console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
     console.log('[WORKFLOW] Input:', userText);
     
-    const result = await agent.run(userText, {
-      metadata: { channel: "whatsapp", ...meta }
+    // Direct HTTP call to Agent Builder workflow API
+    const response = await fetch('https://api.openai.com/v1/workflows/runs', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Project': OPENAI_PROJECT_ID,
+      },
+      body: JSON.stringify({
+        workflow_id: WORKFLOW_ID,
+        input: userText,
+        metadata: { channel: "whatsapp", ...meta }
+      })
     });
-    
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[WORKFLOW] HTTP Error:', response.status, errorText);
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    const result = await response.json();
     console.log('[WORKFLOW] Result:', result);
     
     // Extract text from the result
-    const text = result?.text || result?.content || result?.output || "";
+    const text = result?.output_text || 
+                result?.output?.text || 
+                result?.text || 
+                result?.content || 
+                "";
     
     return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
   } catch (error) {
