@@ -1,6 +1,6 @@
 // app/api/webhook/route.ts
 import { sendText, sendTyping, markRead } from '../../../lib/waba';
-import { callAgent } from '../../../lib/agent-wrapper';
+import { runAgent } from '../../../lib/agent';
 import { getLivePrice, hasPriceIntent } from '../../../src/tools/livePrice';
 
 // Environment validation
@@ -111,7 +111,7 @@ export async function POST(req: Request) {
         } else {
           // Use agent for non-price requests
           console.log('[WABA] Agent intent detected');
-          responseText = await callAgent(message.text);
+          responseText = await runAgent(message.text);
           console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });
         }
 
