@@ -1,6 +1,6 @@
 // app/api/webhook/route.ts
-import { runAgent } from '../../../lib/agent.js';
-import { wabaText, wabaTyping } from '../../../src/waba.js';
+import { runAgent } from '../../../lib/agent';
+import { wabaText, wabaTyping } from '../../../src/waba';
 
 const WA_VER = process.env.WHATSAPP_VERSION || 'v24.0';
 const WA_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';

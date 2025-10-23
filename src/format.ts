@@ -1,5 +1,5 @@
-import { PriceResponse } from "./tools/price.js";
-import type { Candle, TF, SignalResult } from "./signal.js";
+import { PriceResponse } from "./tools/price";
+import type { Candle, TF, SignalResult } from "./signal";
 
 export function formatTimeUTC(ts: number) {
   return new Date(ts * 1000).toISOString().slice(11, 16);

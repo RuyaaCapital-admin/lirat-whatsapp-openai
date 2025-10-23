@@ -1,8 +1,8 @@
 import { Agent, Runner, fileSearchTool, tool, setDefaultOpenAIKey } from "@openai/agents";
 import { z } from "zod";
-import { fetchLatestPrice } from "../src/tools/price.js";
-import { fetchOhlc } from "../src/tools/ohlc.js";
-import { computeSignal, type Candle, type TF } from "../src/signal.js";
+import { fetchLatestPrice } from "../src/tools/price";
+import { fetchOhlc } from "../src/tools/ohlc";
+import { computeSignal, type Candle, type TF } from "../src/signal";
 
 type PriceParams = { symbol: string };
 type OhlcParams = { symbol: string; interval: string };
@@ -103,4 +103,4 @@ export async function runAgent(input: string) {
   return result.finalOutput;
 }
 
-export { formatPriceBlock, formatSignalBlock } from "../src/format.js";
+export { formatPriceBlock, formatSignalBlock } from "../src/format";

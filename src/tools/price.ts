@@ -1,5 +1,5 @@
 import axios from "axios";
-import { normalise } from "../symbols.js";
+import { normalise } from "../symbols";
 
 export type PriceResponse = {
   symbol: string;
