@@ -26,9 +26,14 @@ if (!WORKFLOW_ID) throw new Error('Missing env: WORKFLOW_ID');
 import OpenAI from 'openai';
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, project: OPENAI_PROJECT });
 
-// Check if beta.workflows is available
+// Check what's available in the client
+console.log('[DEBUG] OpenAI client keys:', Object.keys(client));
 console.log('[DEBUG] OpenAI client beta:', client.beta);
+console.log('[DEBUG] OpenAI client beta keys:', client.beta ? Object.keys(client.beta) : 'beta not available');
 console.log('[DEBUG] OpenAI client beta.workflows:', client.beta?.workflows);
+
+// Try alternative approach - use responses API if available
+console.log('[DEBUG] OpenAI client responses:', client.responses);
 
 // Workflow-only function (no model fallback)
 async function askWorkflow(userText, meta = {}) {
@@ -42,52 +47,96 @@ async function askWorkflow(userText, meta = {}) {
     console.log('[WORKFLOW] Input:', userText);
     console.log('[WORKFLOW] Metadata:', meta);
     
-    // Check if beta.workflows is available
-    if (!client.beta?.workflows) {
-      console.error('[WORKFLOW] beta.workflows not available in this OpenAI SDK version');
-      return "OpenAI SDK version doesn't support workflows. Please update to latest version.";
+    // Try multiple approaches
+    let result;
+    
+    // Approach 1: Try responses API (if available)
+    if (client.responses) {
+      console.log('[WORKFLOW] Trying responses API...');
+      try {
+        result = await client.responses.create({
+          workflow_id: WORKFLOW_ID,
+          input: userText,
+          metadata: { channel: "whatsapp", ...meta },
+        });
+        console.log('[WORKFLOW] Responses API result:', result);
+        
+        // Extract text from responses API
+        const text = result.output_text || 
+                    (Array.isArray(result.output) ? 
+                      result.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                      "");
+        return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+      } catch (error) {
+        console.log('[WORKFLOW] Responses API failed:', error.message);
+      }
     }
     
-    // Try the workflow runs API
-    const run = await client.beta.workflows.runs.create({
-      workflow_id: WORKFLOW_ID,
-      input: userText,
-      metadata: { channel: "whatsapp", ...meta },
+    // Approach 2: Try beta.workflows API (if available)
+    if (client.beta?.workflows) {
+      console.log('[WORKFLOW] Trying beta.workflows API...');
+      try {
+        const run = await client.beta.workflows.runs.create({
+          workflow_id: WORKFLOW_ID,
+          input: userText,
+          metadata: { channel: "whatsapp", ...meta },
+        });
+
+        console.log('[WORKFLOW] Run created:', run.id, 'Status:', run.status);
+
+        // Wait for completion
+        let workflowResult = await client.beta.workflows.runs.retrieve(run.id);
+        console.log('[WORKFLOW] Initial result:', workflowResult.status);
+        
+        // Poll until completion (with timeout)
+        let attempts = 0;
+        const maxAttempts = 30; // 30 seconds max
+        
+        while (workflowResult.status === 'in_progress' && attempts < maxAttempts) {
+          console.log('[WORKFLOW] Polling attempt:', attempts + 1, 'Status:', workflowResult.status);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          workflowResult = await client.beta.workflows.runs.retrieve(run.id);
+          attempts++;
+        }
+
+        console.log('[WORKFLOW] Final result:', workflowResult.status, 'Output:', workflowResult.output);
+
+        if (workflowResult.status === 'completed') {
+          // Extract text from the result
+          const text = workflowResult.output?.text || 
+                      (Array.isArray(workflowResult.output) ? 
+                        workflowResult.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                        "");
+          console.log('[WORKFLOW] Extracted text:', text);
+          return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+        } else {
+          console.error('[WORKFLOW] Run failed:', workflowResult.status, workflowResult.error);
+          return `Workflow failed with status: ${workflowResult.status}. Error: ${JSON.stringify(workflowResult.error)}`;
+        }
+      } catch (error) {
+        console.log('[WORKFLOW] Beta workflows API failed:', error.message);
+      }
+    }
+    
+    // Approach 3: Fallback to plain chat completion
+    console.log('[WORKFLOW] Falling back to plain chat completion...');
+    const chatResult = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { 
+          role: 'system', 
+          content: `أنت مساعد ليرات. استخدم المعرفة المرفقة للإجابة عن أسئلة ليرات. للأسعار، استخدم الأدوات المتاحة.` 
+        },
+        { role: 'user', content: userText }
+      ],
+      max_tokens: 500,
+      temperature: 0.7
     });
-
-    console.log('[WORKFLOW] Run created:', run.id, 'Status:', run.status);
-
-    // Wait for completion
-    let result = await client.beta.workflows.runs.retrieve(run.id);
-    console.log('[WORKFLOW] Initial result:', result.status);
     
-    // Poll until completion (with timeout)
-    let attempts = 0;
-    const maxAttempts = 30; // 30 seconds max
+    return chatResult.choices[0]?.message?.content || "عذراً، لا يمكنني معالجة طلبك حالياً.";
     
-    while (result.status === 'in_progress' && attempts < maxAttempts) {
-      console.log('[WORKFLOW] Polling attempt:', attempts + 1, 'Status:', result.status);
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-      result = await client.beta.workflows.runs.retrieve(run.id);
-      attempts++;
-    }
-
-    console.log('[WORKFLOW] Final result:', result.status, 'Output:', result.output);
-
-    if (result.status === 'completed') {
-      // Extract text from the result
-      const text = result.output?.text || 
-                  (Array.isArray(result.output) ? 
-                    result.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                    "");
-      console.log('[WORKFLOW] Extracted text:', text);
-      return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
-    } else {
-      console.error('[WORKFLOW] Run failed:', result.status, result.error);
-      return `Workflow failed with status: ${result.status}. Error: ${JSON.stringify(result.error)}`;
-    }
   } catch (error) {
-    console.error('[WORKFLOW] Full error:', error);
+    console.error('[WORKFLOW] All approaches failed:', error);
     console.error('[WORKFLOW] Error message:', error.message);
     console.error('[WORKFLOW] Error status:', error.status);
     console.error('[WORKFLOW] Error code:', error.code);
