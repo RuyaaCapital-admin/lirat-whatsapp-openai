@@ -143,8 +143,12 @@ export async function POST(req: Request) {
         // Mark message as read
         await markMessageAsRead(message.id);
         
-        // Show typing indicator
-        await wabaTyping(phoneNumber, true);
+        // Show typing indicator (with error handling)
+        try {
+          await wabaTyping(phoneNumber, true);
+        } catch (typingError) {
+          console.warn('Typing indicator failed (non-critical):', typingError);
+        }
         
         // Process message with the trading agent
         let response: string;
@@ -158,8 +162,12 @@ export async function POST(req: Request) {
         // Send response
         await wabaText(phoneNumber, response);
         
-        // Hide typing indicator
-        await wabaTyping(phoneNumber, false);
+        // Hide typing indicator (with error handling)
+        try {
+          await wabaTyping(phoneNumber, false);
+        } catch (typingError) {
+          console.warn('Typing indicator off failed (non-critical):', typingError);
+        }
         
         console.log(`Response sent to ${phoneNumber}: ${response.substring(0, 100)}...`);
         
