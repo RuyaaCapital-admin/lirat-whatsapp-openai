@@ -5,7 +5,63 @@ import { Canonical, toCanonical, toFcsSymbol, toFmpSymbol } from './symbol';
 import { getFcsLiveOr1m } from './fcs';
 import { getFmpOhlc } from './fmp';
 import { ema, rsi14, macd, atr14 } from './indicators';
-import { computeSignal } from './signal';
+
+// Signal computation function
+function computeTradingSignal(data: {
+  close: number;
+  ema20?: number;
+  ema50?: number;
+  rsi?: number;
+  macd?: number;
+  signalLine?: number;
+  atr?: number;
+}): { signal: string; entry?: number; sl?: number; tp1?: number; tp2?: number } {
+  const { close, ema20, ema50, rsi, macd, signalLine, atr } = data;
+  
+  // Default to NEUTRAL if insufficient data
+  if (!ema20 || !ema50 || !rsi || !macd || !signalLine || !atr) {
+    return { signal: 'NEUTRAL' };
+  }
+  
+  let signal = 'NEUTRAL';
+  
+  // BUY conditions: price above EMA50, EMA20 above EMA50, RSI >= 55, MACD above signal
+  if (close > ema50 && ema20 > ema50 && rsi >= 55 && macd > signalLine) {
+    signal = 'BUY';
+  }
+  // SELL conditions: price below EMA50, EMA20 below EMA50, RSI <= 45, MACD below signal
+  else if (close < ema50 && ema20 < ema50 && rsi <= 45 && macd < signalLine) {
+    signal = 'SELL';
+  }
+  
+  if (signal === 'NEUTRAL') {
+    return { signal };
+  }
+  
+  // Calculate entry, SL, TP levels
+  const entry = close;
+  const risk = atr * 1.0; // 1x ATR risk
+  
+  if (signal === 'BUY') {
+    return {
+      signal,
+      entry,
+      sl: entry - risk,
+      tp1: entry + risk,
+      tp2: entry + (2 * risk)
+    };
+  } else if (signal === 'SELL') {
+    return {
+      signal,
+      entry,
+      sl: entry + risk,
+      tp1: entry - risk,
+      tp2: entry - (2 * risk)
+    };
+  }
+  
+  return { signal };
+}
 
 // Tool: get_price
 export async function get_price(symbol: string, timeframe?: string): Promise<{
@@ -94,7 +150,7 @@ SIGNAL: NEUTRAL`
     const macdResult = macd(closes);
     const atr = atr14(candles.map(c => ({ high: c.high, low: c.low, close: c.close })));
     
-    const signalResult = computeSignal({
+    const signalResult = computeTradingSignal({
       close: last.close,
       ema20,
       ema50,
@@ -168,7 +224,7 @@ export async function compute_trading_signal(symbol: string, period: string): Pr
     const macdResult = macd(closes);
     const atr = atr14(candles.map(c => ({ high: c.high, low: c.low, close: c.close })));
     
-    const signalResult = computeSignal({
+    const signalResult = computeTradingSignal({
       close: last.close,
       ema20,
       ema50,
