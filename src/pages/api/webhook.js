@@ -11,7 +11,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
 const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID || '';
 const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true since we have workflow
-const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
+const OPENAI_PROJECT = process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
