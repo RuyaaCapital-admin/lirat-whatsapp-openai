@@ -11,6 +11,6 @@
     "allowSyntheticDefaultImports": true,
     "outDir": "dist"
   },
-  "include": ["api/**/*.ts", "lib/**/*.ts", "src/**/*.ts", "tests/**/*.ts"],
+  "include": ["app/**/*.ts", "api/**/*.ts", "lib/**/*.ts", "src/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

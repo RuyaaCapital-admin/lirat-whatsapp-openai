@@ -3,7 +3,6 @@ import { z } from "zod";
 import { fetchLatestPrice } from "../src/tools/price";
 import { fetchOhlc } from "../src/tools/ohlc";
 import { computeSignal, type Candle, type TF } from "../src/signal";
-import { env } from "../src/env";
 
 const getPrice = tool({
   name: "get_price",
@@ -79,8 +78,12 @@ export const liiratAgent = new Agent({
 });
 
 export async function runAgent(input: string) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not set");
+  }
   const runner = new Runner({
-    apiKey: env.OPENAI_API_KEY,
+    apiKey,
     traceMetadata: {
       __trace_source__: "agent-builder",
       workflow_id: "wf_liirat_v6",

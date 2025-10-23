@@ -1,12 +1,26 @@
 import axios from "axios";
-import { env } from "./env";
 
-const base = `https://graph.facebook.com/${env.WABA_VER}/${env.WABA_PNID}`;
+const DEFAULT_WA_VERSION = "v24.0";
 
-const gh = () => ({
-  Authorization: `Bearer ${env.WABA_TOKEN}`,
-  "Content-Type": "application/json",
-});
+function getBaseUrl() {
+  const version = process.env.WHATSAPP_VERSION || DEFAULT_WA_VERSION;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!phoneNumberId) {
+    throw new Error("WHATSAPP_PHONE_NUMBER_ID is not set");
+  }
+  return `https://graph.facebook.com/${version}/${phoneNumberId}`;
+}
+
+function getHeaders() {
+  const token = process.env.WHATSAPP_TOKEN;
+  if (!token) {
+    throw new Error("WHATSAPP_TOKEN is not set");
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  } as const;
+}
 
 export async function wabaTyping(phone: string, on: boolean) {
   const body = {
@@ -15,7 +29,8 @@ export async function wabaTyping(phone: string, on: boolean) {
     type: "typing",
     typing: { status: on ? "typing" : "paused" },
   } as const;
-  await axios.post(`${base}/messages`, body, { headers: gh() });
+  const baseUrl = getBaseUrl();
+  await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
 }
 
 export async function wabaText(phone: string, text: string) {
@@ -25,5 +40,6 @@ export async function wabaText(phone: string, text: string) {
     type: "text",
     text: { body: text },
   } as const;
-  await axios.post(`${base}/messages`, body, { headers: gh() });
+  const baseUrl = getBaseUrl();
+  await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
 }

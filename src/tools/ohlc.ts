@@ -1,5 +1,4 @@
 import axios from "axios";
-import { env } from "../env";
 import { normalise } from "../symbols";
 import type { Candle, TF } from "../signal";
 
@@ -22,11 +21,12 @@ export async function fetchOhlc(symbol: string, interval: TF): Promise<{ ok: tru
     if (!ALLOWED.includes(interval)) {
       return { ok: false, error: "interval_invalid" };
     }
-    if (!env.OHLC_KEY) return { ok: false, error: "ohlc_key_missing" };
+    const ohlcKey = process.env.OHLC_API_KEY;
+    if (!ohlcKey) return { ok: false, error: "ohlc_key_missing" };
     const providerSymbol = buildSymbol(norm.ohlcSymbol);
     const endpoint = isCrypto(norm.ohlcSymbol)
-      ? `https://fcsapi.com/api-v3/crypto/history?symbol=${encodeURIComponent(providerSymbol)}&period=${interval}&access_key=${env.OHLC_KEY}`
-      : `https://fcsapi.com/api-v3/forex/history?symbol=${encodeURIComponent(providerSymbol)}&period=${interval}&access_key=${env.OHLC_KEY}`;
+      ? `https://fcsapi.com/api-v3/crypto/history?symbol=${encodeURIComponent(providerSymbol)}&period=${interval}&access_key=${ohlcKey}`
+      : `https://fcsapi.com/api-v3/forex/history?symbol=${encodeURIComponent(providerSymbol)}&period=${interval}&access_key=${ohlcKey}`;
 
     const { data } = await axios.get(endpoint, { headers: UA });
     const rows: any[] = Array.isArray(data?.response)
