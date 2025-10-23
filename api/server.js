@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios').default;
+const { runWorkflow } = require('./agent');
 
 const app = express().use(bodyParser.json());
 
@@ -124,22 +125,12 @@ async function getSignal(sym) {
 }
 
 // === OpenAI Agent fallback (optional) ===
-// ---- OPENAI AGENT (no MCP/tools; brief) ----
+// ---- OPENAI AGENT WORKFLOW ----
 async function askAgent(userText) {
   if (!process.env.OPENAI_API_KEY) return null;
   try {
-    const { Agent, Runner } = await import('@openai/agents');
-    const agent = new Agent({
-      name: 'Liirat Assistant',
-      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-      instructions: 'You are Liirat Assistant. Reply briefly (≤4 lines) in the user language. No links.',
-      modelSettings: { temperature: 0.3, topP: 1, maxTokens: 900, store: false }
-    });
-    const runner = new Runner();
-    const result = await runner.run(agent, [
-      { role: 'user', content: [{ type: 'input_text', text: userText }] }
-    ]);
-    return result.finalOutput || null;
+    const { output_text } = await runWorkflow({ input_as_text: userText });
+    return output_text || null;
   } catch (e) {
     console.error('Agent error:', e.response?.data || e.message);
     return null;  // never hang webhook
