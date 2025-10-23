@@ -8,7 +8,7 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_PROJECT_ID = process.env.OPENAI_PROJECT_ID;
-const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID;
+const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
@@ -20,7 +20,7 @@ console.log('[ENV DEBUG] Available env vars:', {
 });
 
 if (!OPENAI_PROJECT_ID) throw new Error('Missing env: OPENAI_PROJECT_ID');
-if (!WORKFLOW_ID) throw new Error('Missing env: WORKFLOW_ID');
+if (!WORKFLOW_ID) throw new Error('Missing env: OPENAI_WORKFLOW_ID');
 
 // create OpenAI client once
 import OpenAI from "openai";
