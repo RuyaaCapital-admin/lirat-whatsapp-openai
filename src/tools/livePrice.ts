@@ -132,7 +132,7 @@ TP2: ${entrySlTp.tp2.toFixed(2)} (R 2.0)`;
       };
       
     } catch (error) {
-      if (error.message === 'No data on this timeframe') {
+      if (error instanceof Error && error.message === 'No data on this timeframe') {
         throw new Error('no data on this timeframe');
       }
       throw error;
