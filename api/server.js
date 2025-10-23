@@ -10,8 +10,6 @@ const app = express().use(bodyParser.json());
 const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_TOKEN   = process.env.WHATSAPP_TOKEN;
 const VERIFY_TOKEN     = process.env.VERIFY_TOKEN;
-const OPENAI_API_KEY   = process.env.OPENAI_API_KEY;          // optional
-const OPENAI_MODEL     = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
 // === Graph API client ===
 const graph = axios.create({
@@ -23,31 +21,7 @@ const gh = () => ({
   'Content-Type': 'application/json'
 });
 
-// === Typing / Read / Send ===
-// ---- TYPING (correct payload + keep-alive) ----
-async function typing(phone, to) {
-  try {
-    await graph.post(`/${phone}/messages`, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to,
-      type: 'action',
-      action: { typing: 'typing' }
-    }, { headers: gh() });
-  } catch (e) {
-    console.warn('typing failed:', e.response?.data || e.message);
-  }
-}
-function startTypingLoop(phone, to) {
-  let alive = true;
-  const tick = async () => {
-    if (!alive) return;
-    try { await typing(phone, to); } catch (_) {}
-    if (alive) setTimeout(tick, 8000);   // WA typing expires quickly; refresh
-  };
-  tick();
-  return () => { alive = false; };
-}
+// === Read / Send ===
 async function markRead(phone, id) {
   try {
     await graph.post(`/${phone}/messages`, {
@@ -57,6 +31,7 @@ async function markRead(phone, id) {
     }, { headers: gh() });
   } catch (_) {}
 }
+
 async function send(messages, phone, to) {
   for (const m of messages) {
     const data = (m.type === 'text')
@@ -106,7 +81,7 @@ async function fetchBinanceClose(symbol) {
   const timeUTC = new Date(last[0] + 60_000).toISOString().slice(11,16);
   return { price, timeUTC, note: 'latest CLOSED price' };
 }
-function formatCompactPrice(timeUTC, symbolPretty, price, note = 'latest CLOSED price') {
+function formatCompactPrice(timeUTC, symbolPretty, price, note='latest CLOSED price') {
   const p = price >= 100 ? price.toFixed(2)
           : price >= 1   ? price.toFixed(4)
           :                price.toFixed(6);
@@ -132,14 +107,13 @@ async function getSignal(sym) {
 // === OpenAI Agent fallback (optional) ===
 // ---- OPENAI AGENT (no MCP/tools; brief) ----
 async function askAgent(userText) {
-  if (!OPENAI_API_KEY) return null;
+  if (!process.env.OPENAI_API_KEY) return null;
   try {
     const { Agent, Runner } = await import('@openai/agents');
     const agent = new Agent({
       name: 'Liirat Assistant',
-      model: OPENAI_MODEL,
-      instructions:
-        'You are Liirat Assistant. Answer briefly (<=4 lines), in the user language. No links. Be direct.',
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      instructions: 'You are Liirat Assistant. Reply briefly (≤4 lines) in the user language. No links.',
       modelSettings: { temperature: 0.3, topP: 1, maxTokens: 900, store: false }
     });
     const runner = new Runner();
@@ -185,7 +159,7 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
     (globalThis._handledIds ||= new Set()).add(msgId);
     setTimeout(() => globalThis._handledIds.delete(msgId), 60000);
 
-    const stopTyping = startTypingLoop(phone, from);
+    await markRead(phone, message.id);
 
     // Natural "price" question → compact formatter
     const mapped = mapArabicToSymbol(body);
@@ -195,8 +169,6 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
       else resData = await fetchBinanceClose(mapped.pretty);
       const msg = formatCompactPrice(resData.timeUTC, mapped.pretty, resData.price, resData.note);
       await send([{ type:'text', value: msg }], phone, from);
-      await markRead(phone, message.id);
-      stopTyping();
       return res.status(200).json({ ok: true });
     }
 
@@ -211,8 +183,6 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
       const pretty = (sym === 'XAUUSD') ? 'XAU/USD' : (sym === 'XAGUSD') ? 'XAG/USD' : sym;
       const msg = formatCompactPrice(resData.timeUTC, pretty, resData.price, resData.note);
       await send([{ type:'text', value: msg }], phone, from);
-      await markRead(phone, message.id);
-      stopTyping();
       return res.status(200).json({ ok: true });
     }
 
@@ -222,17 +192,13 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
       const r = await getSignal(sym);
       const txt = `**Signal** ${sym}\nSMA-20: ${r.sma20.toFixed(2)}\nSMA-50: ${r.sma50.toFixed(2)}\nClose: ${r.last.toFixed(2)}\nAction: ${r.signal}`;
       await send([{ type:'text', value: txt }], phone, from);
-      await markRead(phone, message.id);
-      stopTyping();
       return res.status(200).json({ ok: true });
     }
 
     // Agent fallback (brief)
     let reply = await askAgent(body);
-    if (!reply) reply = body || '...';
+    if (!reply) reply = 'تم';
     await send([{ type:'text', value: reply }], phone, from);
-    await markRead(phone, message.id);
-    stopTyping();
     return res.status(200).json({ ok: true });
 
   } catch (e) {
