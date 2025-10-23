@@ -1,7 +1,5 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
-import { resolveQuote } from '../../tools/livePrice';
-import { parseIntent } from '../../tools/symbol';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -11,70 +9,44 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
 const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID || '';
-const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true
 const OPENAI_PROJECT = process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
   OPENAI_PROJECT: OPENAI_PROJECT ? 'SET' : 'MISSING',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY ? 'SET' : 'MISSING',
-  OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
+  WORKFLOW_ID: WORKFLOW_ID ? 'SET' : 'MISSING',
   VERIFY_TOKEN: process.env.VERIFY_TOKEN ? 'SET' : 'MISSING'
 });
 
 if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
-if (!WORKFLOW_ID) {
-  console.warn('[CFG] No WORKFLOW_ID set; will use plain model');
-}
+if (!WORKFLOW_ID) throw new Error('Missing env: WORKFLOW_ID');
 
 // create OpenAI client once
 import OpenAI from 'openai';
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, project: OPENAI_PROJECT });
 
-// Conversational function using workflow
-async function runConversational(text) {
-  // Use Workflow if available
-  if (WORKFLOW_ID && USE_WORKFLOW) {
-    try {
-      console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
-      // Use the correct OpenAI SDK method for workflows
-      const r = await client.beta.workflows.runs.create({
-        workflow_id: WORKFLOW_ID,
-        input: text
-      });
-      
-      // Wait for completion and get result
-      const result = await client.beta.workflows.runs.retrieve(r.id);
-      return result.output || 'تم.';
-    } catch (error) {
-      console.warn('[WORKFLOW] Workflow failed, using model fallback:', error.message);
-    }
+// Workflow-only function (no model fallback)
+async function askWorkflow(userText, meta = {}) {
+  if (!WORKFLOW_ID) {
+    throw new Error('WORKFLOW_ID not configured');
   }
+
+  console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
   
-  // Plain model fallback (conversational, bilingual)
-  const sys = `أنت 'Līrat Assistant' مساعد محادثي لعلامة Lirat.
-
-ممنوع اختراع عملة أو منتج اسمه "Lirat coin".
-
-عند أي سؤال تعريفي عن Lirat: استخدم مصدر المعرفة الداخلي (About Lirat knowledge) أولاً، ثم لخّص للمستخدم.
-
-عند وجود رمز/سعر/إطار زمني واضح: أعطِ كتلة السعر فقط وفق التنسيق المطلوب.
-
-عند الإهانة: لا تكرر الألفاظ، رد باحترام وباختصار ثم عد للطلب.
-
-عند السؤال عن "مين هي ليرات" أو "وين مواقهم" أو "شو بيعملو": استخدم الملف المرفق "about liirat" للإجابة بدقة.`;
-  
-  const r = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: sys },
-      { role: 'user', content: text }
-    ],
-    max_tokens: 500,
-    temperature: 0.7
+  const resp = await client.responses.create({
+    workflow_id: WORKFLOW_ID,
+    // (optionally) version: process.env.WORKFLOW_VERSION, // or omit to use production
+    input: userText,
+    metadata: { channel: "whatsapp", ...meta },
   });
-  
-  return r.choices[0]?.message?.content || 'تم.';
+
+  // Helper to unwrap text:
+  const text =
+    resp.output_text ??
+    (Array.isArray(resp.output) ? resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : "");
+
+  return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
 }
 
 // Extract message from webhook payload
@@ -135,6 +107,12 @@ export default async function handler(req, res) {
   // Handle incoming messages (POST request)
   if (req.method === 'POST') {
     try {
+      // Ignore WABA status webhooks (delivery/status pings)
+      if (!req.body?.entry?.[0]?.changes?.[0]?.value?.messages) {
+        console.log('[WABA] Non-message event (status/delivery), ignoring');
+        return res.status(200).end();
+      }
+      
       console.log('[WABA] Payload:', JSON.stringify(req.body, null, 2));
       
       const message = extractMessage(req.body);
@@ -165,32 +143,20 @@ export default async function handler(req, res) {
         console.warn('[WABA] typing 400 ignored');
       }
 
-      // Process message
+      // Process message - always use workflow
       if (message.text.trim()) {
         try {
           const text = message.text.trim();
-          const intent = parseIntent(text);
-
-          if (intent.wantsPrice) {
-            console.log('[WABA] price intent detected');
-            try {
-              const { block } = await resolveQuote(text, { timeframe: intent.timeframe });
-              await sendText(message.from, block);
-              console.log('[WABA] price', { symbol: intent.symbol, timeframe: intent.timeframe });
-              console.log('[WABA] reply sent', { to: message.from, kind: 'price' });
-            } catch (e) {
-              console.error('[PRICE] failed', e?.message);
-              await sendText(message.from, 'no data on this timeframe');
-            }
-          } else {
-            // Use conversational agent for non-price requests
-            console.log('[WABA] agent intent detected');
-            const answer = await runConversational(text);
-            const politeAnswer = polite(answer, text);
-            await sendText(message.from, politeAnswer);
-            console.log('[WABA] agent');
-            console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });
-          }
+          console.log('[WABA] Calling workflow for:', text);
+          
+          const answer = await askWorkflow(text, { 
+            user_id: message.from,
+            contact_name: message.contactName 
+          });
+          
+          const politeAnswer = polite(answer, text);
+          await sendText(message.from, politeAnswer);
+          console.log('[WABA] reply sent', { to: message.from, kind: 'workflow' });
         } catch (error) {
           console.error('[WABA] Processing error:', error);
           await sendText(message.from, 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.');
