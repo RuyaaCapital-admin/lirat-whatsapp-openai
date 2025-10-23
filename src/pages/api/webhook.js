@@ -15,14 +15,19 @@ const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
-  OPENAI_PROJECT: OPENAI_PROJECT ? 'SET' : 'MISSING',
-  OPENAI_WORKFLOW_ID: OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
+  OPENAI_PROJECT: OPENAI_PROJECT ? (OPENAI_PROJECT.startsWith('proj_') ? 'SET (proj_...)' : `SET (${OPENAI_PROJECT})`) : 'MISSING',
+  OPENAI_WORKFLOW_ID: OPENAI_WORKFLOW_ID ? (OPENAI_WORKFLOW_ID.startsWith('wf_') ? 'SET (wf_...)' : `SET (${OPENAI_WORKFLOW_ID})`) : 'MISSING',
   OPENAI_API_KEY: OPENAI_API_KEY ? 'SET' : 'MISSING',
   VERIFY_TOKEN: VERIFY_TOKEN ? 'SET' : 'MISSING'
 });
 
 if (!OPENAI_API_KEY) throw new Error('Missing env: OPENAI_API_KEY');
 if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
+
+// Warn if project ID doesn't look like a proper OpenAI project ID
+if (!OPENAI_PROJECT.startsWith('proj_')) {
+  console.warn('[ENV WARNING] OPENAI_PROJECT should be a proj_... ID, got:', OPENAI_PROJECT);
+}
 
 // Initialize OpenAI client
 const client = new OpenAI({
@@ -105,6 +110,7 @@ async function smartReply(userText, meta = {}) {
   
   // Final fallback: Use model directly
   try {
+    console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
     const resp = await client.responses.create({
       model: "gpt-4o-mini",
       input: [
