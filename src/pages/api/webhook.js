@@ -7,33 +7,32 @@ const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_PROJECT = process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT;
-const WORKFLOW_ID = process.env.WORKFLOW_ID;
+const OPENAI_PROJECT_ID = process.env.OPENAI_PROJECT_ID;
+const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
-  OPENAI_PROJECT_ID: process.env.OPENAI_PROJECT_ID ? 'SET' : 'MISSING',
-  OPENAI_PROJECT: process.env.OPENAI_PROJECT ? 'SET' : 'MISSING',
-  OPENAI_PROJECT_RESOLVED: OPENAI_PROJECT ? 'SET' : 'MISSING',
-  OPENAI_API_KEY: OPENAI_API_KEY ? 'SET' : 'MISSING',
+  OPENAI_PROJECT_ID: OPENAI_PROJECT_ID ? 'SET' : 'MISSING',
+  OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
   WORKFLOW_ID: WORKFLOW_ID ? 'SET' : 'MISSING',
+  OPENAI_API_KEY: OPENAI_API_KEY ? 'SET' : 'MISSING',
   VERIFY_TOKEN: VERIFY_TOKEN ? 'SET' : 'MISSING'
 });
 
-if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
+if (!OPENAI_PROJECT_ID) throw new Error('Missing env: OPENAI_PROJECT_ID');
 if (!WORKFLOW_ID) throw new Error('Missing env: WORKFLOW_ID');
 
 // create OpenAI client once
 import OpenAI from "openai";
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  project: process.env.OPENAI_PROJECT,
+  project: OPENAI_PROJECT_ID,
 });
 
 // Call the Responses API with a workflow (no assistants/runs, no chat/completions)
 export async function callWorkflow(userText, meta = {}) {
   const r = await client.responses.create({
-    workflow_id: process.env.WORKFLOW_ID,     // <- your wf_... id
+    workflow_id: WORKFLOW_ID,     // <- your wf_... id
     // version: process.env.WORKFLOW_VERSION, // optional (else uses production)
     input: userText,
     metadata: { channel: "whatsapp", ...meta },
