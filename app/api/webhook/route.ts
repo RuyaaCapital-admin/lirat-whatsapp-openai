@@ -1,22 +1,31 @@
-// app/api/webhook/route.ts - Simplified version for testing
-export async function GET(req: Request) {
+// app/api/webhook/route.ts
+export async function GET(request: Request) {
   console.log('GET webhook hit', new Date().toISOString());
-  const p = new URL(req.url).searchParams;
-  if (p.get('hub.mode')==='subscribe' && p.get('hub.verify_token')===process.env.VERIFY_TOKEN) {
-    return new Response(p.get('hub.challenge') ?? '', { status: 200 });
+  const url = new URL(request.url);
+  const mode = url.searchParams.get('hub.mode');
+  const token = url.searchParams.get('hub.verify_token');
+  const challenge = url.searchParams.get('hub.challenge');
+  
+  if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+    console.log('Webhook verification successful');
+    return new Response(challenge, { status: 200 });
   }
+  
+  console.log('Webhook verification failed');
   return new Response('Forbidden', { status: 403 });
 }
 
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   console.log('POST webhook hit', new Date().toISOString());
   
   try {
-    const json = await req.json();
-    console.log('Webhook payload received:', JSON.stringify(json, null, 2));
+    const body = await request.json();
+    console.log('Webhook payload received:', JSON.stringify(body, null, 2));
     
-    // Simple response for now
-    return new Response(JSON.stringify({ received: true, timestamp: new Date().toISOString() }), { 
+    return new Response(JSON.stringify({ 
+      received: true, 
+      timestamp: new Date().toISOString() 
+    }), { 
       status: 200,
       headers: { 'Content-Type': 'application/json' }
     });
