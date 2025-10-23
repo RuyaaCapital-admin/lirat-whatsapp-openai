@@ -29,11 +29,20 @@ if (!OPENAI_PROJECT.startsWith('proj_')) {
   console.warn('[ENV WARNING] OPENAI_PROJECT should be a proj_... ID, got:', OPENAI_PROJECT);
 }
 
-// Initialize OpenAI client
-const client = new OpenAI({
-  apiKey: OPENAI_API_KEY,
-  project: OPENAI_PROJECT,
-});
+// Initialize OpenAI client with project (if valid)
+let client;
+try {
+  client = new OpenAI({
+    apiKey: OPENAI_API_KEY,
+    project: OPENAI_PROJECT,
+  });
+  console.log('[OPENAI] Client initialized with project:', OPENAI_PROJECT);
+} catch (error) {
+  console.warn('[OPENAI] Failed to initialize with project, using API key only:', error.message);
+  client = new OpenAI({
+    apiKey: OPENAI_API_KEY,
+  });
+}
 
 // System prompt for fallback
 const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص في:
@@ -127,6 +136,34 @@ async function smartReply(userText, meta = {}) {
     return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
   } catch (error) {
     console.error('[FALLBACK] Model error:', error);
+    
+    // If it's a project error, try without project
+    if (error.code === 'invalid_project' || error.message?.includes('No such project')) {
+      console.log('[FALLBACK] Project error detected, trying without project');
+      try {
+        const fallbackClient = new OpenAI({
+          apiKey: OPENAI_API_KEY,
+        });
+        
+        const resp = await fallbackClient.responses.create({
+          model: "gpt-4o-mini",
+          input: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userText }
+          ],
+        });
+        
+        const text = resp.output_text ?? 
+                    (Array.isArray(resp.output) ? 
+                      resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                      "");
+        
+        return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
+      } catch (fallbackError) {
+        console.error('[FALLBACK] Fallback client also failed:', fallbackError);
+      }
+    }
+    
     return "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.";
   }
 }
