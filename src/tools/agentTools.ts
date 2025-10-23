@@ -2,8 +2,9 @@
 // Tool functions that match Agent Builder exactly: get_price, get_ohlc, compute_trading_signal
 
 import { Canonical, toCanonical } from './symbol';
-import { getCurrentPrice, formatPriceBlock } from './price';
+import { getCurrentPrice } from './price';
 import { getTradingSignal } from './ohlc';
+import { formatPriceBlock } from '../format';
 
 // Tool: get_price
 export async function get_price(symbol: string, timeframe?: string): Promise<{
@@ -19,19 +20,15 @@ export async function get_price(symbol: string, timeframe?: string): Promise<{
 
     const result = await getCurrentPrice(canonical, timeframe);
     
-    const priceBlock = formatPriceBlock({
+    const priceResponse = {
       symbol: canonical,
-      interval: timeframe || '1min',
-      lastClosed: result.time,
-      close: result.price,
-      prev: 'N/A',
-      ema20: 'N/A',
-      ema50: 'N/A',
-      rsi14: 'N/A',
-      macd: { macd: 'N/A', signal: 'N/A', hist: 'N/A' },
-      atr14: 'N/A',
-      signal: 'NEUTRAL'
-    });
+      timestamp: Math.floor(Date.now() / 1000),
+      price: result.price,
+      note: result.source,
+      utcTime: new Date().toISOString().slice(11, 16)
+    };
+    
+    const priceBlock = formatPriceBlock(priceResponse);
 
     return { text: priceBlock };
   } catch (error) {
@@ -55,19 +52,23 @@ export async function get_ohlc(symbol: string, interval: string): Promise<{
 
     const signalData = await getTradingSignal(canonical, interval);
     
-    const priceBlock = formatPriceBlock({
-      symbol: canonical,
-      interval: interval,
-      lastClosed: signalData.lastClosed,
-      close: signalData.close,
-      prev: signalData.prev,
-      ema20: signalData.ema20.toFixed(2),
-      ema50: signalData.ema50.toFixed(2),
-      rsi14: signalData.rsi14.toFixed(2),
-      macd: { macd: 'N/A', signal: 'N/A', hist: 'N/A' },
-      atr14: 'N/A',
-      signal: signalData.signal
-    });
+    const timeUtc = new Date().toISOString().slice(11, 16);
+    const lastClosed = signalData.lastClosed ? 
+      (typeof signalData.lastClosed === 'string' ? signalData.lastClosed : new Date(signalData.lastClosed).toISOString().slice(11, 16)) : 
+      timeUtc;
+    
+    const priceBlock = `Time (UTC): ${timeUtc}
+Symbol: ${canonical}
+Interval: ${interval}
+Last closed: ${lastClosed} UTC
+Close: ${signalData.close}
+Prev: ${signalData.prev}
+EMA20: ${signalData.ema20.toFixed(2)}
+EMA50: ${signalData.ema50.toFixed(2)}
+RSI14: ${signalData.rsi14.toFixed(2)}
+MACD(12,26,9): N/A / N/A (hist N/A)
+ATR14: N/A
+SIGNAL: ${signalData.signal}`;
 
     return { text: priceBlock };
   } catch (error) {
@@ -91,19 +92,23 @@ export async function compute_trading_signal(symbol: string, period: string): Pr
 
     const signalData = await getTradingSignal(canonical, period);
     
-    const priceBlock = formatPriceBlock({
-      symbol: canonical,
-      interval: period,
-      lastClosed: signalData.lastClosed,
-      close: signalData.close,
-      prev: signalData.prev,
-      ema20: signalData.ema20.toFixed(2),
-      ema50: signalData.ema50.toFixed(2),
-      rsi14: signalData.rsi14.toFixed(2),
-      macd: { macd: 'N/A', signal: 'N/A', hist: 'N/A' },
-      atr14: 'N/A',
-      signal: signalData.signal
-    });
+    const timeUtc = new Date().toISOString().slice(11, 16);
+    const lastClosed = signalData.lastClosed ? 
+      (typeof signalData.lastClosed === 'string' ? signalData.lastClosed : new Date(signalData.lastClosed).toISOString().slice(11, 16)) : 
+      timeUtc;
+    
+    const priceBlock = `Time (UTC): ${timeUtc}
+Symbol: ${canonical}
+Interval: ${period}
+Last closed: ${lastClosed} UTC
+Close: ${signalData.close}
+Prev: ${signalData.prev}
+EMA20: ${signalData.ema20.toFixed(2)}
+EMA50: ${signalData.ema50.toFixed(2)}
+RSI14: ${signalData.rsi14.toFixed(2)}
+MACD(12,26,9): N/A / N/A (hist N/A)
+ATR14: N/A
+SIGNAL: ${signalData.signal}`;
 
     return { text: priceBlock };
   } catch (error) {

@@ -3,6 +3,15 @@ import axios from "axios";
 
 const FCS_BASE = "https://fcsapi.com/api-v3";
 
+// Price response type for compatibility
+export type PriceResponse = {
+  symbol: string;
+  timestamp: number;
+  price: number;
+  note: string;
+  utcTime: string;
+};
+
 export function toFcsSymbol(input: string) {
   // XAUUSD -> XAU/USD, EURUSD -> EUR/USD, crypto stays as-is (BTCUSDT)
   const s = input.toUpperCase().replace(/\s+/g, "");
@@ -72,44 +81,4 @@ export async function getCurrentPrice(symbol: string, tf?: string) {
     const { price, time, symbol: s, period } = await fcsLastClose(symbol, tf || "1m");
     return { price, time, symbol: s, source: `FCS ${period} candle` };
   }
-}
-
-// Format price block for WhatsApp
-export function formatPriceBlock(data: {
-  symbol: string;
-  interval: string;
-  lastClosed: string | number | null;
-  close: number;
-  prev: string | number;
-  ema20: string | number;
-  ema50: string | number;
-  rsi14: string | number;
-  macd: { macd: string | number, signal: string | number, hist: string | number };
-  atr14: string | number;
-  signal: string;
-}) {
-  const now = new Date();
-  const timeUtc = now.toISOString().slice(11, 16);
-  const dateUtc = now.toISOString().slice(0, 10).replace(/-/g, '');
-  
-  const lastClosed = data.lastClosed ? 
-    (typeof data.lastClosed === 'string' ? data.lastClosed : new Date(data.lastClosed).toISOString().slice(11, 16)) : 
-    timeUtc;
-  
-  const lastClosedDate = data.lastClosed ? 
-    (typeof data.lastClosed === 'string' ? data.lastClosed.slice(0, 10).replace(/-/g, '') : new Date(data.lastClosed).toISOString().slice(0, 10).replace(/-/g, '')) : 
-    dateUtc;
-
-  return `Time (UTC): ${timeUtc}
-Symbol: ${data.symbol}
-Interval: ${data.interval}
-Last closed: ${lastClosedDate}_${lastClosed} UTC
-Close: ${data.close}
-Prev: ${data.prev}
-EMA20: ${data.ema20}
-EMA50: ${data.ema50}
-RSI14: ${data.rsi14}
-MACD(12,26,9): ${data.macd.macd} / ${data.macd.signal} (hist ${data.macd.hist})
-ATR14: ${data.atr14}
-SIGNAL: ${data.signal}`;
 }
