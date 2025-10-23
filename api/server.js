@@ -30,7 +30,20 @@ async function typing(phone, to) {
       type: 'action',
       action: { typing: 'typing' },
     }, { headers: gh() });
-  } catch (_) {}
+  } catch (e) {
+    console.warn('typing failed:', e.response?.data || e.message);
+  }
+}
+
+function startTypingLoop(phone, to) {
+  let alive = true;
+  const tick = async () => {
+    if (!alive) return;
+    try { await typing(phone, to); } catch (_) {}
+    if (alive) setTimeout(tick, 8000);
+  };
+  tick();
+  return () => { alive = false; };
 }
 
 async function markRead(phone, id) {
@@ -54,6 +67,19 @@ async function send(messages, phone, to) {
     await graph.post(`/${phone}/messages`, data, { headers: gh() });
   }
 }
+
+function resOK(res, extra) {
+  const payload = extra ? { ok: true, ...extra } : { ok: true };
+  return res.status(200).json(payload);
+}
+
+const SYSTEM_PROMPT = `
+You are Liirat Assistant. Be brief and decisive. For trading Q&A:
+- Prefer compact answers (<=4 lines).
+- Arabic or English matching user.
+- No news paragraphs or links.
+- If user asked "price" and symbol is recognized, defer to webhook formatter (do not restate).
+`;
 
 // --- OpenAI Agent (SDK) fallback ---
 async function askAgent(userText) {
@@ -79,7 +105,7 @@ async function askAgent(userText) {
       model: 'gpt-4o-mini',
       tools: [webSearchPreview, mcp],
       modelSettings: { temperature: 1.05, topP: 1, maxTokens: 6593, store: true },
-      instructions: `<<PASTE YOUR EXISTING INSTRUCTIONS BLOCK HERE>>`
+      instructions: SYSTEM_PROMPT.trim()
     });
 
     const runner = new Runner();
@@ -91,6 +117,51 @@ async function askAgent(userText) {
     console.error('Agent SDK error:', e.response?.data || e.message);
     return null;
   }
+}
+
+const YF_MAP = {
+  'XAU/USD': 'XAUUSD=X',
+  'XAG/USD': 'XAGUSD=X',
+};
+
+function mapArabicToSymbol(text) {
+  const t = (text || '').toLowerCase();
+  if (/(ذهب|الذهب|دهب|gold|xau)/.test(t)) return { pretty: 'XAU/USD', source: 'yahoo' };
+  if (/(فضة|الفضة|silver|xag)/.test(t)) return { pretty: 'XAG/USD', source: 'yahoo' };
+  if (/(بيتكوين|البيتكوين|btc)/.test(t)) return { pretty: 'BTCUSDT', source: 'binance' };
+  if (/(اثيريوم|إيثيريوم|eth)/.test(t)) return { pretty: 'ETHUSDT', source: 'binance' };
+  return null;
+}
+
+async function fetchYahooClose(pretty) {
+  const ticker = YF_MAP[pretty];
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=1m`;
+  const { data } = await axios.get(url, { timeout: 15000 });
+  const r = data?.chart?.result?.[0];
+  const closes = r?.indicators?.quote?.[0]?.close || [];
+  const ts = r?.timestamp || [];
+  let i = closes.length - 1;
+  while (i >= 0 && (closes[i] == null)) i--;
+  if (i < 0) throw new Error('no_close');
+  const price = closes[i];
+  const timeUTC = new Date(ts[i] * 1000).toISOString().slice(11, 16);
+  return { price, timeUTC, note: 'latest CLOSED price' };
+}
+
+async function fetchBinanceClose(symbol) {
+  const { data } = await axios.get(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=2`, { timeout: 12000 });
+  const last = data[data.length - 1];
+  const price = Number(last[4]);
+  const timeUTC = new Date(last[0] + 60_000).toISOString().slice(11, 16);
+  return { price, timeUTC, note: 'latest CLOSED price' };
+}
+
+function fmtPrice({ timeUTC, symbolPretty, price, note }) {
+  let formatted;
+  if (price >= 100) formatted = price.toFixed(2);
+  else if (price >= 1) formatted = price.toFixed(4);
+  else formatted = price.toFixed(6);
+  return `Time (UTC): ${timeUTC}\nSymbol: ${symbolPretty}\nPrice: ${formatted}\nNote: ${note}`;
 }
 
 // --- price / signal (Binance public API) ---
@@ -131,21 +202,29 @@ function verifyHandler(req, res) {
 
 // --- webhook messages ---
 async function postHandler(req, res) {
+  let stopTyping = () => {};
   try {
     const change  = req.body?.entry?.[0]?.changes?.[0];
     const message = change?.value?.messages?.[0];
-    if (!message) return res.status(200).json({ ok: true });
+    if (!message) return resOK(res);
 
     const phone = change.value?.metadata?.phone_number_id;
     if (!phone) {
       console.error('Missing phone number id');
-      return res.status(200).json({ ok: true });
+      return resOK(res);
     }
     const from  = message.from;
+    const bodyRaw = message?.text?.body;
+    if (!bodyRaw) return resOK(res);
 
-    await typing(phone, from);
+    const msgId = message.id;
+    if (globalThis._handledIds?.has(msgId)) return resOK(res);
+    (globalThis._handledIds ||= new Set()).add(msgId);
+    setTimeout(() => globalThis._handledIds.delete(msgId), 60_000);
 
-    const body  = message.text?.body?.trim() || '';
+    stopTyping = startTypingLoop(phone, from);
+
+    const body  = bodyRaw.trim();
     const lower = body.toLowerCase();
 
     // commands
@@ -154,7 +233,8 @@ async function postHandler(req, res) {
       const p = await getPrice(sym);
       await send([{ type:'text', value: `${sym}: ${p}` }], phone, from);
       await markRead(phone, message.id);
-      return res.status(200).json({ ok: true });
+      stopTyping();
+      return resOK(res);
     }
     if (lower.startsWith('signal ')) {
       const sym = body.split(/\s+/)[1].toUpperCase();
@@ -162,7 +242,26 @@ async function postHandler(req, res) {
       const txt = `**Signal** ${sym}\nSMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
       await send([{ type:'text', value: txt }], phone, from);
       await markRead(phone, message.id);
-      return res.status(200).json({ ok: true });
+      stopTyping();
+      return resOK(res);
+    }
+
+    const looksLikePriceQ = /(سعر|price)/i.test(body);
+    if (looksLikePriceQ) {
+      const mapped = mapArabicToSymbol(body);
+      if (mapped) {
+        const symbolPretty = mapped.pretty;
+        let priceRes;
+        if (mapped.source === 'yahoo') priceRes = await fetchYahooClose(symbolPretty);
+        else if (mapped.source === 'binance') priceRes = await fetchBinanceClose(symbolPretty);
+        if (priceRes) {
+          const msg = fmtPrice({ timeUTC: priceRes.timeUTC, symbolPretty, price: priceRes.price, note: priceRes.note });
+          await send([{ type:'text', value: msg }], phone, from);
+          await markRead(phone, message.id);
+          stopTyping();
+          return resOK(res);
+        }
+      }
     }
 
     let reply = null;
@@ -171,8 +270,10 @@ async function postHandler(req, res) {
 
     await send([{ type: 'text', value: reply }], phone, from);
     await markRead(phone, message.id);
-    return res.status(200).json({ ok: true });
+    stopTyping();
+    return resOK(res);
   } catch (e) {
+    stopTyping();
     console.error(e.response?.data || e.message);
     return res.status(500).json({ ok: false });
   }
