@@ -38,16 +38,10 @@ async function runConversational(text) {
     }
   }
   
-  // Plain model fallback (conversational, bilingual)
-  const sys = `أنت مساعد محادثي لِـ Lirat: افهم نية المستخدم (سعر/رمز/تداول أو أسئلة عامة عن Lirat).
-- إذا كان السؤال عن رمز أو تداول، لا تكتب كود؛ فقط اطلب الرمز/الإطار الزمني أو استخدم البيانات المتاحة.
-- إذا كان سؤالًا عامًا، أجب بإيجاز ووضوح بالعربية.
-- كن محادثي وودود، لا آلي.`;
-  
+  // Plain model fallback (simple conversational)
   const r = await client.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: sys },
       { role: 'user', content: text }
     ],
     max_tokens: 500,
