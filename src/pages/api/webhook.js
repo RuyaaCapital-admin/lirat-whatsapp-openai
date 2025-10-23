@@ -1,8 +1,8 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
 import OpenAI from 'openai';
-import { parseIntent } from '../../src/tools/symbol';
-import { get_price, get_ohlc, compute_trading_signal } from '../../src/tools/agentTools';
+import { parseIntent } from '../../tools/symbol';
+import { get_price, get_ohlc, compute_trading_signal } from '../../tools/agentTools';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
