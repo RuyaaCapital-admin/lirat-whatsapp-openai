@@ -56,27 +56,38 @@ export async function sendText(to: string, body: string): Promise<void> {
   console.log('[WABA] reply sent', { to, kind: 'text' });
 }
 
-export async function sendTyping(to: string): Promise<void> {
+export async function sendTyping(messageId: string): Promise<void> {
   try {
-    // Note: WhatsApp Cloud API doesn't have a direct typing indicator
-    // This is a placeholder for future implementation
-    console.log('[WABA] typing indicator sent to', to);
+    const payload = {
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: messageId,
+      typing_indicator: {
+        type: 'text'
+      }
+    };
+
+    await makeRequest('messages', payload);
+    console.log('[WABA] typing indicator sent for message:', messageId);
   } catch (error) {
     console.warn('[WABA] typing indicator failed (ignored):', error);
   }
 }
 
-export async function markRead(messageId: string): Promise<void> {
+export async function markReadAndShowTyping(messageId: string): Promise<void> {
   try {
     const payload = {
       messaging_product: 'whatsapp',
       status: 'read',
-      message_id: messageId
+      message_id: messageId,
+      typing_indicator: {
+        type: 'text'
+      }
     };
 
     await makeRequest('messages', payload);
-    console.log('[WABA] message marked as read:', messageId);
+    console.log('[WABA] message marked as read and typing indicator sent:', messageId);
   } catch (error) {
-    console.warn('[WABA] mark read failed (ignored):', error);
+    console.warn('[WABA] mark read + typing failed (ignored):', error);
   }
 }

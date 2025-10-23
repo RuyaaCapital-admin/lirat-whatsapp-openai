@@ -1,5 +1,5 @@
 // src/pages/api/webhook.js
-import { sendText, sendTyping, markRead } from '../../lib/waba';
+import { sendText, markReadAndShowTyping } from '../../lib/waba';
 import { openai } from '../../lib/openai';
 import { parseIntent } from '../../tools/symbol';
 import { get_price, get_ohlc, compute_trading_signal } from '../../tools/agentTools';
@@ -193,18 +193,11 @@ export default async function handler(req, res) {
         contactName: message.contactName
       });
 
-      // Mark message as read (best effort)
+      // Mark message as read and show typing indicator (single API call)
       try {
-        await markRead(message.id);
+        await markReadAndShowTyping(message.id);
       } catch (error) {
-        console.warn('[WABA] mark read failed (ignored):', error.message);
-      }
-
-      // Send typing indicator (hardened - ignore failures)
-      try {
-        await sendTyping(message.from);
-      } catch (error) {
-        console.warn('[WABA] typing 400 ignored');
+        console.warn('[WABA] mark read + typing failed (ignored)');
       }
 
       // Process message - use smart reply with fallbacks
