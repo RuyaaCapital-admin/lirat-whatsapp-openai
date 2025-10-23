@@ -41,7 +41,8 @@ SIGNAL: NEUTRAL`;
     return { text };
   } catch (error) {
     console.error('[AGENT_TOOL] get_price error:', error);
-    return { text: `خطأ في جلب السعر: ${error.message}` };
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { text: `خطأ في جلب السعر: ${errorMessage}` };
   }
 }
 
@@ -130,7 +131,8 @@ TP2: ${signalResult.tp2} (R 2.0)`;
     return { text };
   } catch (error) {
     console.error('[AGENT_TOOL] get_ohlc error:', error);
-    return { text: `خطأ في جلب البيانات: ${error.message}` };
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { text: `خطأ في جلب البيانات: ${errorMessage}` };
   }
 }
 
@@ -203,6 +205,7 @@ TP2: ${signalResult.tp2} (R 2.0)`;
     return { text };
   } catch (error) {
     console.error('[AGENT_TOOL] compute_trading_signal error:', error);
-    return { text: `خطأ في حساب الإشارة: ${error.message}` };
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { text: `خطأ في حساب الإشارة: ${errorMessage}` };
   }
 }

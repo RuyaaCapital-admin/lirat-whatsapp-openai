@@ -1,5 +1,8 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
+import OpenAI from 'openai';
+import { parseIntent } from '../../src/tools/symbol';
+import { get_price, get_ohlc, compute_trading_signal } from '../../src/tools/agentTools';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -7,86 +10,118 @@ const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_PROJECT_ID = process.env.OPENAI_PROJECT_ID;
-const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
+const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
+const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
-  OPENAI_PROJECT_ID: OPENAI_PROJECT_ID ? 'SET' : 'MISSING',
-  OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
-  WORKFLOW_ID: WORKFLOW_ID ? 'SET' : 'MISSING',
+  OPENAI_PROJECT: OPENAI_PROJECT ? 'SET' : 'MISSING',
+  OPENAI_WORKFLOW_ID: OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
   OPENAI_API_KEY: OPENAI_API_KEY ? 'SET' : 'MISSING',
   VERIFY_TOKEN: VERIFY_TOKEN ? 'SET' : 'MISSING'
 });
 
-if (!OPENAI_PROJECT_ID) throw new Error('Missing env: OPENAI_PROJECT_ID');
-if (!WORKFLOW_ID) throw new Error('Missing env: OPENAI_WORKFLOW_ID');
+if (!OPENAI_API_KEY) throw new Error('Missing env: OPENAI_API_KEY');
+if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
 
-// Call the workflow using direct HTTP API
-export async function callWorkflow(userText, meta = {}) {
+// Initialize OpenAI client
+const client = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+  project: OPENAI_PROJECT,
+});
+
+// System prompt for fallback
+const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص في:
+1. أسعار العملات والمعادن (ذهب، فضة، فوركس، كريبتو)
+2. إشارات التداول والتحليل الفني
+3. معلومات عن شركة Lirat
+
+عندما يطلب المستخدم سعر أو إشارة، استخدم الأدوات المتاحة.
+للاستفسارات الأخرى عن Lirat، قدم معلومات مفيدة ومهنية.
+
+أجب بالعربية دائماً.`;
+
+// Try workflow first, then fallback to tools + model
+async function smartReply(userText, meta = {}) {
   try {
-    console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
-    console.log('[WORKFLOW] Input:', userText);
-    
-    // Try multiple possible endpoints
-    const endpoints = [
-      'https://api.openai.com/v1/beta/workflows/runs',
-      'https://api.openai.com/v1/responses',
-      'https://api.openai.com/v1/beta/responses'
-    ];
-    
-    let lastError;
-    
-    for (const endpoint of endpoints) {
-      try {
-        console.log('[WORKFLOW] Trying endpoint:', endpoint);
-        
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-            'Content-Type': 'application/json',
-            'OpenAI-Project': OPENAI_PROJECT_ID,
-          },
-          body: JSON.stringify({
-            workflow_id: WORKFLOW_ID,
-            input: userText,
-            metadata: { channel: "whatsapp", ...meta }
-          })
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.log('[WORKFLOW] Endpoint failed:', endpoint, response.status, errorText);
-          lastError = new Error(`HTTP ${response.status}: ${errorText}`);
-          continue; // Try next endpoint
-        }
-
-        const result = await response.json();
-        console.log('[WORKFLOW] Success with endpoint:', endpoint);
-        console.log('[WORKFLOW] Result:', result);
-        
-        // Extract text from the result
-        const text = result?.output_text || 
-                    result?.output?.text || 
-                    result?.text || 
-                    result?.content || 
-                    "";
-        
-        return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
-        
-      } catch (error) {
-        console.log('[WORKFLOW] Endpoint error:', endpoint, error.message);
-        lastError = error;
-        continue; // Try next endpoint
+    // Try workflow first if available
+    if (OPENAI_WORKFLOW_ID && client.workflows?.runs?.create) {
+      console.log('[WORKFLOW] Using SDK workflow method');
+      const run = await client.workflows.runs.create({
+        workflow_id: OPENAI_WORKFLOW_ID,
+        input: userText,
+        metadata: { channel: "whatsapp", ...meta }
+      });
+      
+      const text = run.output_text ?? 
+                  (Array.isArray(run.output) ? 
+                    run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                    "");
+      
+      if (text) {
+        console.log('[WORKFLOW] Success via SDK');
+        return text;
       }
     }
+  } catch (err) {
+    console.warn('[WORKFLOW] SDK method failed, trying fallback:', err?.message);
+  }
+
+  // Fallback: Use our tools directly
+  console.log('[FALLBACK] Using direct tools + model');
+  
+  const intent = parseIntent(userText);
+  console.log('[FALLBACK] Parsed intent:', intent);
+  
+  // Handle price requests
+  if (intent.wantsPrice && intent.symbol) {
+    try {
+      const result = await get_price(intent.symbol, intent.timeframe);
+      return result.text;
+    } catch (error) {
+      console.error('[FALLBACK] Price tool error:', error);
+    }
+  }
+  
+  // Handle signal requests
+  if (intent.symbol && /signal|إشارة|تداول|trade/i.test(userText)) {
+    try {
+      const result = await compute_trading_signal(intent.symbol, intent.timeframe || '1hour');
+      return result.text;
+    } catch (error) {
+      console.error('[FALLBACK] Signal tool error:', error);
+    }
+  }
+  
+  // Handle OHLC requests
+  if (intent.symbol && intent.timeframe) {
+    try {
+      const result = await get_ohlc(intent.symbol, intent.timeframe);
+      return result.text;
+    } catch (error) {
+      console.error('[FALLBACK] OHLC tool error:', error);
+    }
+  }
+  
+  // Final fallback: Use model directly
+  try {
+    const resp = await client.responses.create({
+      model: "gpt-4o-mini",
+      input: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ],
+    });
     
-    // If all endpoints failed, throw the last error
-    throw lastError || new Error('All endpoints failed');
+    const text = resp.output_text ?? 
+                (Array.isArray(resp.output) ? 
+                  resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                  "");
+    
+    return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
   } catch (error) {
-    console.error('[WORKFLOW] Error:', error);
-    return `Workflow error: ${error.message}`;
+    console.error('[FALLBACK] Model error:', error);
+    return "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.";
   }
 }
 
@@ -184,23 +219,23 @@ export default async function handler(req, res) {
         console.warn('[WABA] typing 400 ignored');
       }
 
-      // Process message - always route to workflow
+      // Process message - use smart reply with fallbacks
       if (message.text.trim()) {
         try {
           const text = message.text.trim();
-          console.log('[WABA] Calling workflow for:', text);
+          console.log('[WABA] Processing message:', text);
           
-          const answer = await callWorkflow(text, { 
+          const answer = await smartReply(text, { 
             user_id: message.from,
             contact_name: message.contactName 
           });
           
           const politeAnswer = polite(answer, text);
           await sendText(message.from, politeAnswer);
-          console.log('[WABA] reply sent', { to: message.from, kind: 'workflow' });
+          console.log('[WABA] Reply sent successfully');
         } catch (error) {
           console.error('[WABA] Processing error:', error);
-          await sendText(message.from, 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.');
+          await sendText(message.from, `عذراً، حدث خطأ في معالجة طلبك: ${error.message}. يرجى المحاولة مرة أخرى.`);
         }
       }
 
