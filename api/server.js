@@ -46,10 +46,6 @@ async function send(messages, phone, to) {
 
 // === Compact Price Formatter ===
 // XAU/XAG via Yahoo Finance (closed price). Crypto via Binance (closed price).
-const YF_MAP = {
-  'XAU/USD': 'XAUUSD=X',
-  'XAG/USD': 'XAGUSD=X',
-};
 function mapArabicToSymbol(text) {
   const t = (text || '').toLowerCase();
   if (/(ذهب|الذهب|دهب|gold|xau)/.test(t)) return { pretty: 'XAU/USD', source: 'yahoo' };
@@ -58,18 +54,41 @@ function mapArabicToSymbol(text) {
   if (/(اثيريوم|إيثيريوم|eth)/.test(t))     return { pretty: 'ETHUSDT', source: 'binance' };
   return null;
 }
-async function fetchYahooClose(pretty) {
-  const ticker = YF_MAP[pretty];
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=1m`;
-  const { data } = await axios.get(url, { timeout: 15000 });
+async function yahooCloseFor(ticker, interval) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1d&interval=${interval}`;
+  const { data } = await axios.get(url, {
+    timeout: 12000,
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  });
   const r = data?.chart?.result?.[0];
+  if (!r) throw new Error('no_result');
   const closes = r?.indicators?.quote?.[0]?.close || [];
   const ts = r?.timestamp || [];
   let i = closes.length - 1; while (i >= 0 && (closes[i] == null)) i--;
   if (i < 0) throw new Error('no_close');
-  const price = Number(closes[i]);
-  const timeUTC = new Date(ts[i] * 1000).toISOString().slice(11,16); // HH:MM
-  return { price, timeUTC, note: 'latest CLOSED price' };
+  return {
+    price: Number(closes[i]),
+    timeUTC: new Date(ts[i] * 1000).toISOString().slice(11,16)
+  };
+}
+
+async function fetchYahooClose(pretty) {
+  const candidates =
+    pretty === 'XAU/USD'
+      ? ['XAUUSD=X', 'XAU=X', 'GC=F']
+      : ['XAGUSD=X', 'SI=F'];
+
+  const intervals = ['1m', '5m', '15m'];
+
+  for (const t of candidates) {
+    for (const iv of intervals) {
+      try {
+        const r = await yahooCloseFor(t, iv);
+        return { ...r, note: 'latest CLOSED price' };
+      } catch (_) {}
+    }
+  }
+  throw new Error('yahoo_unavailable');
 }
 async function fetchBinanceClose(symbol) {
   const { data } = await axios.get(
@@ -143,13 +162,14 @@ app.get(['/webhook','/api/server/webhook'], verifyHandler);
 
 // === Webhook message ===
 app.post(['/webhook','/api/server/webhook'], async (req, res) => {
+  let phone, from;
   try {
     const change  = req.body?.entry?.[0]?.changes?.[0];
     const message = change?.value?.messages?.[0];
     if (!message?.text?.body) return res.status(200).json({ ok: true });
 
-    const phone = change.value.metadata.phone_number_id;
-    const from  = message.from;
+    phone = change.value.metadata.phone_number_id;
+    from  = message.from;
     const body  = message.text.body.trim();
     const lower = body.toLowerCase();
 
@@ -164,10 +184,11 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
     // Natural "price" question → compact formatter
     const mapped = mapArabicToSymbol(body);
     if (/(سعر|price)/i.test(body) && mapped) {
-      let resData;
-      if (mapped.source === 'yahoo') resData = await fetchYahooClose(mapped.pretty);
-      else resData = await fetchBinanceClose(mapped.pretty);
-      const msg = formatCompactPrice(resData.timeUTC, mapped.pretty, resData.price, resData.note);
+      let r;
+      if (mapped.source === 'yahoo') r = await fetchYahooClose(mapped.pretty);
+      else r = await fetchBinanceClose(mapped.pretty);
+
+      const msg = formatCompactPrice(r.timeUTC, mapped.pretty, r.price, r.note);
       await send([{ type:'text', value: msg }], phone, from);
       return res.status(200).json({ ok: true });
     }
@@ -203,9 +224,16 @@ app.post(['/webhook','/api/server/webhook'], async (req, res) => {
 
   } catch (e) {
     console.error(e.response?.data || e.message);
-    return res.status(500).json({ ok: false });
+    try {
+      if (phone && from) {
+        const fallback = 'Data unavailable right now. Try: price BTCUSDT';
+        await send([{ type:'text', value: fallback }], phone, from);
+      }
+    } catch (_) {}
+    return res.status(200).json({ ok: false });
   }
 });
 
 module.exports = app;
 module.exports.formatCompactPrice = formatCompactPrice;
+module.exports.fetchYahooClose = fetchYahooClose;
