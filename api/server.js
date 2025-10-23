@@ -7,10 +7,9 @@ const axios = require('axios').default;
 const app = express().use(bodyParser.json());
 
 // ENV
-const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v20.0';
+const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_TOKEN   = process.env.WHATSAPP_TOKEN;
 const VERIFY_TOKEN     = process.env.VERIFY_TOKEN;
-const VF_API_KEY       = process.env.VF_API_KEY || process.env.VOICEFLOW_API_KEY;
 
 // Graph API client
 const graph = axios.create({
@@ -56,6 +55,44 @@ async function send(messages, phone, to) {
   }
 }
 
+// --- OpenAI Agent (SDK) fallback ---
+async function askAgent(userText) {
+  if (!process.env.OPENAI_API_KEY) return null;
+  try {
+    const { Agent, Runner, webSearchTool, hostedMcpTool } = await import('@openai/agents');
+
+    const webSearchPreview = webSearchTool({
+      searchContextSize: 'low',
+      userLocation: { timezone: 'Asia/Dubai', type: 'approximate' }
+    });
+
+    const mcp = hostedMcpTool({
+      serverLabel: 'current_time',
+      allowedTools: ['get_utc_time', 'convert_time', 'list_timezones'],
+      requireApproval: 'never',
+      serverDescription: 'Current time',
+      serverUrl: 'https://a.currenttimeutc.com/mcp'
+    });
+
+    const liiratAssistant = new Agent({
+      name: 'Liirat Assistant',
+      model: 'gpt-4o-mini',
+      tools: [webSearchPreview, mcp],
+      modelSettings: { temperature: 1.05, topP: 1, maxTokens: 6593, store: true },
+      instructions: `<<PASTE YOUR EXISTING INSTRUCTIONS BLOCK HERE>>`
+    });
+
+    const runner = new Runner();
+    const result = await runner.run(liiratAssistant, [
+      { role: 'user', content: [{ type: 'input_text', text: userText }] }
+    ]);
+    return result.finalOutput || null;
+  } catch (e) {
+    console.error('Agent SDK error:', e.response?.data || e.message);
+    return null;
+  }
+}
+
 // --- price / signal (Binance public API) ---
 async function getPrice(sym) {
   const r = await axios.get(
@@ -80,25 +117,30 @@ async function getSignal(sym) {
 }
 
 // --- health ---
+app.get(['/favicon.ico', '/favicon.png'], (_, res) => res.status(204).end());
 app.get('/', (_, res) => res.status(200).send('ok'));
 
 // --- webhook verification ---
-app.get('/webhook', (req, res) => {
+function verifyHandler(req, res) {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
   if (mode === 'subscribe' && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.status(403).send('Forbidden');
-});
+}
 
 // --- webhook messages ---
-app.post('/webhook', async (req, res) => {
+async function postHandler(req, res) {
   try {
     const change  = req.body?.entry?.[0]?.changes?.[0];
     const message = change?.value?.messages?.[0];
     if (!message) return res.status(200).json({ ok: true });
 
-    const phone = change.value.metadata.phone_number_id;
+    const phone = change.value?.metadata?.phone_number_id;
+    if (!phone) {
+      console.error('Missing phone number id');
+      return res.status(200).json({ ok: true });
+    }
     const from  = message.from;
 
     await typing(phone, from);
@@ -123,32 +165,20 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ ok: true });
     }
 
-    // fallback: simple echo if no VF key configured
-    if (!VF_API_KEY && body) {
-      await send([{ type:'text', value: body }], phone, from);
-      await markRead(phone, message.id);
-      return res.status(200).json({ ok: true });
-    }
+    let reply = null;
+    if (body) reply = await askAgent(body);
+    if (!reply) reply = '...';
 
-    // Voiceflow conversational fallback (optional)
-    if (VF_API_KEY && body) {
-      const { data: traces = [] } = await axios.post(
-        `https://general-runtime.voiceflow.com/state/user/${from}/interact`,
-        { action: { type:'text', payload: body } },
-        { headers: { Authorization: VF_API_KEY } }
-      );
-      const outs = traces
-        .filter(t => t.type === 'text')
-        .map(t => ({ type:'text', value: t.payload.body }));
-      if (outs.length) await send(outs, phone, from);
-    }
-
+    await send([{ type: 'text', value: reply }], phone, from);
     await markRead(phone, message.id);
     return res.status(200).json({ ok: true });
   } catch (e) {
     console.error(e.response?.data || e.message);
     return res.status(500).json({ ok: false });
   }
-});
+}
+
+app.get(['/webhook', '/api/server/webhook'], verifyHandler);
+app.post(['/webhook', '/api/server/webhook'], postHandler);
 
 module.exports = app;
