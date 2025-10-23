@@ -6,6 +6,7 @@ export type PriceResponse = {
   timestamp: number;
   price: number;
   note: string;
+  utcTime: string;
 };
 
 const UA = { "User-Agent": "Mozilla/5.0 (LiiratBot)" };
@@ -32,10 +33,40 @@ export async function fetchLatestPrice(symbol: string): Promise<{ ok: true; data
     const { data } = await axios.get(endpoint, { headers: UA });
     const row = data?.response?.[0] || data?.data?.[0];
     if (!row) return { ok: false, error: "price_not_found" };
-    const price = Number(row.c ?? row.price ?? row.close);
-    if (!Number.isFinite(price)) return { ok: false, error: "price_invalid" };
-    const ts = row.t ? Number(row.t) * 1000 : row.tm ? Date.parse(row.tm) : row.date ? Date.parse(row.date) : Date.now();
-    return { ok: true, data: { symbol: pricePair, timestamp: Math.floor(ts / 1000), price, note: "latest CLOSED price" } };
+    // Parse in order: bid, ask, price, c (close). Use the first numeric you find.
+    let price: number | null = null;
+    let usedField = '';
+    
+    if (row.bid && Number.isFinite(Number(row.bid))) {
+      price = Number(row.bid);
+      usedField = 'bid';
+    } else if (row.ask && Number.isFinite(Number(row.ask))) {
+      price = Number(row.ask);
+      usedField = 'ask';
+    } else if (row.price && Number.isFinite(Number(row.price))) {
+      price = Number(row.price);
+      usedField = 'price';
+    } else if (row.c && Number.isFinite(Number(row.c))) {
+      price = Number(row.c);
+      usedField = 'close';
+    }
+    
+    if (!price) return { ok: false, error: "price_invalid" };
+    
+    // Use numeric t if present; fallback to Date.now()/1000
+    const ts = row.t ? Number(row.t) : Date.now() / 1000;
+    const utcString = new Date(ts * 1000).toISOString().slice(11, 16);
+    
+    return { 
+      ok: true, 
+      data: { 
+        symbol: pricePair, 
+        timestamp: Math.floor(ts), 
+        price, 
+        note: `FCS (${usedField})`,
+        utcTime: utcString
+      } 
+    };
   } catch (err: any) {
     const code = err?.response?.status;
     return { ok: false, error: `price_fetch_failed${code ? `_${code}` : ""}` };

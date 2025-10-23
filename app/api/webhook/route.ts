@@ -1,11 +1,11 @@
 // app/api/webhook/route.ts
 import { runAgent } from '../../../lib/agent';
-import { wabaText, wabaTyping } from '../../../src/waba';
+import { markRead, typing, sendText } from '../../../src/whatsapp';
 
+// Environment variables
 const WA_VER = process.env.WHATSAPP_VERSION || 'v24.0';
 const WA_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || '';
 const TOKEN = process.env.WHATSAPP_TOKEN || '';
-const GRAPH_URL = WA_ID ? `https://graph.facebook.com/${WA_VER}/${WA_ID}/messages` : '';
 
 interface WhatsAppMessage {
   id: string;
@@ -32,25 +32,12 @@ interface WhatsAppWebhookPayload {
   }>;
 }
 
-async function markMessageAsRead(messageId: string) {
-  if (!GRAPH_URL || !TOKEN) return;
-  
-  try {
-    await fetch(GRAPH_URL, {
-      method: 'POST',
-      headers: { 
-        Authorization: `Bearer ${TOKEN}`, 
-        'Content-Type': 'application/json' 
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        status: 'read',
-        message_id: messageId
-      })
-    });
-  } catch (error) {
-    console.error('Failed to mark message as read:', error);
-  }
+// Symbol detection for XAU/GOLD
+function detectGoldSymbol(text: string): boolean {
+  const goldKeywords = ['XAU', 'GOLD', 'ذهب'];
+  return goldKeywords.some(keyword => 
+    text.toUpperCase().includes(keyword.toUpperCase())
+  );
 }
 
 function extractMessages(payload: WhatsAppWebhookPayload): WhatsAppMessage[] {
@@ -141,33 +128,41 @@ export async function POST(req: Request) {
       
       try {
         // Mark message as read
-        await markMessageAsRead(message.id);
+        await markRead(message.id);
         
-        // Show typing indicator (with error handling)
-        try {
-          await wabaTyping(phoneNumber, true);
-        } catch (typingError) {
-          console.warn('Typing indicator failed (non-critical):', typingError);
-        }
+        // Show typing indicator (handles 400 gracefully)
+        await typing(phoneNumber);
         
-        // Process message with the trading agent
+        // Check for XAU/GOLD symbol detection
         let response: string;
-        try {
-          response = await runAgent(userMessage);
-        } catch (agentError) {
-          console.error('Agent processing error:', agentError);
-          response = 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.';
+        if (detectGoldSymbol(userMessage)) {
+          // Fetch XAU/USD price directly
+          try {
+            const { fetchLatestPrice } = await import('../../../src/tools/price');
+            const priceResult = await fetchLatestPrice('XAU/USD');
+            
+            if (priceResult.ok) {
+              const { symbol, price, note, utcTime } = priceResult.data;
+              response = `Time (UTC): ${utcTime}\nSymbol: ${symbol}\nPrice: ${price}\nSource: ${note}`;
+            } else {
+              response = 'عذراً، لا يمكن الحصول على سعر الذهب حالياً.';
+            }
+          } catch (priceError) {
+            console.error('Price fetch error:', priceError);
+            response = 'عذراً، حدث خطأ في جلب سعر الذهب.';
+          }
+        } else {
+          // Process message with the trading agent
+          try {
+            response = await runAgent(userMessage);
+          } catch (agentError) {
+            console.error('Agent processing error:', agentError);
+            response = 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.';
+          }
         }
         
         // Send response
-        await wabaText(phoneNumber, response);
-        
-        // Hide typing indicator (with error handling)
-        try {
-          await wabaTyping(phoneNumber, false);
-        } catch (typingError) {
-          console.warn('Typing indicator off failed (non-critical):', typingError);
-        }
+        await sendText(phoneNumber, response);
         
         console.log(`Response sent to ${phoneNumber}: ${response.substring(0, 100)}...`);
         
@@ -176,7 +171,7 @@ export async function POST(req: Request) {
         
         // Send error message to user
         try {
-          await wabaText(phoneNumber, 'عذراً، حدث خطأ في النظام. يرجى المحاولة لاحقاً.');
+          await sendText(phoneNumber, 'عذراً، حدث خطأ في النظام. يرجى المحاولة لاحقاً.');
         } catch (sendError) {
           console.error('Failed to send error message:', sendError);
         }
