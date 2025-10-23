@@ -1,4 +1,4 @@
-// pages/index.js
+// src/pages/index.js
 export default function Home() {
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
@@ -12,14 +12,6 @@ export default function Home() {
       <ul>
         <li><strong>GET /api/webhook</strong> - Webhook verification endpoint for WhatsApp Business API</li>
         <li><strong>POST /api/webhook</strong> - Main webhook endpoint for receiving and processing WhatsApp messages</li>
-      </ul>
-      
-      <h2>Features</h2>
-      <ul>
-        <li>Real-time crypto price tracking</li>
-        <li>Technical analysis signals</li>
-        <li>OpenAI Agent integration for natural language processing</li>
-        <li>Arabic language support</li>
       </ul>
       
       <h2>Test Webhook Verification</h2>
