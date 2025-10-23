@@ -22,11 +22,15 @@ export async function resolveQuote(
   // Extract or use provided timeframe
   const timeframe = opts?.timeframe || extractTimeframeFromText(userText) || '1min';
   
-  console.log('[PRICE] Resolving quote:', { symbol, timeframe });
+  // Ensure timeframe is valid
+  const validTimeframes = ['1min', '5min', '15min', '30min', '1hour', '4hour', 'daily'] as const;
+  const validTimeframe = validTimeframes.includes(timeframe as any) ? timeframe as any : '1min';
+  
+  console.log('[PRICE] Resolving quote:', { symbol, timeframe: validTimeframe });
   
   let result: any;
   
-  if (timeframe === '1min') {
+  if (validTimeframe === '1min') {
     // Use FCS for live/1min data
     result = await getFcsLiveOr1m(symbol);
     
@@ -53,14 +57,14 @@ SIGNAL: NEUTRAL`,
   } else {
     // Use FMP for specific timeframes
     try {
-      const ohlcData = await getFmpOhlc(symbol, timeframe);
+      const ohlcData = await getFmpOhlc(symbol, validTimeframe);
       const { candles, last } = ohlcData;
       
       if (candles.length < 50) {
         return {
           block: `Time (UTC): ${new Date(last.timeUtc).toISOString().slice(11, 16)}
 Symbol: ${symbol}
-Interval: ${timeframe}
+Interval: ${validTimeframe}
 Last closed: ${last.timeUtc.replace(/[-:]/g, '').replace('T', '_')} UTC
 Close: ${last.close}
 Prev: ${last.prev}
@@ -99,7 +103,7 @@ SIGNAL: NEUTRAL`,
       
       let block = `Time (UTC): ${timeUtc}
 Symbol: ${symbol}
-Interval: ${timeframe}
+Interval: ${validTimeframe}
 Last closed: ${dateUtc} UTC
 Close: ${last.close}
 Prev: ${last.prev}
