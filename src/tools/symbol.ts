@@ -56,9 +56,10 @@ export function parseIntent(text: string): {
   else if (/\b(4 ?hour|4h|4 ساعات|٤ ساعات)\b/.test(t)) tf='4hour';
   else if (/\b(daily|يومي)\b/.test(t)) tf='daily';
 
-  // price intent
-  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع)\b/.test(t);
-  const wantsPrice = Boolean(symbol && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc/u.test(t)));
+  // price intent - more comprehensive detection
+  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade)\b/.test(t);
+  const hasSymbolInText = Boolean(symbol);
+  const wantsPrice = hasSymbolInText && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc|ذهب|فضة|دهب/u.test(t));
 
   return { symbol, timeframe: tf, wantsPrice };
 }

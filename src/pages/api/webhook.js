@@ -11,7 +11,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
 const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID || '';
-const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'false').toLowerCase() === 'true'; // Default to false
+const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true
 const OPENAI_PROJECT = process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT;
 
 // Debug environment variables
@@ -60,7 +60,9 @@ async function runConversational(text) {
 
 عند وجود رمز/سعر/إطار زمني واضح: أعطِ كتلة السعر فقط وفق التنسيق المطلوب.
 
-عند الإهانة: لا تكرر الألفاظ، رد باحترام وباختصار ثم عد للطلب.`;
+عند الإهانة: لا تكرر الألفاظ، رد باحترام وباختصار ثم عد للطلب.
+
+عند السؤال عن "مين هي ليرات" أو "وين مواقهم" أو "شو بيعملو": استخدم الملف المرفق "about liirat" للإجابة بدقة.`;
   
   const r = await client.chat.completions.create({
     model: 'gpt-4o-mini',
