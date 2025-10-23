@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-webhook",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Serverless WhatsApp webhook with crypto price/signal commands and OpenAI Agent fallback",
   "scripts": {
     "dev": "next dev",
