@@ -2,7 +2,16 @@
 import axios from "axios";
 import { toFcsSymbol, toFcsPeriod } from "./price";
 
-export async function getFcsCandles(symbolRaw: string, tf: string = "1h", limit = 200) {
+// Candle type definition
+type Candle = {
+  t: string | number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+};
+
+export async function getFcsCandles(symbolRaw: string, tf: string = "1h", limit = 200): Promise<Candle[]> {
   const symbol = toFcsSymbol(symbolRaw);
   const period = toFcsPeriod(tf);
   const url = `https://fcsapi.com/api-v3/forex/candle?symbol=${encodeURIComponent(symbol)}&period=${period}&access_key=${process.env.FCS_API_KEY}`;
@@ -12,7 +21,7 @@ export async function getFcsCandles(symbolRaw: string, tf: string = "1h", limit 
   if (!r || !Array.isArray(r.c) || r.c.length < 60) {
     throw new Error(`FCS candle: not enough data for ${symbol} ${period}`);
   }
-  const result = r.c.map((c: string, i: number) => ({
+  const result: Candle[] = r.c.map((c: string, i: number) => ({
     t: r.t[i],
     o: Number(r.o[i]),
     h: Number(r.h[i]),
@@ -64,8 +73,8 @@ export function makeSignal(closes: number[]) {
 }
 
 export async function getTradingSignal(symbol: string, tf: string = "1h") {
-  const rows = await getFcsCandles(symbol, tf, 200);
-  const closes = rows.map(r => r.c);
+  const rows: Candle[] = await getFcsCandles(symbol, tf, 200);
+  const closes = rows.map((r: Candle) => r.c);
   const sig = makeSignal(closes);
   const last = rows.at(-1)!;
   const prev = rows.at(-2) || last;
