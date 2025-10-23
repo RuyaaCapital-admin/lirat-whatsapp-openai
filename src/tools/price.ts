@@ -76,9 +76,17 @@ export async function getCurrentPrice(symbol: string, tf?: string) {
     const { price, time, symbol: s } = await fcsLatest(symbol);
     return { price, time, symbol: s, source: "FCS latest" };
   } catch (e) {
-    console.log('[FCS] Latest failed, trying candle fallback:', e.message);
+    // TS 4.4+: catch param is `unknown` — narrow before reading `.message`
+    const { errorToString } = await import("../utils/errorToString");
+    console.log(
+      "[FCS] Latest failed, trying candle fallback:",
+      errorToString(e)
+    );
     // fallback: candle last close (works reliably on free plans)
-    const { price, time, symbol: s, period } = await fcsLastClose(symbol, tf || "1m");
+    const { price, time, symbol: s, period } = await fcsLastClose(
+      symbol,
+      tf || "1m"
+    );
     return { price, time, symbol: s, source: `FCS ${period} candle` };
   }
 }
