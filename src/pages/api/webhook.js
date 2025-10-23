@@ -1,6 +1,6 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
-import OpenAI from 'openai';
+import { openai } from '../../lib/openai';
 import { parseIntent } from '../../tools/symbol';
 import { get_price, get_ohlc, compute_trading_signal } from '../../tools/agentTools';
 
@@ -9,40 +9,13 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
 const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 // Debug environment variables
 console.log('[ENV DEBUG] Available env vars:', {
-  OPENAI_PROJECT: OPENAI_PROJECT ? (OPENAI_PROJECT.startsWith('proj_') ? 'SET (proj_...)' : `SET (${OPENAI_PROJECT})`) : 'MISSING',
   OPENAI_WORKFLOW_ID: OPENAI_WORKFLOW_ID ? (OPENAI_WORKFLOW_ID.startsWith('wf_') ? 'SET (wf_...)' : `SET (${OPENAI_WORKFLOW_ID})`) : 'MISSING',
-  OPENAI_API_KEY: OPENAI_API_KEY ? 'SET' : 'MISSING',
   VERIFY_TOKEN: VERIFY_TOKEN ? 'SET' : 'MISSING'
 });
-
-if (!OPENAI_API_KEY) throw new Error('Missing env: OPENAI_API_KEY');
-if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
-
-// Warn if project ID doesn't look like a proper OpenAI project ID
-if (!OPENAI_PROJECT.startsWith('proj_')) {
-  console.warn('[ENV WARNING] OPENAI_PROJECT should be a proj_... ID, got:', OPENAI_PROJECT);
-}
-
-// Initialize OpenAI client with project (if valid)
-let client;
-try {
-  client = new OpenAI({
-    apiKey: OPENAI_API_KEY,
-    project: OPENAI_PROJECT,
-  });
-  console.log('[OPENAI] Client initialized with project:', OPENAI_PROJECT);
-} catch (error) {
-  console.warn('[OPENAI] Failed to initialize with project, using API key only:', error.message);
-  client = new OpenAI({
-    apiKey: OPENAI_API_KEY,
-  });
-}
 
 // System prompt for fallback
 const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص في:
@@ -59,9 +32,9 @@ const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص ف�
 async function smartReply(userText, meta = {}) {
   try {
     // Try workflow first if available
-    if (OPENAI_WORKFLOW_ID && client.workflows?.runs?.create) {
+    if (OPENAI_WORKFLOW_ID && openai.workflows?.runs?.create) {
       console.log('[WORKFLOW] Using SDK workflow method');
-      const run = await client.workflows.runs.create({
+      const run = await openai.workflows.runs.create({
         workflow_id: OPENAI_WORKFLOW_ID,
         input: userText,
         metadata: { channel: "whatsapp", ...meta }
@@ -120,7 +93,7 @@ async function smartReply(userText, meta = {}) {
   // Final fallback: Use model directly
   try {
     console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
-    const resp = await client.responses.create({
+    const resp = await openai.responses.create({
       model: "gpt-4o-mini",
       input: [
         { role: "system", content: SYSTEM_PROMPT },
@@ -136,34 +109,6 @@ async function smartReply(userText, meta = {}) {
     return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
   } catch (error) {
     console.error('[FALLBACK] Model error:', error);
-    
-    // If it's a project error, try without project
-    if (error.code === 'invalid_project' || error.message?.includes('No such project')) {
-      console.log('[FALLBACK] Project error detected, trying without project');
-      try {
-        const fallbackClient = new OpenAI({
-          apiKey: OPENAI_API_KEY,
-        });
-        
-        const resp = await fallbackClient.responses.create({
-          model: "gpt-4o-mini",
-          input: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userText }
-          ],
-        });
-        
-        const text = resp.output_text ?? 
-                    (Array.isArray(resp.output) ? 
-                      resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                      "");
-        
-        return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
-      } catch (fallbackError) {
-        console.error('[FALLBACK] Fallback client also failed:', fallbackError);
-      }
-    }
-    
     return "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.";
   }
 }

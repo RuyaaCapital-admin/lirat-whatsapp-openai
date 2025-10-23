@@ -1,14 +1,14 @@
 // src/pages/api/ping.js
 // Environment verification endpoint
+import { openai } from '../../lib/openai';
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   const envStatus = {
     OPENAI_API_KEY: Boolean(process.env.OPENAI_API_KEY),
-    OPENAI_PROJECT: Boolean(process.env.OPENAI_PROJECT),
     OPENAI_WORKFLOW_ID: Boolean(process.env.OPENAI_WORKFLOW_ID),
     WHATSAPP_TOKEN: Boolean(process.env.WHATSAPP_TOKEN),
     WHATSAPP_PHONE_NUMBER_ID: Boolean(process.env.WHATSAPP_PHONE_NUMBER_ID),
@@ -19,9 +19,6 @@ export default function handler(req, res) {
 
   // Show actual values for debugging (but mask sensitive data)
   const envValues = {
-    OPENAI_PROJECT: process.env.OPENAI_PROJECT ? 
-      (process.env.OPENAI_PROJECT.startsWith('proj_') ? 'SET (proj_...)' : `SET (${process.env.OPENAI_PROJECT})`) : 
-      'MISSING',
     OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? 
       (process.env.OPENAI_WORKFLOW_ID.startsWith('wf_') ? 'SET (wf_...)' : `SET (${process.env.OPENAI_WORKFLOW_ID})`) : 
       'MISSING',
@@ -33,11 +30,24 @@ export default function handler(req, res) {
     FMP_API_KEY: process.env.FMP_API_KEY ? 'SET' : 'MISSING'
   };
 
+  // Test OpenAI connection
+  let openaiTest = { ok: false, error: null };
+  try {
+    await openai.responses.create({ 
+      model: "gpt-4o-mini", 
+      input: [{ role: "user", content: "ping" }] 
+    });
+    openaiTest = { ok: true, error: null };
+  } catch (error) {
+    openaiTest = { ok: false, error: error.message };
+  }
+
   res.status(200).json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     environment: envStatus,
     values: envValues,
+    openaiTest,
     message: 'Environment verification endpoint'
   });
 }
