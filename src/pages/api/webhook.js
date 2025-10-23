@@ -26,6 +26,10 @@ if (!WORKFLOW_ID) throw new Error('Missing env: WORKFLOW_ID');
 import OpenAI from 'openai';
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, project: OPENAI_PROJECT });
 
+// Check if beta.workflows is available
+console.log('[DEBUG] OpenAI client beta:', client.beta);
+console.log('[DEBUG] OpenAI client beta.workflows:', client.beta?.workflows);
+
 // Workflow-only function (no model fallback)
 async function askWorkflow(userText, meta = {}) {
   if (!WORKFLOW_ID) {
@@ -37,6 +41,12 @@ async function askWorkflow(userText, meta = {}) {
   try {
     console.log('[WORKFLOW] Input:', userText);
     console.log('[WORKFLOW] Metadata:', meta);
+    
+    // Check if beta.workflows is available
+    if (!client.beta?.workflows) {
+      console.error('[WORKFLOW] beta.workflows not available in this OpenAI SDK version');
+      return "OpenAI SDK version doesn't support workflows. Please update to latest version.";
+    }
     
     // Try the workflow runs API
     const run = await client.beta.workflows.runs.create({
