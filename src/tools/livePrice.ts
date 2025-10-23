@@ -1,26 +1,66 @@
 // src/tools/livePrice.ts
 import axios from "axios";
-import { normalise } from "../symbols";
 
 export type LivePriceResponse = {
   symbol: string;
-  bid: number | null;
-  ask: number | null;
   price: number;
-  source: string;
+  bid?: number;
+  ask?: number;
   timeUtc: string;
+  source: 'FCS (live)' | 'FCS (1m)' | 'FALLBACK';
 };
 
 const UA = { "User-Agent": "Mozilla/5.0 (LiiratBot)" };
 
-function isCrypto(base: string) {
-  return base.length > 3 || ["BTC", "ETH"].includes(base.toUpperCase());
+// Symbol normalization mapping
+const SYMBOL_MAP: Record<string, string> = {
+  // Gold variations
+  'xau': 'XAU/USD',
+  'gold': 'XAU/USD',
+  'xauusd': 'XAU/USD',
+  'xau/usd': 'XAU/USD',
+  
+  // Silver variations
+  'xag': 'XAG/USD',
+  'silver': 'XAG/USD',
+  'xagusd': 'XAG/USD',
+  'xag/usd': 'XAG/USD',
+  
+  // Forex pairs
+  'eurusd': 'EUR/USD',
+  'eur/usd': 'EUR/USD',
+  'gbpusd': 'GBP/USD',
+  'gbp/usd': 'GBP/USD',
+  'usdjpy': 'USD/JPY',
+  'usd/jpy': 'USD/JPY',
+  'usdchf': 'USD/CHF',
+  'usd/chf': 'USD/CHF',
+  'audusd': 'AUD/USD',
+  'aud/usd': 'AUD/USD',
+  'usdcad': 'USD/CAD',
+  'usd/cad': 'USD/CAD',
+  'nzdusd': 'NZD/USD',
+  'nzd/usd': 'NZD/USD',
+  
+  // Crypto (no slash)
+  'btcusdt': 'BTCUSDT',
+  'btc': 'BTCUSDT',
+  'ethusdt': 'ETHUSDT',
+  'eth': 'ETHUSDT',
+};
+
+function normalizeSymbol(symbolInput: string): string {
+  const normalized = symbolInput.toLowerCase().trim();
+  return SYMBOL_MAP[normalized] || symbolInput.toUpperCase();
 }
 
-export function hasPriceIntent(text: string): boolean {
-  const priceKeywords = ['price', 'سعر', 'gold', 'silver', 'oil', 'btc', 'eth', 'eur', 'gbp', 'jpy', 'chf', 'cad', 'aud', 'nzd', 'xau', 'xag'];
-  const lowerText = text.toLowerCase();
-  return priceKeywords.some(keyword => lowerText.includes(keyword));
+function isCrypto(symbol: string): boolean {
+  return symbol.includes('BTC') || symbol.includes('ETH') || symbol.length > 6;
+}
+
+function isStale(timestamp: number): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  return (now - timestamp) > 120; // 2 minutes
 }
 
 export async function getLivePrice(symbolInput: string): Promise<LivePriceResponse | null> {
@@ -31,75 +71,105 @@ export async function getLivePrice(symbolInput: string): Promise<LivePriceRespon
       return null;
     }
 
-    const { pricePair } = normalise(symbolInput);
-    if (!pricePair.includes("/")) {
-      console.error('[PRICE] symbol_missing_slash');
-      return null;
-    }
-    
-    const [base, quote] = pricePair.split("/");
-    if (!base || !quote) {
-      console.error('[PRICE] symbol_invalid');
-      return null;
-    }
+    const symbol = normalizeSymbol(symbolInput);
+    console.log('[PRICE] Normalized symbol:', symbolInput, '→', symbol);
 
-    const endpoint = isCrypto(base)
-      ? `https://fcsapi.com/api-v3/crypto/latest?symbol=${encodeURIComponent(`${base}/${quote}`)}&access_key=${FCS_API_KEY}`
-      : `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(pricePair)}&access_key=${FCS_API_KEY}`;
+    // Try latest endpoint first
+    const latestEndpoint = isCrypto(symbol)
+      ? `https://fcsapi.com/api-v3/crypto/latest?symbol=${encodeURIComponent(symbol)}&access_key=${FCS_API_KEY}`
+      : `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(symbol)}&access_key=${FCS_API_KEY}`;
 
-    const { data } = await axios.get(endpoint, { headers: UA });
-    const row = data?.response?.[0] || data?.data?.[0];
-    
-    if (!row) {
-      console.error('[PRICE] price_not_found');
-      return null;
-    }
+    try {
+      const { data } = await axios.get(latestEndpoint, { headers: UA });
+      const row = data?.response?.[0] || data?.data?.[0];
+      
+      if (row) {
+        let price: number | null = null;
+        let bid: number | undefined;
+        let ask: number | undefined;
+        
+        // Try different price fields
+        if (row.price && Number.isFinite(Number(row.price))) {
+          price = Number(row.price);
+        } else if (row.bid && Number.isFinite(Number(row.bid))) {
+          price = Number(row.bid);
+          bid = price;
+        } else if (row.ask && Number.isFinite(Number(row.ask))) {
+          price = Number(row.ask);
+          ask = price;
+        } else if (row.c && Number.isFinite(Number(row.c))) {
+          price = Number(row.c);
+        }
 
-    let bid: number | null = null;
-    let ask: number | null = null;
-    let price: number | null = null;
-    let usedField = '';
+        if (price !== null) {
+          const timestamp = row.t ? Number(row.t) : Math.floor(Date.now() / 1000);
+          const timeUtc = new Date(timestamp * 1000).toISOString().slice(11, 16);
+          
+          // Check if data is stale
+          if (isStale(timestamp)) {
+            console.log('[PRICE] Latest data is stale, trying 1m candles...');
+            return await tryOneMinuteCandles(symbol, FCS_API_KEY);
+          }
 
-    if (row.bid && Number.isFinite(Number(row.bid))) {
-      bid = Number(row.bid);
-      price = bid;
-      usedField = 'bid';
-    }
-    if (row.ask && Number.isFinite(Number(row.ask))) {
-      ask = Number(row.ask);
-      if (price === null) {
-        price = ask;
-        usedField = 'ask';
+          // Extract bid/ask if available
+          if (row.bid && Number.isFinite(Number(row.bid))) {
+            bid = Number(row.bid);
+          }
+          if (row.ask && Number.isFinite(Number(row.ask))) {
+            ask = Number(row.ask);
+          }
+
+          return {
+            symbol,
+            price,
+            bid,
+            ask,
+            timeUtc,
+            source: 'FCS (live)'
+          };
+        }
       }
-    }
-    if (price === null && row.price && Number.isFinite(Number(row.price))) {
-      price = Number(row.price);
-      usedField = 'price';
-    }
-    if (price === null && row.c && Number.isFinite(Number(row.c))) {
-      price = Number(row.c);
-      usedField = 'close';
+    } catch (error) {
+      console.log('[PRICE] Latest endpoint failed, trying 1m candles...');
     }
 
-    if (price === null) {
-      console.error('[PRICE] price_invalid');
-      return null;
-    }
+    // Fallback to 1-minute candles
+    return await tryOneMinuteCandles(symbol, FCS_API_KEY);
 
-    const ts = row.t ? Number(row.t) : Math.floor(Date.now() / 1000);
-    const utcTime = new Date(ts * 1000).toISOString().slice(11, 16);
-
-    return {
-      symbol: pricePair,
-      bid,
-      ask,
-      price,
-      source: `FCS (${usedField})`,
-      timeUtc: utcTime
-    };
   } catch (err: any) {
-    const code = err?.response?.status;
-    console.error(`[PRICE] price_fetch_failed${code ? `_${code}` : ""}`);
+    console.error('[PRICE] Error fetching price:', err.message);
     return null;
   }
+}
+
+async function tryOneMinuteCandles(symbol: string, apiKey: string): Promise<LivePriceResponse | null> {
+  try {
+    const candlesEndpoint = isCrypto(symbol)
+      ? `https://fcsapi.com/api-v3/crypto/ohlc?symbol=${encodeURIComponent(symbol)}&period=1m&limit=1&access_key=${apiKey}`
+      : `https://fcsapi.com/api-v3/forex/ohlc?symbol=${encodeURIComponent(symbol)}&period=1m&limit=1&access_key=${apiKey}`;
+
+    const { data } = await axios.get(candlesEndpoint, { headers: UA });
+    const candles = data?.response || data?.data;
+    
+    if (candles && candles.length > 0) {
+      const candle = candles[0];
+      const price = candle.c ? Number(candle.c) : null;
+      
+      if (price !== null) {
+        const timestamp = candle.t ? Number(candle.t) : Math.floor(Date.now() / 1000);
+        const timeUtc = new Date(timestamp * 1000).toISOString().slice(11, 16);
+        
+        return {
+          symbol,
+          price,
+          timeUtc,
+          source: 'FCS (1m)'
+        };
+      }
+    }
+  } catch (error) {
+    console.error('[PRICE] 1m candles failed:', error);
+  }
+
+  return null;
 }
