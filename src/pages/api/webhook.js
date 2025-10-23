@@ -35,25 +35,34 @@ async function askWorkflow(userText, meta = {}) {
   console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
   
   try {
-    // Use the correct workflow runs API
+    console.log('[WORKFLOW] Input:', userText);
+    console.log('[WORKFLOW] Metadata:', meta);
+    
+    // Try the workflow runs API
     const run = await client.beta.workflows.runs.create({
       workflow_id: WORKFLOW_ID,
       input: userText,
       metadata: { channel: "whatsapp", ...meta },
     });
 
+    console.log('[WORKFLOW] Run created:', run.id, 'Status:', run.status);
+
     // Wait for completion
     let result = await client.beta.workflows.runs.retrieve(run.id);
+    console.log('[WORKFLOW] Initial result:', result.status);
     
     // Poll until completion (with timeout)
     let attempts = 0;
     const maxAttempts = 30; // 30 seconds max
     
     while (result.status === 'in_progress' && attempts < maxAttempts) {
+      console.log('[WORKFLOW] Polling attempt:', attempts + 1, 'Status:', result.status);
       await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
       result = await client.beta.workflows.runs.retrieve(run.id);
       attempts++;
     }
+
+    console.log('[WORKFLOW] Final result:', result.status, 'Output:', result.output);
 
     if (result.status === 'completed') {
       // Extract text from the result
@@ -61,14 +70,18 @@ async function askWorkflow(userText, meta = {}) {
                   (Array.isArray(result.output) ? 
                     result.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                     "");
+      console.log('[WORKFLOW] Extracted text:', text);
       return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
     } else {
       console.error('[WORKFLOW] Run failed:', result.status, result.error);
-      return "عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.";
+      return `Workflow failed with status: ${result.status}. Error: ${JSON.stringify(result.error)}`;
     }
   } catch (error) {
-    console.error('[WORKFLOW] Error:', error.message);
-    return "عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.";
+    console.error('[WORKFLOW] Full error:', error);
+    console.error('[WORKFLOW] Error message:', error.message);
+    console.error('[WORKFLOW] Error status:', error.status);
+    console.error('[WORKFLOW] Error code:', error.code);
+    return `Workflow error: ${error.message} (Status: ${error.status}, Code: ${error.code})`;
   }
 }
 
