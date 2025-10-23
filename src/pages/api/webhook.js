@@ -9,29 +9,32 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
-const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || '';
-const USE_WORKFLOW = (process.env.USE_WORKFLOW || '').toLowerCase() === 'true';
-const AGENT_ID = process.env.AGENT_ID || '';
+const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID || '';
+const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true since we have workflow
 const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
 
 if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
-if (!AGENT_ID && !(USE_WORKFLOW && WORKFLOW_ID)) {
-  console.warn('[CFG] Neither AGENT_ID nor WORKFLOW_ID active; will use plain model');
+if (!WORKFLOW_ID) {
+  console.warn('[CFG] No WORKFLOW_ID set; will use plain model');
 }
 
 // create OpenAI client once
 import OpenAI from 'openai';
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, project: OPENAI_PROJECT });
 
-// Conversational fallback (no workflow)
+// Conversational function using workflow
 async function runConversational(text) {
-  // Prefer Agent if set
-  if (AGENT_ID) {
+  // Use Workflow if available
+  if (WORKFLOW_ID && USE_WORKFLOW) {
     try {
-      const r = await client.responses.create({ agent: AGENT_ID, input: text });
+      console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
+      const r = await client.responses.create({ 
+        workflow: { id: WORKFLOW_ID }, 
+        input: text 
+      });
       return r.output_text || 'تم.';
     } catch (error) {
-      console.warn('[AGENT] Agent failed, using model fallback:', error.message);
+      console.warn('[WORKFLOW] Workflow failed, using model fallback:', error.message);
     }
   }
   
@@ -174,22 +177,7 @@ export default async function handler(req, res) {
           } else {
             // Use conversational agent for non-price requests
             console.log('[WABA] agent intent detected');
-            let answer;
-            try {
-              // if you really want workflow later, guard it:
-              if (USE_WORKFLOW && WORKFLOW_ID) {
-                // TODO: only re-enable after you align input schema with the workflow
-                // const r = await client.responses.create({ workflow: { id: WORKFLOW_ID }, input: { text } });
-                // answer = r.output_text;
-                throw new Error('Workflow disabled until schema aligned');
-              } else {
-                answer = await runConversational(message.text);
-              }
-            } catch (e) {
-              console.error('[AGENT] error', e?.message || e);
-              // final safety fallback
-              answer = 'عذرًا، حدث خطأ أثناء معالجة طلبك. هل يمكن إعادة الصياغة؟';
-            }
+            const answer = await runConversational(message.text);
             responseText = answer;
             console.log('[WABA] agent');
             console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });

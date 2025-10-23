@@ -12,10 +12,9 @@ Set these in your Vercel dashboard under Settings → Environment Variables:
 
 ### OpenAI Configuration
 - `OPENAI_API_KEY` - Your OpenAI API key
-- `OPENAI_PROJECT` - Your OpenAI project ID (required)
-- `AGENT_ID` - Your OpenAI Agent ID (from Agent Builder) - **RECOMMENDED**
-- `OPENAI_WORKFLOW_ID` - Your OpenAI Workflow ID (optional, disabled by default)
-- `USE_WORKFLOW` - Set to "true" to enable workflow (default: false)
+- `OPENAI_PROJECT` - Your OpenAI project ID (required) - **Get from OpenAI Platform**
+- `OPENAI_WORKFLOW_ID` - Your Workflow ID from Agent Builder (recommended) - **Get from Agent Builder "Get code" modal**
+- `USE_WORKFLOW` - Set to "true" to enable workflow (default: true)
 
 ### Price Data
 - `FCS_API_KEY` - FCS API key for live price data
