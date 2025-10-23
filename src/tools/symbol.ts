@@ -1,165 +1,64 @@
 // src/tools/symbol.ts
-export type Canonical = 'XAUUSD' | 'XAGUSD' | 'EURUSD' | 'GBPUSD' | 'USDJPY' | 'USDCHF' | 'AUDUSD' | 'USDCAD' | 'NZDUSD' | 'BTCUSDT' | 'ETHUSDT' | string;
+export type Canonical = 'XAUUSD'|'XAGUSD'|'EURUSD'|'GBPUSD'|'BTCUSDT'|string;
 
-// Symbol mapping for common variants
-const SYMBOL_MAP: Record<string, Canonical> = {
-  // Gold variations
-  'xau': 'XAUUSD',
-  'gold': 'XAUUSD',
-  'xauusd': 'XAUUSD',
-  'xau/usd': 'XAUUSD',
-  'ذهب': 'XAUUSD',
-  'الذهب': 'XAUUSD',
-  'دهب': 'XAUUSD',
-  
-  // Silver variations
-  'xag': 'XAGUSD',
-  'silver': 'XAGUSD',
-  'xagusd': 'XAGUSD',
-  'xag/usd': 'XAGUSD',
-  'فضة': 'XAGUSD',
-  'الفضة': 'XAGUSD',
-  
-  // Forex pairs
-  'eurusd': 'EURUSD',
-  'eur/usd': 'EURUSD',
-  'يورو': 'EURUSD',
-  
-  'gbpusd': 'GBPUSD',
-  'gbp/usd': 'GBPUSD',
-  'جنيه': 'GBPUSD',
-  'جنيه استرليني': 'GBPUSD',
-  
-  'usdjpy': 'USDJPY',
-  'usd/jpy': 'USDJPY',
-  'ين': 'USDJPY',
-  'ين ياباني': 'USDJPY',
-  
-  'usdchf': 'USDCHF',
-  'usd/chf': 'USDCHF',
-  'فرنك': 'USDCHF',
-  'فرنك سويسري': 'USDCHF',
-  
-  'audusd': 'AUDUSD',
-  'aud/usd': 'AUDUSD',
-  'دولار أسترالي': 'AUDUSD',
-  
-  'usdcad': 'USDCAD',
-  'usd/cad': 'USDCAD',
-  'دولار كندي': 'USDCAD',
-  
-  'nzdusd': 'NZDUSD',
-  'nzd/usd': 'NZDUSD',
-  'دولار نيوزلندي': 'NZDUSD',
-  
-  // Crypto
-  'btcusdt': 'BTCUSDT',
-  'btc': 'BTCUSDT',
-  'بيتكوين': 'BTCUSDT',
-  
-  'ethusdt': 'ETHUSDT',
-  'eth': 'ETHUSDT',
-  'إيثيريوم': 'ETHUSDT',
+const MAP: Record<string, Canonical> = {
+  // gold
+  'ذهب':'XAUUSD','الذهب':'XAUUSD','دهب':'XAUUSD','الدهب':'XAUUSD',
+  // silver
+  'فضة':'XAGUSD','الفضة':'XAGUSD',
+  // fx
+  'يورو دولار':'EURUSD','اليورو دولار':'EURUSD',
+  'باوند دولار':'GBPUSD','الجنيه دولار':'GBPUSD','الباوند دولار':'GBPUSD',
+  // crypto
+  'بتكوين':'BTCUSDT','بيتكوين':'BTCUSDT','btc':'BTCUSDT'
 };
 
-// Convert input to canonical symbol
-export function toCanonical(input: string): Canonical {
-  const normalized = input.toLowerCase().trim();
-  return SYMBOL_MAP[normalized] || input.toUpperCase();
-}
+const ALIASES: Record<string, Canonical> = {
+  'xau':'XAUUSD','xauusd':'XAUUSD','xau/usd':'XAUUSD',
+  'xag':'XAGUSD','xagusd':'XAGUSD','xag/usd':'XAGUSD',
+  'eurusd':'EURUSD','eur/usd':'EURUSD',
+  'gbpusd':'GBPUSD','gbp/usd':'GBPUSD',
+  'btcusdt':'BTCUSDT','btc/usdt':'BTCUSDT'
+};
 
-// FCS requires slash form: "XAUUSD" -> "XAU/USD"
-export function toFcsSymbol(c: Canonical): string {
-  if (c.includes('BTC') || c.includes('ETH')) {
-    return c; // Crypto stays as-is
-  }
-  
-  // Forex/metals get slash
-  if (c.length === 6) {
-    return `${c.slice(0, 3)}/${c.slice(3)}`;
-  }
-  
-  return c;
+export function toCanonical(s: string): Canonical|undefined {
+  const t = s.trim().toLowerCase();
+  return ALIASES[t] ?? MAP[t];
 }
+export const toFcsSymbol = (c: Canonical) =>
+  c.includes('/') ? c.toUpperCase() : `${c.slice(0,3)}/${c.slice(3)}`.toUpperCase();
+export const toFmpSymbol = (c: Canonical) => c.replace('/','').toUpperCase();
 
-// FMP requires no slash: already canonical "XAUUSD"
-export function toFmpSymbol(c: Canonical): string {
-  return c;
-}
+export function parseIntent(text: string): {
+  symbol?: Canonical,
+  timeframe?: '1min'|'5min'|'15min'|'30min'|'1hour'|'4hour'|'daily',
+  wantsPrice: boolean
+} {
+  const t = text.toLowerCase().replace(/\s+/g,' ').trim();
 
-// Extract symbol from user text
-export function extractSymbolFromText(text: string): Canonical | null {
-  const words = text.toLowerCase().split(/\s+/);
-  
-  // Check for exact matches first
-  for (const word of words) {
-    if (SYMBOL_MAP[word]) {
-      return SYMBOL_MAP[word];
-    }
+  // candidate n-grams
+  const toks = t.split(' ');
+  let symbol: Canonical|undefined;
+  for (let i=0;i<toks.length;i++){
+    const uni = toks[i];
+    const bi  = i+1<toks.length ? `${toks[i]} ${toks[i+1]}` : '';
+    symbol = toCanonical(bi) || toCanonical(uni) || symbol;
+    if (symbol) break;
   }
-  
-  // Check for symbol patterns
-  for (const word of words) {
-    if (word.match(/^[a-z]{3,6}$/)) {
-      const canonical = toCanonical(word);
-      if (canonical !== word.toUpperCase()) {
-        return canonical;
-      }
-    }
-  }
-  
-  return null;
-}
 
-// Extract timeframe from user text
-export function extractTimeframeFromText(text: string): string | null {
-  const lowerText = text.toLowerCase();
-  
-  // Arabic timeframes
-  if (lowerText.includes('دقيقة') || lowerText.includes('1 دقيقة') || lowerText.includes('عالدفعة')) {
-    return '1min';
-  }
-  if (lowerText.includes('5 دقائق') || lowerText.includes('خمس دقائق')) {
-    return '5min';
-  }
-  if (lowerText.includes('ربع') || lowerText.includes('15 دقيقة') || lowerText.includes('عالربع')) {
-    return '15min';
-  }
-  if (lowerText.includes('30 دقيقة')) {
-    return '30min';
-  }
-  if (lowerText.includes('ساعة') || lowerText.includes('عالساعة')) {
-    return '1hour';
-  }
-  if (lowerText.includes('4 ساعات') || lowerText.includes('عالـ4')) {
-    return '4hour';
-  }
-  if (lowerText.includes('يوم') || lowerText.includes('يومي')) {
-    return 'daily';
-  }
-  
-  // English timeframes
-  if (lowerText.includes('1min') || lowerText.includes('1 min')) {
-    return '1min';
-  }
-  if (lowerText.includes('5min') || lowerText.includes('5 min')) {
-    return '5min';
-  }
-  if (lowerText.includes('15min') || lowerText.includes('15 min')) {
-    return '15min';
-  }
-  if (lowerText.includes('30min') || lowerText.includes('30 min')) {
-    return '30min';
-  }
-  if (lowerText.includes('1hour') || lowerText.includes('1 hour') || lowerText.includes('1h')) {
-    return '1hour';
-  }
-  if (lowerText.includes('4hour') || lowerText.includes('4 hour') || lowerText.includes('4h')) {
-    return '4hour';
-  }
-  if (lowerText.includes('daily') || lowerText.includes('1d')) {
-    return 'daily';
-  }
-  
-  return null;
+  // Arabic + EN timeframe
+  let tf: any;
+  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه)\b/.test(t)) tf='1min';
+  else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق)\b/.test(t)) tf='5min';
+  else if (/\b(15 ?min|15m|١٥ دقيقة|15 دقيقة)\b/.test(t)) tf='15min';
+  else if (/\b(30 ?min|30m|٣٠ دقيقة|30 دقيقة)\b/.test(t)) tf='30min';
+  else if (/\b(1 ?hour|1h|ساعة|ساعه)\b/.test(t)) tf='1hour';
+  else if (/\b(4 ?hour|4h|4 ساعات|٤ ساعات)\b/.test(t)) tf='4hour';
+  else if (/\b(daily|يومي)\b/.test(t)) tf='daily';
+
+  // price intent
+  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع)\b/.test(t);
+  const wantsPrice = Boolean(symbol && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc/u.test(t)));
+
+  return { symbol, timeframe: tf, wantsPrice };
 }

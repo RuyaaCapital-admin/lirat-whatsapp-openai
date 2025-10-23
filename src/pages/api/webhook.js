@@ -1,7 +1,7 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
 import { resolveQuote } from '../../tools/livePrice';
-import { extractSymbolFromText } from '../../tools/symbol';
+import { parseIntent } from '../../tools/symbol';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -52,10 +52,15 @@ async function runConversational(text) {
   }
   
   // Plain model fallback (conversational, bilingual)
-  const sys = `أنت مساعد محادثي لِـ Lirat: افهم نية المستخدم (سعر/رمز/تداول أو أسئلة عامة عن Lirat).
-- إذا كان السؤال عن رمز أو تداول، لا تكتب كود؛ فقط اطلب الرمز/الإطار الزمني أو استخدم البيانات المتاحة.
-- إذا كان سؤالًا عامًا، أجب بإيجاز ووضوح بالعربية.
-- كن محادثي وودود، لا آلي.`;
+  const sys = `أنت 'Līrat Assistant' مساعد محادثي لعلامة Lirat.
+
+ممنوع اختراع عملة أو منتج اسمه "Lirat coin".
+
+عند أي سؤال تعريفي عن Lirat: استخدم مصدر المعرفة الداخلي (About Lirat knowledge) أولاً، ثم لخّص للمستخدم.
+
+عند وجود رمز/سعر/إطار زمني واضح: أعطِ كتلة السعر فقط وفق التنسيق المطلوب.
+
+عند الإهانة: لا تكرر الألفاظ، رد باحترام وباختصار ثم عد للطلب.`;
   
   const r = await client.chat.completions.create({
     model: 'gpt-4o-mini',
@@ -97,21 +102,12 @@ function extractMessage(payload) {
   return null;
 }
 
-// Detect price intent - must have symbol AND price keyword
-function hasPriceIntent(text) {
-  const symbol = extractSymbolFromText(text);
-  if (!symbol) return false;
-  
-  const priceKeywords = [
-    'price', 'سعر', 'quote', 'buy', 'sell', 'شراء', 'بيع', 'آخر سعر', 'current price'
-  ];
-  const lowerText = text.toLowerCase();
-  
-  // Check if it's a bare symbol (e.g., "xau", "eurusd")
-  const words = text.toLowerCase().split(/\s+/);
-  const isBareSymbol = words.length === 1 && symbol !== words[0].toUpperCase();
-  
-  return isBareSymbol || priceKeywords.some(keyword => lowerText.includes(keyword));
+// Polite guardrail for insults
+function polite(reply, userText) {
+  if (/[^\w](حمار|غبي|يا حيوان|fuck|idiot)/i.test(userText)) {
+    return 'أنا هنا للمساعدة. دعنا نركّز على سؤالك لنقدّم لك أفضل إجابة.';
+  }
+  return reply;
 }
 
 export default async function handler(req, res) {
@@ -170,36 +166,29 @@ export default async function handler(req, res) {
       // Process message
       if (message.text.trim()) {
         try {
-          let responseText = '';
+          const text = message.text.trim();
+          const intent = parseIntent(text);
 
-          // Check if it's a price intent
-          if (hasPriceIntent(message.text)) {
+          if (intent.wantsPrice) {
             console.log('[WABA] price intent detected');
-            
             try {
-              const result = await resolveQuote(message.text);
-              responseText = result.block;
-              console.log('[WABA] price', { symbol: result.canonical, intent: result.intent });
+              const { block } = await resolveQuote(text, { timeframe: intent.timeframe });
+              await sendText(message.from, block);
+              console.log('[WABA] price', { symbol: intent.symbol, timeframe: intent.timeframe });
               console.log('[WABA] reply sent', { to: message.from, kind: 'price' });
-            } catch (error) {
-              if (error.message === 'no data on this timeframe') {
-                responseText = 'no data on this timeframe';
-              } else {
-                console.error('[WABA] Price resolution failed:', error.message);
-                responseText = 'عذراً، لم أتمكن من الحصول على السعر حالياً. يرجى المحاولة مرة أخرى.';
-              }
+            } catch (e) {
+              console.error('[PRICE] failed', e?.message);
+              await sendText(message.from, 'no data on this timeframe');
             }
           } else {
             // Use conversational agent for non-price requests
             console.log('[WABA] agent intent detected');
-            const answer = await runConversational(message.text);
-            responseText = answer;
+            const answer = await runConversational(text);
+            const politeAnswer = polite(answer, text);
+            await sendText(message.from, politeAnswer);
             console.log('[WABA] agent');
             console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });
           }
-
-          // Send response
-          await sendText(message.from, responseText);
         } catch (error) {
           console.error('[WABA] Processing error:', error);
           await sendText(message.from, 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.');
