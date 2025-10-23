@@ -28,38 +28,62 @@ export async function callWorkflow(userText, meta = {}) {
     console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
     console.log('[WORKFLOW] Input:', userText);
     
-    // Direct HTTP call to Agent Builder workflow API
-    const response = await fetch('https://api.openai.com/v1/workflows/runs', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Project': OPENAI_PROJECT_ID,
-      },
-      body: JSON.stringify({
-        workflow_id: WORKFLOW_ID,
-        input: userText,
-        metadata: { channel: "whatsapp", ...meta }
-      })
-    });
+    // Try multiple possible endpoints
+    const endpoints = [
+      'https://api.openai.com/v1/beta/workflows/runs',
+      'https://api.openai.com/v1/responses',
+      'https://api.openai.com/v1/beta/responses'
+    ];
+    
+    let lastError;
+    
+    for (const endpoint of endpoints) {
+      try {
+        console.log('[WORKFLOW] Trying endpoint:', endpoint);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+            'OpenAI-Project': OPENAI_PROJECT_ID,
+          },
+          body: JSON.stringify({
+            workflow_id: WORKFLOW_ID,
+            input: userText,
+            metadata: { channel: "whatsapp", ...meta }
+          })
+        });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[WORKFLOW] HTTP Error:', response.status, errorText);
-      throw new Error(`HTTP ${response.status}: ${errorText}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.log('[WORKFLOW] Endpoint failed:', endpoint, response.status, errorText);
+          lastError = new Error(`HTTP ${response.status}: ${errorText}`);
+          continue; // Try next endpoint
+        }
+
+        const result = await response.json();
+        console.log('[WORKFLOW] Success with endpoint:', endpoint);
+        console.log('[WORKFLOW] Result:', result);
+        
+        // Extract text from the result
+        const text = result?.output_text || 
+                    result?.output?.text || 
+                    result?.text || 
+                    result?.content || 
+                    "";
+        
+        return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+        
+      } catch (error) {
+        console.log('[WORKFLOW] Endpoint error:', endpoint, error.message);
+        lastError = error;
+        continue; // Try next endpoint
+      }
     }
-
-    const result = await response.json();
-    console.log('[WORKFLOW] Result:', result);
     
-    // Extract text from the result
-    const text = result?.output_text || 
-                result?.output?.text || 
-                result?.text || 
-                result?.content || 
-                "";
-    
-    return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+    // If all endpoints failed, throw the last error
+    throw lastError || new Error('All endpoints failed');
   } catch (error) {
     console.error('[WORKFLOW] Error:', error);
     return `Workflow error: ${error.message}`;
