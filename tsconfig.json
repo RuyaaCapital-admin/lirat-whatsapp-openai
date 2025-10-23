@@ -26,9 +26,10 @@
     ]
   },
   "include": [
-    "pages/**/*.ts",
-    "pages/**/*.tsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
     "lib/**/*.ts",
+    "src/**/*.ts",
     "tests/**/*.ts",
     ".next/types/**/*.ts"
   ],
