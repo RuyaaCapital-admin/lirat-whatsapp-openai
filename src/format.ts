@@ -1,6 +1,5 @@
-import { PriceResponse } from "./tools/price";
-import type { Candle, TF } from "./signal";
-import type { computeSignal } from "./signal";
+import { PriceResponse } from "./tools/price.js";
+import type { Candle, TF, SignalResult } from "./signal.js";
 
 export function formatTimeUTC(ts: number) {
   return new Date(ts * 1000).toISOString().slice(11, 16);
@@ -23,8 +22,6 @@ export function formatPriceBlock(data: PriceResponse) {
   ].join("\n");
 }
 
-type SignalResult = ReturnType<typeof computeSignal>;
-
 export function formatSignalBlock(args: {
   symbol: string;
   interval: TF;
@@ -35,20 +32,34 @@ export function formatSignalBlock(args: {
   const last = candles.at(-1)!;
   const lastIso = new Date(last.t * 1000).toISOString();
   const stamp = `${lastIso.slice(0, 10).replace(/-/g, "")}_${lastIso.slice(11, 16)} UTC`;
-  const lines = [
+  const headerLines = [
     `Time (UTC): ${formatTimeUTC(last.t)}`,
     `Symbol: ${symbol}`,
     `Interval: ${interval}`,
     `Last closed: ${stamp}`,
-    `Close: ${fmt(signal.c)}`,
-    `Prev: ${fmt(signal.prev)}`,
-    `EMA20: ${fmt(signal.ema20)}  EMA50: ${fmt(signal.ema50)}  RSI14: ${signal.rsi.toFixed(2)}`,
-    `MACD(12,26,9): ${fmt(signal.macd)} / ${fmt(signal.macds)} (hist ${fmt(signal.hist)})`,
-    `ATR14: ${fmt(signal.atr)}${signal.atrProxy ? " (proxy)" : ""}`,
-    `SIGNAL: ${signal.state}`,
   ];
-  if (signal.levels) {
-    lines.push(`Entry: ${fmt(signal.entry)}  SL: ${fmt(signal.levels.sl)}  TP1: ${fmt(signal.levels.tp1)}  TP2: ${fmt(signal.levels.tp2)}`);
+
+  if ("c" in signal) {
+    const lines = [
+      ...headerLines,
+      `Close: ${fmt(signal.c)}`,
+      `Prev: ${fmt(signal.prev)}`,
+      `EMA20: ${fmt(signal.ema20)}  EMA50: ${fmt(signal.ema50)}  RSI14: ${signal.rsi.toFixed(2)}`,
+      `MACD(12,26,9): ${fmt(signal.macd)} / ${fmt(signal.macds)} (hist ${fmt(signal.hist)})`,
+      `ATR14: ${fmt(signal.atr)}${signal.atrProxy ? " (proxy)" : ""}`,
+      `SIGNAL: ${signal.state}`,
+    ];
+    if (signal.levels) {
+      lines.push(
+        `Entry: ${fmt(signal.entry)}  SL: ${fmt(signal.levels.sl)}  TP1: ${fmt(signal.levels.tp1)}  TP2: ${fmt(signal.levels.tp2)}`
+      );
+    }
+    return lines.join("\n");
   }
-  return lines.join("\n");
+
+  const fallbackLines = [...headerLines, `SIGNAL: ${signal.state}`];
+  if ("reason" in signal) {
+    fallbackLines.push(`Reason: ${signal.reason}`);
+  }
+  return fallbackLines.join("\n");
 }

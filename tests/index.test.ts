@@ -1,8 +1,8 @@
 import assert from "node:assert";
-import { alreadyHandled } from "../src/idempotency";
-import { normalise } from "../src/symbols";
-import { formatPriceBlock, formatSignalBlock } from "../src/format";
-import { computeSignal, type Candle } from "../src/signal";
+import { alreadyHandled } from "../src/idempotency.js";
+import { normalise } from "../src/symbols.js";
+import { formatPriceBlock, formatSignalBlock } from "../src/format.js";
+import { computeSignal, type Candle } from "../src/signal.js";
 
 // idempotency guard
 const id = "msg-1";
