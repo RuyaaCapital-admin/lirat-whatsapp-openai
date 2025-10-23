@@ -1,5 +1,5 @@
 // src/tools/livePrice.ts
-import { Canonical, extractSymbolFromText, extractTimeframeFromText } from "./symbol";
+import { Canonical, parseIntent } from "./symbol";
 import { getFcsLiveOr1m } from "./fcs";
 import { getFmpOhlc } from "./fmp";
 import { ema, rsi14, macd, atr14 } from "./indicators";
@@ -13,14 +13,15 @@ export async function resolveQuote(
   intent: 'price';
   canonical: Canonical;
 }> {
-  // Extract symbol from text
-  const symbol = extractSymbolFromText(userText);
+  // Parse intent from text
+  const intent = parseIntent(userText);
+  const symbol = intent.symbol;
   if (!symbol) {
     throw new Error('No symbol found in text');
   }
   
-  // Extract or use provided timeframe
-  const timeframe = opts?.timeframe || extractTimeframeFromText(userText) || '1min';
+  // Use provided timeframe or parsed timeframe
+  const timeframe = opts?.timeframe || intent.timeframe || '1min';
   
   // Ensure timeframe is valid
   const validTimeframes = ['1min', '5min', '15min', '30min', '1hour', '4hour', 'daily'] as const;
