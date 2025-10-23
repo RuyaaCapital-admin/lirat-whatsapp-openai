@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "description": "Serverless WhatsApp webhook with crypto price/signal commands and OpenAI Agent fallback",
   "type": "module",
-  "main": "api/webhook/route.ts",
+  "main": "api/webhook.ts",
   "scripts": {
     "dev": "vercel dev",
-    "test": "tsx tests/index.test.ts"
+    "test": "tsx tests/index.test.ts && tsx tests/webhook.test.ts"
   },
   "dependencies": {
     "@openai/agents": "^0.1.11",
@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.10",
+    "@vercel/node": "^3.1.7",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   },
