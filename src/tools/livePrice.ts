@@ -144,11 +144,15 @@ export async function getLivePrice(symbolInput: string): Promise<LivePriceRespon
 
 async function tryOneMinuteCandles(symbol: string, apiKey: string): Promise<LivePriceResponse | null> {
   try {
+    // Use the correct FCS API endpoint for OHLC data
     const candlesEndpoint = isCrypto(symbol)
       ? `https://fcsapi.com/api-v3/crypto/ohlc?symbol=${encodeURIComponent(symbol)}&period=1m&limit=1&access_key=${apiKey}`
       : `https://fcsapi.com/api-v3/forex/ohlc?symbol=${encodeURIComponent(symbol)}&period=1m&limit=1&access_key=${apiKey}`;
 
+    console.log('[PRICE] Trying candles endpoint:', candlesEndpoint);
     const { data } = await axios.get(candlesEndpoint, { headers: UA });
+    console.log('[PRICE] Candles response:', data);
+    
     const candles = data?.response || data?.data;
     
     if (candles && candles.length > 0) {
@@ -169,6 +173,13 @@ async function tryOneMinuteCandles(symbol: string, apiKey: string): Promise<Live
     }
   } catch (error) {
     console.error('[PRICE] 1m candles failed:', error);
+    // Return a fallback response instead of null
+    return {
+      symbol,
+      price: 0,
+      timeUtc: new Date().toISOString().slice(11, 16),
+      source: 'FALLBACK'
+    };
   }
 
   return null;

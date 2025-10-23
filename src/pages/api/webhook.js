@@ -36,11 +36,15 @@ async function runConversational(text) {
   if (WORKFLOW_ID && USE_WORKFLOW) {
     try {
       console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
-      const r = await client.responses.create({ 
-        workflow: { id: WORKFLOW_ID }, 
-        input: text 
+      // Use the correct OpenAI SDK method for workflows
+      const r = await client.beta.workflows.runs.create({
+        workflow_id: WORKFLOW_ID,
+        input: text
       });
-      return r.output_text || 'تم.';
+      
+      // Wait for completion and get result
+      const result = await client.beta.workflows.runs.retrieve(r.id);
+      return result.output || 'تم.';
     } catch (error) {
       console.warn('[WORKFLOW] Workflow failed, using model fallback:', error.message);
     }
