@@ -22,13 +22,13 @@ const gh = () => ({
 });
 
 // --- helpers: typing / read / send ---
-async function typing(phone, to) {
+async function typing(phone, to, state = 'typing') {
   try {
     await graph.post(`/${phone}/messages`, {
       messaging_product: 'whatsapp',
       to,
       type: 'action',
-      action: { typing: 'typing' },
+      action: { typing: state },
     }, { headers: gh() });
   } catch (e) {
     console.warn('typing failed:', e.response?.data || e.message);
@@ -44,6 +44,10 @@ function startTypingLoop(phone, to) {
   };
   tick();
   return () => { alive = false; };
+}
+
+async function pauseTyping(phone, to) {
+  return typing(phone, to, 'paused');
 }
 
 async function markRead(phone, id) {
@@ -82,6 +86,45 @@ You are Liirat Assistant. Be brief and decisive. For trading Q&A:
 `;
 
 // --- OpenAI Agent (SDK) fallback ---
+function flattenAgentContent(node) {
+  if (!node) return [];
+  if (typeof node === 'string') return [node];
+  if (Array.isArray(node)) return node.flatMap(flattenAgentContent);
+  if (typeof node === 'object') {
+    if (typeof node.text === 'string') return [node.text];
+    if (typeof node.message === 'string') return [node.message];
+    if (typeof node.value === 'string') return [node.value];
+    if (node.content) return flattenAgentContent(node.content);
+  }
+  return [];
+}
+
+function sanitizeReply(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const cleaned = [];
+  let skipping = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (/^\s*(sources?|references?)\s*[:：]/i.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping) {
+      if (!line.trim() || /^[-*\d]/.test(line.trim()) || /https?:\/\//i.test(line)) {
+        continue;
+      }
+      skipping = false;
+    }
+    cleaned.push(line);
+  }
+  return cleaned
+    .join('\n')
+    .replace(/https?:\/\/\S+/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function askAgent(userText) {
   if (!process.env.OPENAI_API_KEY) return null;
   try {
@@ -105,14 +148,25 @@ async function askAgent(userText) {
       model: 'gpt-4o-mini',
       tools: [webSearchPreview, mcp],
       modelSettings: { temperature: 1.05, topP: 1, maxTokens: 6593, store: true },
+ codex/implement-typing-helper-and-price-replies
       instructions: SYSTEM_PROMPT.trim()
+
+      instructions: [
+        'You are the official Liirat WhatsApp assistant.',
+        'Reply exactly once per user message with a concise and helpful answer in the same language the user used when possible.',
+        'Never mention tools, searches, or internal reasoning. Do not include any source links or citations.',
+        'Keep the tone warm and professional and avoid repetitive filler.',
+      ].join('\n')
+ main
     });
 
     const runner = new Runner();
     const result = await runner.run(liiratAssistant, [
       { role: 'user', content: [{ type: 'input_text', text: userText }] }
     ]);
-    return result.finalOutput || null;
+    const raw = flattenAgentContent(result?.finalOutput);
+    const reply = sanitizeReply(raw.join('\n').trim());
+    return reply || null;
   } catch (e) {
     console.error('Agent SDK error:', e.response?.data || e.message);
     return null;
@@ -202,17 +256,32 @@ function verifyHandler(req, res) {
 
 // --- webhook messages ---
 async function postHandler(req, res) {
+ codex/implement-typing-helper-and-price-replies
   let stopTyping = () => {};
+
+  let phone = null;
+  let from = null;
+  let typingActive = false;
+
+  const stopTyping = async () => {
+    if (typingActive && phone && from) {
+      typingActive = false;
+      await pauseTyping(phone, from);
+    }
+  };
+
+main
   try {
     const change  = req.body?.entry?.[0]?.changes?.[0];
     const message = change?.value?.messages?.[0];
     if (!message) return resOK(res);
 
-    const phone = change.value?.metadata?.phone_number_id;
+    phone = change.value?.metadata?.phone_number_id;
     if (!phone) {
       console.error('Missing phone number id');
       return resOK(res);
     }
+codex/implement-typing-helper-and-price-replies
     const from  = message.from;
     const bodyRaw = message?.text?.body;
     if (!bodyRaw) return resOK(res);
@@ -224,22 +293,42 @@ async function postHandler(req, res) {
 
     stopTyping = startTypingLoop(phone, from);
 
+    from  = message.from;
+
+    await typing(phone, from);
+    typingActive = true;
+ main
+
     const body  = bodyRaw.trim();
     const lower = body.toLowerCase();
 
     // commands
     if (lower.startsWith('price ')) {
-      const sym = body.split(/\s+/)[1].toUpperCase();
+      const sym = body.split(/\s+/)[1]?.toUpperCase();
+      if (!sym) {
+        await stopTyping();
+        await send([{ type:'text', value: 'Please provide a symbol, for example: price BTCUSDT' }], phone, from);
+        await markRead(phone, message.id);
+        return res.status(200).json({ ok: true });
+      }
       const p = await getPrice(sym);
+      await stopTyping();
       await send([{ type:'text', value: `${sym}: ${p}` }], phone, from);
       await markRead(phone, message.id);
       stopTyping();
       return resOK(res);
     }
     if (lower.startsWith('signal ')) {
-      const sym = body.split(/\s+/)[1].toUpperCase();
+      const sym = body.split(/\s+/)[1]?.toUpperCase();
+      if (!sym) {
+        await stopTyping();
+        await send([{ type:'text', value: 'Please provide a symbol, for example: signal BTCUSDT' }], phone, from);
+        await markRead(phone, message.id);
+        return res.status(200).json({ ok: true });
+      }
       const r = await getSignal(sym);
       const txt = `**Signal** ${sym}\nSMA-20: ${r.sma20}\nSMA-50: ${r.sma50}\nClose: ${r.last}\nAction: ${r.signal}`;
+      await stopTyping();
       await send([{ type:'text', value: txt }], phone, from);
       await markRead(phone, message.id);
       stopTyping();
@@ -268,12 +357,17 @@ async function postHandler(req, res) {
     if (body) reply = await askAgent(body);
     if (!reply) reply = '...';
 
+    await stopTyping();
     await send([{ type: 'text', value: reply }], phone, from);
     await markRead(phone, message.id);
     stopTyping();
     return resOK(res);
   } catch (e) {
+ codex/implement-typing-helper-and-price-replies
     stopTyping();
+
+    await stopTyping();
+ main
     console.error(e.response?.data || e.message);
     return res.status(500).json({ ok: false });
   }
