@@ -12,7 +12,7 @@ process.env.WHATSAPP_VERSION = "v99.0";
 process.env.WHATSAPP_PHONE_NUMBER_ID = "123456789";
 process.env.WHATSAPP_TOKEN = "test-token";
 
-const { GET, POST } = await import("../app/api/webhook/route");
+const { GET, POST } = await import("../app/api/webhook/route.js");
 
 const originalFetch = globalThis.fetch;
 
@@ -36,9 +36,56 @@ try {
 
   {
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    globalThis.fetch = async (url: string | URL, init?: RequestInit) => {
-      calls.push({ url: typeof url === "string" ? url : url.toString(), init: init ?? {} });
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      calls.push({ url, init: init ?? {} });
       return new Response("{}", { status: 200 });
+    };
+
+    // Mock axios for waba functions
+    const originalAxios = await import("axios");
+    const mockAxios = {
+      post: async (url: string, data: any, config: any) => {
+        calls.push({ url, init: { method: 'POST', body: JSON.stringify(data), headers: config.headers } });
+        return { status: 200, data: {} };
+      }
+    };
+    
+    // Mock the waba module
+    const wabaModule = await import("../src/waba.js");
+    const originalWabaTyping = wabaModule.wabaTyping;
+    const originalWabaText = wabaModule.wabaText;
+    
+    wabaModule.wabaTyping = async (phone: string, on: boolean) => {
+      calls.push({ 
+        url: `https://graph.facebook.com/v99.0/123456789/messages`, 
+        init: { 
+          method: 'POST', 
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: phone,
+            type: "typing",
+            typing: { status: on ? "typing" : "paused" }
+          }),
+          headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }
+        } 
+      });
+    };
+    
+    wabaModule.wabaText = async (phone: string, text: string) => {
+      calls.push({ 
+        url: `https://graph.facebook.com/v99.0/123456789/messages`, 
+        init: { 
+          method: 'POST', 
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: phone,
+            type: "text",
+            text: { body: text }
+          }),
+          headers: { Authorization: 'Bearer test-token', 'Content-Type': 'application/json' }
+        } 
+      });
     };
 
     const payload = {

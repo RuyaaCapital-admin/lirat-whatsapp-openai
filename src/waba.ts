@@ -23,23 +23,35 @@ function getHeaders() {
 }
 
 export async function wabaTyping(phone: string, on: boolean) {
-  const body = {
-    messaging_product: "whatsapp",
-    to: phone,
-    type: "typing",
-    typing: { status: on ? "typing" : "paused" },
-  } as const;
-  const baseUrl = getBaseUrl();
-  await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
+  try {
+    const body = {
+      messaging_product: "whatsapp",
+      to: phone,
+      type: "typing",
+      typing: { status: on ? "typing" : "paused" },
+    } as const;
+    const baseUrl = getBaseUrl();
+    const response = await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
+    console.log(`Typing indicator sent to ${phone}:`, response.status);
+  } catch (error) {
+    console.error(`Failed to send typing indicator to ${phone}:`, error);
+    throw error;
+  }
 }
 
 export async function wabaText(phone: string, text: string) {
-  const body = {
-    messaging_product: "whatsapp",
-    to: phone,
-    type: "text",
-    text: { body: text },
-  } as const;
-  const baseUrl = getBaseUrl();
-  await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
+  try {
+    const body = {
+      messaging_product: "whatsapp",
+      to: phone,
+      type: "text",
+      text: { body: text },
+    } as const;
+    const baseUrl = getBaseUrl();
+    const response = await axios.post(`${baseUrl}/messages`, body, { headers: getHeaders() });
+    console.log(`Message sent to ${phone}:`, response.status);
+  } catch (error) {
+    console.error(`Failed to send message to ${phone}:`, error);
+    throw error;
+  }
 }
