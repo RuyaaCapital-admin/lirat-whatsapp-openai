@@ -22,33 +22,36 @@ console.log('[ENV DEBUG] Available env vars:', {
 if (!OPENAI_PROJECT_ID) throw new Error('Missing env: OPENAI_PROJECT_ID');
 if (!WORKFLOW_ID) throw new Error('Missing env: OPENAI_WORKFLOW_ID');
 
-// create OpenAI client once
-import OpenAI from "openai";
-const client = new OpenAI({
+// Use the @openai/agents package for Agent Builder workflows
+import { Agent } from "@openai/agents";
+
+// Create agent instance
+const agent = new Agent({
   apiKey: process.env.OPENAI_API_KEY,
   project: OPENAI_PROJECT_ID,
+  workflowId: WORKFLOW_ID,
 });
 
-// Call the Responses API with a workflow (no assistants/runs, no chat/completions)
+// Call the workflow using the agents package
 export async function callWorkflow(userText, meta = {}) {
-  const r = await client.responses.create({
-    workflow_id: WORKFLOW_ID,     // <- your wf_... id
-    // version: process.env.WORKFLOW_VERSION, // optional (else uses production)
-    input: userText,
-    metadata: { channel: "whatsapp", ...meta },
-  });
-
-  // Responses API result — do NOT read r.runs or r.choices
-  const text =
-    r.output_text ??
-    (Array.isArray(r.output)
-      ? r.output
-          .map(p => p.content?.[0]?.text?.value)
-          .filter(Boolean)
-          .join("\n")
-      : "");
-
-  return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+  try {
+    console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
+    console.log('[WORKFLOW] Input:', userText);
+    
+    const result = await agent.run(userText, {
+      metadata: { channel: "whatsapp", ...meta }
+    });
+    
+    console.log('[WORKFLOW] Result:', result);
+    
+    // Extract text from the result
+    const text = result?.text || result?.content || result?.output || "";
+    
+    return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+  } catch (error) {
+    console.error('[WORKFLOW] Error:', error);
+    return `Workflow error: ${error.message}`;
+  }
 }
 
 // Extract message from webhook payload
