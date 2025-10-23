@@ -1,5 +1,5 @@
-// pages/api/webhook.ts
-export default function handler(req: any, res: any) {
+// pages/api/webhook.js
+export default function handler(req, res) {
   if (req.method === 'GET') {
     const { 'hub.mode': mode, 'hub.verify_token': token, 'hub.challenge': challenge } = req.query;
     
