@@ -1,7 +1,8 @@
-// src/pages/api/webhook.js
+// src/pages/api/webhook.ts
 import { sendText, sendTyping, markRead } from '../../lib/waba';
 import { callAgent } from '../../lib/agent';
 import { getLivePrice, hasPriceIntent } from '../../tools/livePrice';
+import { NextApiRequest, NextApiResponse } from 'next';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -10,7 +11,7 @@ if (!VERIFY_TOKEN) {
 }
 
 // Extract message from webhook payload
-function extractMessage(payload) {
+function extractMessage(payload: any) {
   try {
     const entry = payload.entry?.[0];
     const changes = entry?.changes?.[0];
@@ -36,7 +37,7 @@ function extractMessage(payload) {
   return null;
 }
 
-export default async function handler(req, res) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   console.log('[WABA] webhook hit', new Date().toISOString());
 
   // Handle webhook verification (GET request)
