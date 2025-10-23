@@ -85,9 +85,9 @@ export async function POST(req: Request) {
 
     // Agent Builder integration
     try {
-      const { runAgent } = await import('../../../lib/agent');
-      const response = await runAgent(text);
-      return void sendText(from, response);
+      const { runWorkflow } = await import('../../../lib/agent');
+      const result = await runWorkflow({ input_as_text: text });
+      return void sendText(from, result.output_text);
     } catch (error) {
       console.error('Agent processing error:', error);
       return void sendText(from, 'عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.');
