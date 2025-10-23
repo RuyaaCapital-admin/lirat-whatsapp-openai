@@ -1,1 +1,12 @@
-{"routes":[{"src":"/(.*)","dest":"/api/server.js"}]}
+{
+  "routes": [
+    { "src": "/(.*)", "dest": "/api/server.js" }
+  ],
+  "env": {
+    "WHATSAPP_TOKEN": "",
+    "WHATSAPP_PHONE_NUMBER_ID": "",
+    "VERIFY_TOKEN": "",
+    "OPENAI_API_KEY": "",
+    "FCS_API_KEY": ""
+  }
+}
