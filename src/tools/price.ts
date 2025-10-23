@@ -1,5 +1,4 @@
 import axios from "axios";
-import { env } from "../env";
 import { normalise } from "../symbols";
 
 export type PriceResponse = {
@@ -23,11 +22,12 @@ export async function fetchLatestPrice(symbol: string): Promise<{ ok: true; data
     }
     const [base, quote] = pricePair.split("/");
     if (!base || !quote) return { ok: false, error: "symbol_invalid" };
-    if (!env.PRICE_KEY) return { ok: false, error: "price_key_missing" };
+    const priceKey = process.env.PRICE_API_KEY;
+    if (!priceKey) return { ok: false, error: "price_key_missing" };
 
     const endpoint = isCrypto(base)
-      ? `https://fcsapi.com/api-v3/crypto/latest?symbol=${encodeURIComponent(`${base}/${quote}`)}&access_key=${env.PRICE_KEY}`
-      : `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(pricePair)}&access_key=${env.PRICE_KEY}`;
+      ? `https://fcsapi.com/api-v3/crypto/latest?symbol=${encodeURIComponent(`${base}/${quote}`)}&access_key=${priceKey}`
+      : `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(pricePair)}&access_key=${priceKey}`;
 
     const { data } = await axios.get(endpoint, { headers: UA });
     const row = data?.response?.[0] || data?.data?.[0];
