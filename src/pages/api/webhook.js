@@ -34,19 +34,42 @@ async function askWorkflow(userText, meta = {}) {
 
   console.log('[WORKFLOW] Calling workflow:', WORKFLOW_ID);
   
-  const resp = await client.responses.create({
-    workflow_id: WORKFLOW_ID,
-    // (optionally) version: process.env.WORKFLOW_VERSION, // or omit to use production
-    input: userText,
-    metadata: { channel: "whatsapp", ...meta },
-  });
+  try {
+    // Use the correct workflow runs API
+    const run = await client.beta.workflows.runs.create({
+      workflow_id: WORKFLOW_ID,
+      input: userText,
+      metadata: { channel: "whatsapp", ...meta },
+    });
 
-  // Helper to unwrap text:
-  const text =
-    resp.output_text ??
-    (Array.isArray(resp.output) ? resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : "");
+    // Wait for completion
+    let result = await client.beta.workflows.runs.retrieve(run.id);
+    
+    // Poll until completion (with timeout)
+    let attempts = 0;
+    const maxAttempts = 30; // 30 seconds max
+    
+    while (result.status === 'in_progress' && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      result = await client.beta.workflows.runs.retrieve(run.id);
+      attempts++;
+    }
 
-  return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+    if (result.status === 'completed') {
+      // Extract text from the result
+      const text = result.output?.text || 
+                  (Array.isArray(result.output) ? 
+                    result.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                    "");
+      return text || "البيانات غير متاحة حالياً. جرّب: price BTCUSDT";
+    } else {
+      console.error('[WORKFLOW] Run failed:', result.status, result.error);
+      return "عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.";
+    }
+  } catch (error) {
+    console.error('[WORKFLOW] Error:', error.message);
+    return "عذراً، حدث خطأ في معالجة طلبك. يرجى المحاولة مرة أخرى.";
+  }
 }
 
 // Extract message from webhook payload
