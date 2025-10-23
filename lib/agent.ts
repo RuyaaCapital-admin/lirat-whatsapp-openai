@@ -53,7 +53,7 @@ const instructions = `Liirat Trading Agent — v6
 - استدع get_price مرة واحدة فقط. لا تطلب إطارًا زمنيًا.
 - إذا ok=false فاشرح الخطأ بجملة عربية قصيرة.
 - إذا ok=true فأعرض كتلة PRICE بالشكل التالي بدون أي تعليق إضافي:
-  Time (UTC): HH:MM\n  Symbol: SYMBOL\n  Price: VALUE\n  Note: latest CLOSED price
+  Time (UTC): HH:MM\n  Symbol: SYMBOL\n  Price: VALUE\n  Source: FCS (field)
 
 [Signal intent]
 - أي طلب لإشارة/صفقة/تحليل أو ذكر إطار زمني => SIGNAL INTENT.
@@ -61,7 +61,7 @@ const instructions = `Liirat Trading Agent — v6
 - استدع get_ohlc (بالرمز بدون slash) ثم compute_trading_signal بنفس الإطار.
 - إذا فشل أي أداة فاشرح السبب بجملة عربية قصيرة.
 - إذا نجحت جميعها فأنشئ كتلة SIGNAL بالضبط كما يلي:
-  Time (UTC): HH:MM\n  Symbol: SYMBOL\n  Interval: TF\n  Last closed: YYYYMMDD_HH:MM UTC\n  Close: …\n  Prev: …\n  EMA20: …  EMA50: …  RSI14: …\n  MACD(12,26,9): … / … (hist …)\n  ATR14: …(proxy?)\n  SIGNAL: BUY|SELL|NEUTRAL\n  Entry/SL/TP الأسطر تظهر فقط عند BUY أو SELL بنفس التنسيق: Entry: …  SL: …  TP1: …  TP2: …
+  الوقت (UTC): HH:MM\n  العملة: SYMBOL\n  الفاصل: TF\n  آخر إغلاق: YYYYMMDD_HH:MM UTC\n  الإغلاق: …\n  السابق: …\n  EMA20: …  EMA50: …  RSI14: …\n  MACD(12,26,9): … / … (hist …)\n  ATR14: …\n  الإشارة: BUY|SELL|NEUTRAL\n  الدخول: …  وقف الخسارة: …  الهدف1: …  الهدف2: …
 
 - استخدم القيم الرقمية كما ترجعها الأدوات مع تقريب مناسب (2-6 منازل).
 - لا تذكر أي تعليمات داخلية أو أدوات.
@@ -86,6 +86,14 @@ export async function runAgent(input: string) {
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
   }
+  
+  // Check if AGENT_ID is configured, otherwise fallback to chat completions
+  const agentId = process.env.AGENT_ID;
+  if (!agentId) {
+    console.log('AGENT_ID not configured, using chat completions fallback');
+    return await runChatFallback(input, apiKey);
+  }
+  
   setDefaultOpenAIKey(apiKey);
   const runner = new Runner({
     traceMetadata: {
@@ -101,6 +109,38 @@ export async function runAgent(input: string) {
   ]);
   if (!result.finalOutput) throw new Error("Agent result is undefined");
   return result.finalOutput;
+}
+
+async function runChatFallback(input: string, apiKey: string): Promise<string> {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'أنت مساعد تداول مختص. رد بالعربية الفصحى المختصرة. إذا طلب المستخدم سعر XAU أو ذهب، أجب: "يرجى استخدام الأوامر المخصصة للحصول على الأسعار".'
+        },
+        {
+          role: 'user',
+          content: input
+        }
+      ],
+      max_tokens: 500,
+      temperature: 0.2
+    })
+  });
+  
+  if (!response.ok) {
+    throw new Error(`OpenAI API error: ${response.status}`);
+  }
+  
+  const data = await response.json();
+  return data.choices[0]?.message?.content || 'عذراً، لا يمكن معالجة طلبك حالياً.';
 }
 
 export { formatPriceBlock, formatSignalBlock } from "../src/format";
