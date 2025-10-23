@@ -1,3 +1,4 @@
+// app/api/webhook/route.ts
 export async function GET(req: Request) {
   const p = new URL(req.url).searchParams;
   if (p.get('hub.mode') === 'subscribe' && p.get('hub.verify_token') === process.env.VERIFY_TOKEN) {
@@ -5,7 +6,6 @@ export async function GET(req: Request) {
   }
   return new Response('Forbidden', { status: 403 });
 }
-
 export async function POST() {
   console.log('WABA webhook hit', new Date().toISOString());
   return Response.json({ received: true }, { status: 200 });
