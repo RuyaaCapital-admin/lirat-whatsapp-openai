@@ -3,7 +3,7 @@ import axios from "axios";
 
 const FCS_BASE = "https://fcsapi.com/api-v3";
 
-function toFcsSymbol(input: string) {
+export function toFcsSymbol(input: string) {
   // XAUUSD -> XAU/USD, EURUSD -> EUR/USD, crypto stays as-is (BTCUSDT)
   const s = input.toUpperCase().replace(/\s+/g, "");
   if (/^[A-Z]{3}USD$/.test(s) || /^[A-Z]{6}$/.test(s)) {
@@ -13,7 +13,7 @@ function toFcsSymbol(input: string) {
   return s.includes("/") ? s.toUpperCase() : s; // already slashed or crypto
 }
 
-function toFcsPeriod(tf: string | undefined) {
+export function toFcsPeriod(tf: string | undefined) {
   const t = (tf || "").toLowerCase().trim();
   if (["1min","1m"].includes(t)) return "1m";
   if (["5min","5m"].includes(t)) return "5m";
