@@ -1,6 +1,7 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
-import { getLivePrice } from '../../tools/livePrice';
+import { resolveQuote } from '../../tools/livePrice';
+import { extractSymbolFromText } from '../../tools/symbol';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -10,7 +11,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
 const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID || '';
-const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true since we have workflow
+const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'false').toLowerCase() === 'true'; // Default to false
 const OPENAI_PROJECT = process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT;
 
 // Debug environment variables
@@ -96,14 +97,21 @@ function extractMessage(payload) {
   return null;
 }
 
-// Detect price intent
+// Detect price intent - must have symbol AND price keyword
 function hasPriceIntent(text) {
+  const symbol = extractSymbolFromText(text);
+  if (!symbol) return false;
+  
   const priceKeywords = [
-    'price', 'سعر', 'gold', 'silver', 'oil', 'btc', 'eth', 'eur', 'gbp', 'jpy', 'chf', 'cad', 'aud', 'nzd',
-    'xau', 'xag', 'ذهب', 'فضة', 'نفط', 'بيتكوين', 'إيثيريوم', 'يورو', 'ين', 'فرنك', 'جنيه', 'دولار'
+    'price', 'سعر', 'quote', 'buy', 'sell', 'شراء', 'بيع', 'آخر سعر', 'current price'
   ];
   const lowerText = text.toLowerCase();
-  return priceKeywords.some(keyword => lowerText.includes(keyword));
+  
+  // Check if it's a bare symbol (e.g., "xau", "eurusd")
+  const words = text.toLowerCase().split(/\s+/);
+  const isBareSymbol = words.length === 1 && symbol !== words[0].toUpperCase();
+  
+  return isBareSymbol || priceKeywords.some(keyword => lowerText.includes(keyword));
 }
 
 export default async function handler(req, res) {
@@ -168,23 +176,18 @@ export default async function handler(req, res) {
           if (hasPriceIntent(message.text)) {
             console.log('[WABA] price intent detected');
             
-            // Extract symbol from text
-            const words = message.text.toLowerCase().split(/\s+/);
-            const symbolCandidates = words.filter(word => 
-              word.match(/^[a-z]{3,6}$/) || 
-              ['gold', 'silver', 'oil', 'btc', 'eth', 'eur', 'gbp', 'jpy', 'chf', 'cad', 'aud', 'nzd', 'xau', 'xag'].includes(word)
-            );
-            
-            const symbol = symbolCandidates[0] || 'XAUUSD'; // Default to gold
-            
-            const priceData = await getLivePrice(symbol);
-            
-            if (priceData) {
-              responseText = `Time (UTC): ${priceData.timeUtc}\nSymbol: ${priceData.symbol}\nPrice: ${priceData.price}\nSource: ${priceData.source}`;
-              console.log('[WABA] price', { symbol: priceData.symbol, source: priceData.source, timeUtc: priceData.timeUtc });
+            try {
+              const result = await resolveQuote(message.text);
+              responseText = result.block;
+              console.log('[WABA] price', { symbol: result.canonical, intent: result.intent });
               console.log('[WABA] reply sent', { to: message.from, kind: 'price' });
-            } else {
-              responseText = 'عذراً، لم أتمكن من الحصول على السعر حالياً. يرجى المحاولة مرة أخرى.';
+            } catch (error) {
+              if (error.message === 'no data on this timeframe') {
+                responseText = 'no data on this timeframe';
+              } else {
+                console.error('[WABA] Price resolution failed:', error.message);
+                responseText = 'عذراً، لم أتمكن من الحصول على السعر حالياً. يرجى المحاولة مرة أخرى.';
+              }
             }
           } else {
             // Use conversational agent for non-price requests
