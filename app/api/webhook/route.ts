@@ -93,7 +93,7 @@ export async function POST(req: Request) {
           
           // Extract symbol from text
           const words = message.text.toLowerCase().split(/\s+/);
-          const symbolCandidates = words.filter(word => 
+          const symbolCandidates = words.filter((word: string) => 
             word.match(/^[a-z]{3,6}$/) || 
             ['gold', 'silver', 'oil', 'btc', 'eth', 'eur', 'gbp', 'jpy', 'chf', 'cad', 'aud', 'nzd'].includes(word)
           );
