@@ -26,10 +26,8 @@
     ]
   },
   "include": [
-    "app/**/*.ts",
-    "api/**/*.ts",
-    "lib/**/*.ts",
     "src/**/*.ts",
+    "lib/**/*.ts",
     "tests/**/*.ts",
     ".next/types/**/*.ts"
   ],
