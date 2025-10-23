@@ -1,6 +1,5 @@
 // src/pages/api/webhook.js
 import { sendText, sendTyping, markRead } from '../../lib/waba';
-import { runAgent } from '../../lib/agent';
 import { getLivePrice } from '../../tools/livePrice';
 
 // Environment validation
@@ -10,14 +9,50 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
-const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
+const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || '';
+const USE_WORKFLOW = (process.env.USE_WORKFLOW || '').toLowerCase() === 'true';
+const AGENT_ID = process.env.AGENT_ID || '';
+const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
 
-if (!VERIFY_TOKEN) throw new Error('Missing required environment variable: VERIFY_TOKEN');
-if (!WHATSAPP_PHONE_NUMBER_ID) throw new Error('Missing required environment variable: WHATSAPP_PHONE_NUMBER_ID');
-if (!WHATSAPP_TOKEN) throw new Error('Missing required environment variable: WHATSAPP_TOKEN');
-if (!OPENAI_API_KEY) throw new Error('Missing required environment variable: OPENAI_API_KEY');
-if (!FCS_API_KEY) throw new Error('Missing required environment variable: FCS_API_KEY');
-if (!OPENAI_WORKFLOW_ID) throw new Error('Missing required environment variable: OPENAI_WORKFLOW_ID');
+if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
+if (!AGENT_ID && !(USE_WORKFLOW && WORKFLOW_ID)) {
+  console.warn('[CFG] Neither AGENT_ID nor WORKFLOW_ID active; will use plain model');
+}
+
+// create OpenAI client once
+import OpenAI from 'openai';
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, project: OPENAI_PROJECT });
+
+// Conversational fallback (no workflow)
+async function runConversational(text) {
+  // Prefer Agent if set
+  if (AGENT_ID) {
+    try {
+      const r = await client.responses.create({ agent: AGENT_ID, input: text });
+      return r.output_text || 'تم.';
+    } catch (error) {
+      console.warn('[AGENT] Agent failed, using model fallback:', error.message);
+    }
+  }
+  
+  // Plain model fallback (conversational, bilingual)
+  const sys = `أنت مساعد محادثي لِـ Lirat: افهم نية المستخدم (سعر/رمز/تداول أو أسئلة عامة عن Lirat).
+- إذا كان السؤال عن رمز أو تداول، لا تكتب كود؛ فقط اطلب الرمز/الإطار الزمني أو استخدم البيانات المتاحة.
+- إذا كان سؤالًا عامًا، أجب بإيجاز ووضوح بالعربية.
+- كن محادثي وودود، لا آلي.`;
+  
+  const r = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: sys },
+      { role: 'user', content: text }
+    ],
+    max_tokens: 500,
+    temperature: 0.7
+  });
+  
+  return r.choices[0]?.message?.content || 'تم.';
+}
 
 // Extract message from webhook payload
 function extractMessage(payload) {
@@ -137,9 +172,25 @@ export default async function handler(req, res) {
               responseText = 'عذراً، لم أتمكن من الحصول على السعر حالياً. يرجى المحاولة مرة أخرى.';
             }
           } else {
-            // Use agent for non-price requests
+            // Use conversational agent for non-price requests
             console.log('[WABA] agent intent detected');
-            responseText = await runAgent(OPENAI_WORKFLOW_ID, message.text);
+            let answer;
+            try {
+              // if you really want workflow later, guard it:
+              if (USE_WORKFLOW && WORKFLOW_ID) {
+                // TODO: only re-enable after you align input schema with the workflow
+                // const r = await client.responses.create({ workflow: { id: WORKFLOW_ID }, input: { text } });
+                // answer = r.output_text;
+                throw new Error('Workflow disabled until schema aligned');
+              } else {
+                answer = await runConversational(message.text);
+              }
+            } catch (e) {
+              console.error('[AGENT] error', e?.message || e);
+              // final safety fallback
+              answer = 'عذرًا، حدث خطأ أثناء معالجة طلبك. هل يمكن إعادة الصياغة؟';
+            }
+            responseText = answer;
             console.log('[WABA] agent');
             console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });
           }
