@@ -1,4 +1,6 @@
 {
-  "functions": { "api/**/*.js": { "runtime": "nodejs22.x" } },
-  "routes": [{ "src": "/api/webhook", "dest": "/api/webhook.js" }]
+  "version": 2,
+  "routes": [
+    { "src": "/api/webhook", "dest": "/api/webhook.js" }
+  ]
 }
