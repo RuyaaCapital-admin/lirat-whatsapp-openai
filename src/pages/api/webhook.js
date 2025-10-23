@@ -13,6 +13,14 @@ const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID || process.env.WORKFLOW_ID ||
 const USE_WORKFLOW = (process.env.USE_WORKFLOW || 'true').toLowerCase() === 'true'; // Default to true since we have workflow
 const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
 
+// Debug environment variables
+console.log('[ENV DEBUG] Available env vars:', {
+  OPENAI_PROJECT: OPENAI_PROJECT ? 'SET' : 'MISSING',
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY ? 'SET' : 'MISSING',
+  OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? 'SET' : 'MISSING',
+  VERIFY_TOKEN: process.env.VERIFY_TOKEN ? 'SET' : 'MISSING'
+});
+
 if (!OPENAI_PROJECT) throw new Error('Missing env: OPENAI_PROJECT');
 if (!WORKFLOW_ID) {
   console.warn('[CFG] No WORKFLOW_ID set; will use plain model');
@@ -38,10 +46,16 @@ async function runConversational(text) {
     }
   }
   
-  // Plain model fallback (simple conversational)
+  // Plain model fallback (conversational, bilingual)
+  const sys = `أنت مساعد محادثي لِـ Lirat: افهم نية المستخدم (سعر/رمز/تداول أو أسئلة عامة عن Lirat).
+- إذا كان السؤال عن رمز أو تداول، لا تكتب كود؛ فقط اطلب الرمز/الإطار الزمني أو استخدم البيانات المتاحة.
+- إذا كان سؤالًا عامًا، أجب بإيجاز ووضوح بالعربية.
+- كن محادثي وودود، لا آلي.`;
+  
   const r = await client.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
+      { role: 'system', content: sys },
       { role: 'user', content: text }
     ],
     max_tokens: 500,
