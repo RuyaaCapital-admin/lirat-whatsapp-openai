@@ -1,5 +1,5 @@
-// src/lib/agent.ts
-import { runWorkflow } from '../../lib/agent';
+// lib/agent-wrapper.ts
+import { runWorkflow } from './agent';
 
 export async function callAgent(text: string): Promise<string> {
   try {

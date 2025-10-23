@@ -1,4 +1,4 @@
-// src/lib/waba.ts
+// lib/waba.ts
 const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const ACCESS_TOKEN = process.env.WHATSAPP_TOKEN;
@@ -58,13 +58,6 @@ export async function sendText(to: string, body: string): Promise<void> {
 
 export async function sendTyping(to: string): Promise<void> {
   try {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: to,
-      type: 'text',
-      text: { body: '' }
-    };
-
     // Note: WhatsApp Cloud API doesn't have a direct typing indicator
     // This is a placeholder for future implementation
     console.log('[WABA] typing indicator sent to', to);

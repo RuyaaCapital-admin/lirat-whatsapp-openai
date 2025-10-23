@@ -1,108 +1,105 @@
 // src/tools/livePrice.ts
-import { fetchLatestPrice } from './price';
-import { normalise } from '../symbols';
+import axios from "axios";
+import { normalise } from "../symbols";
 
 export type LivePriceResponse = {
   symbol: string;
-  bid?: number;
-  ask?: number;
+  bid: number | null;
+  ask: number | null;
   price: number;
   source: string;
   timeUtc: string;
 };
 
-// Symbol normalization with fallbacks
-function normalizeSymbol(input: string): string {
-  const lower = input.toLowerCase().trim();
-  
-  // Direct mappings
-  const mappings: Record<string, string> = {
-    'gold': 'XAUUSD',
-    'xau': 'XAUUSD',
-    'silver': 'XAGUSD',
-    'xag': 'XAGUSD',
-    'oil': 'XTIUSD',
-    'wti': 'XTIUSD',
-    'brent': 'XBRUSD',
-    'btc': 'BTCUSDT',
-    'bitcoin': 'BTCUSDT',
-    'eth': 'ETHUSDT',
-    'ethereum': 'ETHUSDT',
-    'eur': 'EURUSD',
-    'euro': 'EURUSD',
-    'gbp': 'GBPUSD',
-    'pound': 'GBPUSD',
-    'jpy': 'USDJPY',
-    'yen': 'USDJPY',
-    'chf': 'USDCHF',
-    'franc': 'USDCHF',
-    'cad': 'USDCAD',
-    'aud': 'AUDUSD',
-    'nzd': 'NZDUSD'
-  };
+const UA = { "User-Agent": "Mozilla/5.0 (LiiratBot)" };
 
-  // Check direct mappings first
-  if (mappings[lower]) {
-    return mappings[lower];
-  }
+function isCrypto(base: string) {
+  return base.length > 3 || ["BTC", "ETH"].includes(base.toUpperCase());
+}
 
-  // Check if it's already a valid symbol format
-  if (lower.match(/^[a-z]{3,6}[a-z]{3,6}$/i)) {
-    return lower.toUpperCase();
-  }
-
-  // Use existing normalise function as fallback
-  try {
-    const { pricePair } = normalise(input);
-    return pricePair;
-  } catch {
-    return input.toUpperCase();
-  }
+export function hasPriceIntent(text: string): boolean {
+  const priceKeywords = ['price', 'سعر', 'gold', 'silver', 'oil', 'btc', 'eth', 'eur', 'gbp', 'jpy', 'chf', 'cad', 'aud', 'nzd', 'xau', 'xag'];
+  const lowerText = text.toLowerCase();
+  return priceKeywords.some(keyword => lowerText.includes(keyword));
 }
 
 export async function getLivePrice(symbolInput: string): Promise<LivePriceResponse | null> {
   try {
-    const normalizedSymbol = normalizeSymbol(symbolInput);
-    
-    // Try with slash format first (for FCS API)
-    const slashSymbol = normalizedSymbol.includes('/') ? normalizedSymbol : 
-      normalizedSymbol.replace(/(.{3})(.{3})/, '$1/$2');
-    
-    const result = await fetchLatestPrice(slashSymbol);
-    
-    if (!result.ok) {
-      console.error('[LIVE_PRICE] Failed to fetch price:', result.error);
+    const FCS_API_KEY = process.env.FCS_API_KEY;
+    if (!FCS_API_KEY) {
+      console.error('[PRICE] FCS_API_KEY is not set');
       return null;
     }
 
-    const { data } = result;
-    const now = new Date();
-    const timeUtc = now.toISOString().slice(11, 16); // HH:MM format
+    const { pricePair } = normalise(symbolInput);
+    if (!pricePair.includes("/")) {
+      console.error('[PRICE] symbol_missing_slash');
+      return null;
+    }
+    
+    const [base, quote] = pricePair.split("/");
+    if (!base || !quote) {
+      console.error('[PRICE] symbol_invalid');
+      return null;
+    }
+
+    const endpoint = isCrypto(base)
+      ? `https://fcsapi.com/api-v3/crypto/latest?symbol=${encodeURIComponent(`${base}/${quote}`)}&access_key=${FCS_API_KEY}`
+      : `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(pricePair)}&access_key=${FCS_API_KEY}`;
+
+    const { data } = await axios.get(endpoint, { headers: UA });
+    const row = data?.response?.[0] || data?.data?.[0];
+    
+    if (!row) {
+      console.error('[PRICE] price_not_found');
+      return null;
+    }
+
+    let bid: number | null = null;
+    let ask: number | null = null;
+    let price: number | null = null;
+    let usedField = '';
+
+    if (row.bid && Number.isFinite(Number(row.bid))) {
+      bid = Number(row.bid);
+      price = bid;
+      usedField = 'bid';
+    }
+    if (row.ask && Number.isFinite(Number(row.ask))) {
+      ask = Number(row.ask);
+      if (price === null) {
+        price = ask;
+        usedField = 'ask';
+      }
+    }
+    if (price === null && row.price && Number.isFinite(Number(row.price))) {
+      price = Number(row.price);
+      usedField = 'price';
+    }
+    if (price === null && row.c && Number.isFinite(Number(row.c))) {
+      price = Number(row.c);
+      usedField = 'close';
+    }
+
+    if (price === null) {
+      console.error('[PRICE] price_invalid');
+      return null;
+    }
+
+    const ts = row.t ? Number(row.t) : Math.floor(Date.now() / 1000);
+    const utcTime = new Date(ts * 1000).toISOString().slice(11, 16);
 
     return {
-      symbol: normalizedSymbol,
-      price: data.price,
-      source: data.note || 'FCS',
-      timeUtc: data.utcTime || timeUtc
+      symbol: pricePair,
+      bid,
+      ask,
+      price,
+      source: `FCS (${usedField})`,
+      timeUtc: utcTime
     };
-  } catch (error) {
-    console.error('[LIVE_PRICE] Error:', error);
+  } catch (err: any) {
+    const code = err?.response?.status;
+    console.error(`[PRICE] price_fetch_failed${code ? `_${code}` : ""}`);
     return null;
   }
-}
-
-// Check if text contains price intent
-export function hasPriceIntent(text: string): boolean {
-  const lower = text.toLowerCase();
-  const priceKeywords = [
-    'price', 'سعر', 'سعره', 'كم', 'قيمة',
-    'gold', 'ذهب', 'xau', 'silver', 'فضة', 'xag',
-    'oil', 'نفط', 'wti', 'brent', 'برنت',
-    'btc', 'bitcoin', 'بيتكوين', 'eth', 'ethereum', 'إيثيريوم',
-    'eur', 'euro', 'يورو', 'gbp', 'pound', 'جنيه',
-    'jpy', 'yen', 'ين', 'chf', 'franc', 'فرنك',
-    'cad', 'aud', 'nzd'
-  ];
-
-  return priceKeywords.some(keyword => lower.includes(keyword));
 }
