@@ -10,14 +10,14 @@ const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const FCS_API_KEY = process.env.FCS_API_KEY;
-const WORKFLOW_ID = process.env.WORKFLOW_ID;
+const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 if (!VERIFY_TOKEN) throw new Error('Missing required environment variable: VERIFY_TOKEN');
 if (!WHATSAPP_PHONE_NUMBER_ID) throw new Error('Missing required environment variable: WHATSAPP_PHONE_NUMBER_ID');
 if (!WHATSAPP_TOKEN) throw new Error('Missing required environment variable: WHATSAPP_TOKEN');
 if (!OPENAI_API_KEY) throw new Error('Missing required environment variable: OPENAI_API_KEY');
 if (!FCS_API_KEY) throw new Error('Missing required environment variable: FCS_API_KEY');
-if (!WORKFLOW_ID) throw new Error('Missing required environment variable: WORKFLOW_ID');
+if (!OPENAI_WORKFLOW_ID) throw new Error('Missing required environment variable: OPENAI_WORKFLOW_ID');
 
 // Extract message from webhook payload
 function extractMessage(payload) {
@@ -139,7 +139,7 @@ export default async function handler(req, res) {
           } else {
             // Use agent for non-price requests
             console.log('[WABA] agent intent detected');
-            responseText = await runAgent(WORKFLOW_ID, message.text);
+            responseText = await runAgent(OPENAI_WORKFLOW_ID, message.text);
             console.log('[WABA] agent');
             console.log('[WABA] reply sent', { to: message.from, kind: 'agent' });
           }

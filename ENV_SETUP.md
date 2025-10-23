@@ -12,7 +12,7 @@ Set these in your Vercel dashboard under Settings → Environment Variables:
 
 ### OpenAI Configuration
 - `OPENAI_API_KEY` - Your OpenAI API key
-- `WORKFLOW_ID` - Your OpenAI Workflow ID (from Agent Builder)
+- `OPENAI_WORKFLOW_ID` - Your OpenAI Workflow ID (from Agent Builder)
 - `OPENAI_PROJECT` - Your OpenAI project ID (optional but recommended)
 
 ### Price Data
