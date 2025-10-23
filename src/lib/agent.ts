@@ -1,46 +1,19 @@
 // src/lib/agent.ts
-const AGENT_ID = process.env.AGENT_ID;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-if (!AGENT_ID || !OPENAI_API_KEY) {
-  throw new Error('Missing required environment variables: AGENT_ID, OPENAI_API_KEY');
-}
+import { runWorkflow } from '../../lib/agent';
 
 export async function callAgent(text: string): Promise<string> {
   try {
-    // Using OpenAI Agent Builder API
-    const response = await fetch(`https://api.openai.com/v1/agents/${AGENT_ID}/runs`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        input: text,
-        stream: false
-      })
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('[AGENT] API error:', response.status, error);
-      throw new Error(`Agent API error: ${response.status}`);
-    }
-
-    const data = await response.json();
+    console.log('[AGENT] Calling workflow with text:', text);
     
-    // Extract plain text from agent response
-    let output = '';
-    if (data.output) {
-      output = typeof data.output === 'string' ? data.output : JSON.stringify(data.output);
-    } else if (data.response) {
-      output = typeof data.response === 'string' ? data.response : JSON.stringify(data.response);
-    } else if (data.text) {
-      output = data.text;
+    const result = await runWorkflow({ input_as_text: text });
+    
+    if (!result || !result.output_text) {
+      console.log('[AGENT] No output from workflow');
+      return 'عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.';
     }
 
     // Clean up output - remove markdown and trim
-    output = output
+    let output = result.output_text
       .replace(/```[\s\S]*?```/g, '') // Remove code blocks
       .replace(/`([^`]+)`/g, '$1') // Remove inline code
       .replace(/\*\*(.*?)\*\*/g, '$1') // Remove bold
@@ -49,6 +22,7 @@ export async function callAgent(text: string): Promise<string> {
       .replace(/\n\s*\n/g, '\n') // Remove extra newlines
       .trim();
 
+    console.log('[AGENT] Workflow response:', output);
     return output || 'عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.';
   } catch (error) {
     console.error('[AGENT] Error:', error);
