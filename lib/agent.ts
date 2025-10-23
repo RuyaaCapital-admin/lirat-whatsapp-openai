@@ -269,7 +269,7 @@ REMINDER:
     topP: 0.85,
     parallelToolCalls: true,
     maxTokens: 6593,
-    store: true
+    store: false
   }
 });
 
