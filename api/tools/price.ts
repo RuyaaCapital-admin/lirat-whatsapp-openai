@@ -4,10 +4,32 @@ import axios from "axios";
 const FCS_KEY = process.env.FCS_API_KEY || process.env.PRICE_API_KEY;
 const FMP_KEY = process.env.FMP_API_KEY;
 
-const nowHHMM = (d = new Date()) => new Date(d).toISOString().slice(11, 16);
-const fmt = (n) => (n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toFixed(6));
+type QuoteResult = {
+  price: number;
+  hhmm: string;
+};
 
-function normalizeSymbol(raw) {
+type NormalizedSymbol = {
+  pretty: string;
+  forFcs: string;
+  noslash: string;
+};
+
+type ApiRequest = {
+  method?: string;
+  body?: unknown;
+};
+
+type ApiResponse = {
+  status: (code: number) => ApiResponse;
+  json: (body: unknown) => ApiResponse;
+};
+
+const nowHHMM = (d: Date | string | number = new Date()): string =>
+  new Date(d).toISOString().slice(11, 16);
+const fmt = (n: number): string => (n >= 100 ? n.toFixed(2) : n >= 1 ? n.toFixed(4) : n.toFixed(6));
+
+function normalizeSymbol(raw: string | null | undefined): NormalizedSymbol {
   let s = (raw || "").trim().toUpperCase();
   // Arabic → canonical
   s = s
@@ -19,7 +41,7 @@ function normalizeSymbol(raw) {
     .replace(/إ?ي?ثيريوم|ETH/gi, "ETHUSDT");
 
   // slash price pair (always show slashes in output)
-  const slashMap = {
+  const slashMap: Record<string, string> = {
     XAUUSD: "XAU/USD",
     XAGUSD: "XAG/USD",
     XTIUSD: "XTI/USD",
@@ -35,9 +57,7 @@ function normalizeSymbol(raw) {
   };
 
   // if already contains slash, keep it
-  let pricePair = /[A-Z]{3,4}\/[A-Z]{3,4}/.test(s)
-    ? s
-    : slashMap[s] || s;
+  const pricePair = /[A-Z]{3,4}\/[A-Z]{3,4}/.test(s) ? s : slashMap[s] || s;
 
   return {
     // output
@@ -49,51 +69,68 @@ function normalizeSymbol(raw) {
   };
 }
 
-async function fcsLatest(pairSlash) {
+async function fcsLatest(pairSlash: string): Promise<QuoteResult | null> {
   if (!FCS_KEY) return null;
   // FCS expects slash pairs for FX/metals e.g. XAU/USD
   const url = `https://fcsapi.com/api-v3/forex/latest?symbol=${encodeURIComponent(
     pairSlash
   )}&access_key=${FCS_KEY}`;
   const r = await axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-  const row = r.data?.response?.[0];
+  const row = (r.data?.response?.[0] || r.data?.data?.[0]) as
+    | {
+        c?: number | string;
+        tm?: string;
+        t?: number | string;
+      }
+    | undefined;
   if (!row) return null;
   const price = Number(row.c);
-  const tIso = row.tm || (row.t ? new Date(row.t * 1000).toISOString() : new Date().toISOString());
-  const hhmm = nowHHMM(tIso);
+  if (!Number.isFinite(price)) return null;
+  const timestamp =
+    row.tm || (row.t != null ? new Date(Number(row.t) * 1000).toISOString() : new Date().toISOString());
+  const hhmm = nowHHMM(timestamp);
   return { price, hhmm };
 }
 
-async function fmpQuote(noslash) {
+async function fmpQuote(noslash: string): Promise<QuoteResult | null> {
   if (!FMP_KEY) return null;
   // FMP supports /v3/quote/{symbol} for many assets, including crypto & some forex
   const url = `https://financialmodelingprep.com/api/v3/quote/${encodeURIComponent(
     noslash
   )}?apikey=${FMP_KEY}`;
   const r = await axios.get(url);
-  const row = r.data?.[0];
+  const row = r.data?.[0] as
+    | {
+        price?: number | string;
+        c?: number | string;
+        previousClose?: number | string;
+      }
+    | undefined;
   if (!row) return null;
   const price = Number(row.price ?? row.c ?? row.previousClose);
+  if (!Number.isFinite(price)) return null;
   const hhmm = nowHHMM();
   return { price, hhmm };
 }
 
-async function binanceLastClosed(noslash) {
+async function binanceLastClosed(noslash: string): Promise<QuoteResult | null> {
   // crypto fallback: Binance klines 1m, take previous candle close as "latest CLOSED"
   const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
     noslash
   )}&interval=1m&limit=2`;
   const r = await axios.get(url);
-  const k = r.data?.[0] && r.data[r.data.length - 1]; // last candle (closed)
+  const candles = r.data as Array<[number, number, number, number, number, ...number[]]> | undefined;
+  const k = candles?.length ? candles[candles.length - 1] : undefined; // last candle (closed)
   if (!k) return null;
   const price = Number(k[4]);
+  if (!Number.isFinite(price)) return null;
   const hhmm = nowHHMM(k[0] + 60000);
   return { price, hhmm };
 }
 
-async function yahooFallback(prettySlash) {
+async function yahooFallback(prettySlash: string): Promise<QuoteResult | null> {
   // metals sanity fallback when FCS looks off
-  const map = {
+  const map: Record<string, string[]> = {
     "XAU/USD": ["XAUUSD=X", "XAU=X", "GC=F"],
     "XAG/USD": ["XAGUSD=X", "SI=F"],
   };
@@ -105,25 +142,38 @@ async function yahooFallback(prettySlash) {
         `https://query1.finance.yahoo.com/v8/finance/chart/${tkr}?range=1d&interval=1m`,
         { headers: { "User-Agent": "Mozilla/5.0" } }
       );
-      const r0 = y.data?.chart?.result?.[0];
+      const r0 = y.data?.chart?.result?.[0] as
+        | {
+            indicators?: { quote?: Array<{ close?: Array<number | null | undefined> }> };
+            timestamp?: number[];
+          }
+        | undefined;
       const closes = r0?.indicators?.quote?.[0]?.close ?? [];
       const ts = r0?.timestamp ?? [];
       let i = closes.length - 1;
-      while (i >= 0 && (closes[i] == null || isNaN(closes[i]))) i--;
-      if (i >= 0) return { price: Number(closes[i]), hhmm: nowHHMM(ts[i] * 1000) };
-    } catch {}
+      while (i >= 0) {
+        const close = closes[i];
+        if (close != null && !Number.isNaN(Number(close))) {
+          const tsValue = ts[i] ?? Date.now() / 1000;
+          return { price: Number(close), hhmm: nowHHMM(tsValue * 1000) };
+        }
+        i--;
+      }
+    } catch {
+      // ignore and try next ticker
+    }
   }
   return null;
 }
 
-export default async function handler(req, res) {
+export default async function handler(req: ApiRequest, res: ApiResponse) {
   try {
     if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Method Not Allowed" });
-    const { symbol } = req.body || {};
+    const { symbol } = (req.body || {}) as { symbol?: string };
     if (!symbol) return res.status(400).json({ ok: false, error: "Missing symbol" });
 
     const norm = normalizeSymbol(symbol);
-    let out = null;
+    let out: QuoteResult | null = null;
 
     // try FCS for FX/metals first (slash pair)
     if (/(XAU|XAG|XTI|XBR|EUR|GBP|USD|CHF|AUD|CAD)/.test(norm.noslash)) {
@@ -142,7 +192,7 @@ export default async function handler(req, res) {
     // Binance last-closed fallback (crypto)
     if (!out && /USDT$/.test(norm.noslash)) out = await binanceLastClosed(norm.noslash);
 
-    if (!out || !isFinite(out.price)) {
+    if (!out || !Number.isFinite(out.price)) {
       return res.status(200).json({ ok: false, error: "Data unavailable" });
     }
 
@@ -154,7 +204,9 @@ Note: latest CLOSED price`;
 
     return res.status(200).json({ ok: true, text });
   } catch (e) {
-    console.error("[price]", e?.response?.data || e);
+    const maybeAxiosError = e as { response?: { data?: unknown } } | null | undefined;
+    const responseData = maybeAxiosError?.response?.data;
+    console.error("[price]", responseData ?? e);
     return res.status(200).json({ ok: false, error: "price_error" });
   }
 }

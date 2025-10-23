@@ -1,6 +1,26 @@
 export type Candle = { t: number; o: number; h: number; l: number; c: number };
 export type TF = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
+export type SignalState = "BUY" | "SELL" | "NEUTRAL";
+export type SignalLevels = { sl: number; tp1: number; tp2: number } | null;
+export type SignalInsufficient = { state: "NEUTRAL"; reason: "insufficient" };
+export type SignalComputed = {
+  state: SignalState;
+  c: number;
+  prev: number;
+  ema20: number;
+  ema50: number;
+  rsi: number;
+  macd: number;
+  macds: number;
+  hist: number;
+  atr: number;
+  atrProxy: boolean;
+  entry: number;
+  levels: SignalLevels;
+};
+export type SignalResult = SignalComputed | SignalInsufficient;
+
 function ema(values: number[], p: number) {
   const k = 2 / (p + 1);
   let ema = values[0];
@@ -52,8 +72,8 @@ function stddev(arr: number[]) {
   return Math.sqrt(v);
 }
 
-export function computeSignal(ticker: string, tf: TF, candles: Candle[]) {
-  if (candles.length < 60) return { state: "NEUTRAL", reason: "insufficient" } as const;
+export function computeSignal(ticker: string, tf: TF, candles: Candle[]): SignalResult {
+  if (candles.length < 60) return { state: "NEUTRAL", reason: "insufficient" };
   const closes = candles.map((x) => x.c);
   const c = closes.at(-1)!;
   const prev = closes.at(-2)!;
@@ -64,14 +84,14 @@ export function computeSignal(ticker: string, tf: TF, candles: Candle[]) {
   const { macd: macdV, signal: macdS, hist } = macd(closes.slice(-60));
   const { atr, proxy } = atr14(candles.slice(-60));
 
-  let state: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+  let state: SignalState = "NEUTRAL";
   if (c > ema50 && ema20 > ema50 && rsi >= 55 && macdV > macdS) state = "BUY";
   else if (c < ema50 && ema20 < ema50 && rsi <= 45 && macdV < macdS) state = "SELL";
 
   const k = tf === "1m" ? 0.35 : tf === "5m" ? 0.5 : tf === "15m" ? 0.75 : tf === "30m" ? 0.9 : tf === "1h" ? 1 : tf === "4h" ? 1.5 : 2;
   const risk = k * atr;
   const entry = c;
-  const levels =
+  const levels: SignalLevels =
     state === "BUY"
       ? { sl: entry - risk, tp1: entry + risk, tp2: entry + 2 * risk }
       : state === "SELL"

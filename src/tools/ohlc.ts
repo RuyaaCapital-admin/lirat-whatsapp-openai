@@ -1,6 +1,6 @@
 import axios from "axios";
-import { normalise } from "../symbols";
-import type { Candle, TF } from "../signal";
+import { normalise } from "../symbols.js";
+import type { Candle, TF } from "../signal.js";
 
 const ALLOWED: TF[] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
 const UA = { "User-Agent": "Mozilla/5.0 (LiiratBot)" };

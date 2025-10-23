@@ -1,14 +1,18 @@
-import { Agent, Runner, fileSearchTool, tool } from "@openai/agents";
+import { Agent, Runner, fileSearchTool, tool, setDefaultOpenAIKey } from "@openai/agents";
 import { z } from "zod";
-import { fetchLatestPrice } from "../src/tools/price";
-import { fetchOhlc } from "../src/tools/ohlc";
-import { computeSignal, type Candle, type TF } from "../src/signal";
+import { fetchLatestPrice } from "../src/tools/price.js";
+import { fetchOhlc } from "../src/tools/ohlc.js";
+import { computeSignal, type Candle, type TF } from "../src/signal.js";
+
+type PriceParams = { symbol: string };
+type OhlcParams = { symbol: string; interval: string };
+type SignalParams = { symbol: string; interval: string; candles: Candle[] };
 
 const getPrice = tool({
   name: "get_price",
   description: "Fetch the latest closed price for a slash pair (e.g., XAU/USD). Returns { ok, data }.",
   parameters: z.object({ symbol: z.string() }),
-  execute: async ({ symbol }) => fetchLatestPrice(symbol),
+  execute: async ({ symbol }: PriceParams) => fetchLatestPrice(symbol),
 });
 
 const getOhlc = tool({
@@ -18,7 +22,7 @@ const getOhlc = tool({
     symbol: z.string(),
     interval: z.enum(["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const),
   }),
-  execute: async ({ symbol, interval }) => fetchOhlc(symbol, interval as TF),
+  execute: async ({ symbol, interval }: OhlcParams) => fetchOhlc(symbol, interval as TF),
 });
 
 const computeTradingSignal = tool({
@@ -31,8 +35,8 @@ const computeTradingSignal = tool({
       z.object({ t: z.number(), o: z.number(), h: z.number(), l: z.number(), c: z.number() })
     ),
   }),
-  execute: async ({ symbol, interval, candles }) => {
-    const signal = computeSignal(symbol, interval as TF, candles as Candle[]);
+  execute: async ({ symbol, interval, candles }: SignalParams) => {
+    const signal = computeSignal(symbol, interval as TF, candles);
     return { symbol, interval, signal };
   },
 });
@@ -82,8 +86,8 @@ export async function runAgent(input: string) {
   if (!apiKey) {
     throw new Error("OPENAI_API_KEY is not set");
   }
+  setDefaultOpenAIKey(apiKey);
   const runner = new Runner({
-    apiKey,
     traceMetadata: {
       __trace_source__: "agent-builder",
       workflow_id: "wf_liirat_v6",
@@ -99,4 +103,4 @@ export async function runAgent(input: string) {
   return result.finalOutput;
 }
 
-export { formatPriceBlock, formatSignalBlock } from "../src/format";
+export { formatPriceBlock, formatSignalBlock } from "../src/format.js";
