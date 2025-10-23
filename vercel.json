@@ -1,8 +1,4 @@
 {
-  "functions": {
-    "api/**/*.ts": { "runtime": "nodejs22.x" }
-  },
-  "routes": [
-    { "src": "/api/webhook", "dest": "api/webhook.ts" }
-  ]
+  "functions": { "api/**/*.js": { "runtime": "nodejs22.x" } },
+  "routes": [{ "src": "/api/webhook", "dest": "/api/webhook.js" }]
 }
