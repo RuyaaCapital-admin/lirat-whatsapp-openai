@@ -58,7 +58,11 @@ export async function getFmpTechnicalIndicators(symbol: string, tf: TF): Promise
     // If response keys are "0","1",... build array
     const keys = Object.keys(data).filter(k => /^\d+$/.test(k));
     if (keys.length > 0) {
-      indicators = keys.map(k => data[k]).sort((a, b) => new Date(a.date) - new Date(b.date));
+      indicators = keys.map(k => data[k]).sort((a, b) => {
+        const dateA = new Date(a.date || 0).getTime();
+        const dateB = new Date(b.date || 0).getTime();
+        return dateA - dateB;
+      });
     } else {
       indicators = [data];
     }
