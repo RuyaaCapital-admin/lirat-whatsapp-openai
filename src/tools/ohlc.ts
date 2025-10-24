@@ -3,7 +3,7 @@ import { TF } from "./normalize";
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 
-export type OhlcSource = "FMP" | "FCS";
+export type OhlcSource = "FMP" | "FCS" | "PROVIDED";
 
 export interface OhlcResult {
   candles: Candle[];
