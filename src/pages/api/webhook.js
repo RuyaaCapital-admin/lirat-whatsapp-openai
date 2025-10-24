@@ -203,56 +203,15 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Try Agent Builder workflow via direct HTTP call (since SDK doesn't have workflows)
-      console.log('[WORKFLOW] Using direct HTTP call to Agent Builder API');
+      // Try Agent Builder workflow via Responses API
+      console.log('[WORKFLOW] Using Responses API with workflow_id');
       
-      // Try different possible endpoints
-      const endpoints = [
-        'https://api.openai.com/v1/workflows/runs',
-        'https://api.openai.com/v1/beta/workflows/runs',
-        'https://api.openai.com/v1/agents/invoke',
-        'https://api.openai.com/v1/beta/agents/invoke'
-      ];
-      
-      let workflowResult;
-      let lastError;
-      
-      for (const endpoint of endpoints) {
-        try {
-          console.log(`[WORKFLOW] Trying endpoint: ${endpoint}`);
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-              'Content-Type': 'application/json',
-              'OpenAI-Project': process.env.OPENAI_PROJECT
-            },
-            body: JSON.stringify({
-              workflow_id: process.env.OPENAI_WORKFLOW_ID,
-              input: {
-                input_as_text: userText
-              }
-            })
-          });
-          
-          if (response.ok) {
-            workflowResult = await response.json();
-            console.log(`[WORKFLOW] Success with endpoint: ${endpoint}`);
-            break;
-          } else {
-            const errorText = await response.text();
-            console.log(`[WORKFLOW] Failed with ${endpoint}: ${response.status} ${errorText}`);
-            lastError = `HTTP ${response.status}: ${errorText}`;
-          }
-        } catch (error) {
-          console.log(`[WORKFLOW] Error with ${endpoint}:`, error.message);
-          lastError = error.message;
-        }
-      }
-      
-      if (!workflowResult) {
-        throw new Error(`All endpoints failed. Last error: ${lastError}`);
-      }
+      const workflowResult = await openai.responses.create({
+        model: "gpt-4o-mini",
+        input: userText,
+        workflow_id: process.env.OPENAI_WORKFLOW_ID,
+        max_tokens: 1000
+      });
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
