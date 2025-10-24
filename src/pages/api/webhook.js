@@ -210,7 +210,8 @@ async function smartReply(userText, meta = {}) {
       const agent = new Agent({
         apiKey: process.env.OPENAI_API_KEY,
         project: process.env.OPENAI_PROJECT,
-        workflowId: process.env.OPENAI_WORKFLOW_ID
+        workflowId: process.env.OPENAI_WORKFLOW_ID,
+        name: process.env.AGENT_NAME || 'Liirat-Ai'
       });
       
       const workflowResult = await agent.invoke({
