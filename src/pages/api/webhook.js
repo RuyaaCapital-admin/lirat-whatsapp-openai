@@ -4,6 +4,7 @@ import { openai } from '../../lib/openai';
 import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from '../../tools/agentTools';
 
 // --- OpenAI function tool schemas ---
+
 const TOOL_SCHEMAS = [
   {
     type: "function",
@@ -54,6 +55,23 @@ const TOOL_SCHEMAS = [
       }
     }
   },
+  {
+  type: "function",
+  function: {
+    name: "about_liirat_knowledge",
+    description: "Answer questions about Liirat/company/platform/accounts/support from internal KB.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        lang:  { type: "string" }
+      },
+      required: ["query"],
+      additionalProperties: false
+    }
+  }
+},
+
   {
     type: "function",
     function: {
