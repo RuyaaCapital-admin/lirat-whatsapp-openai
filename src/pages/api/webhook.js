@@ -190,6 +190,14 @@ async function smartReply(userText, meta = {}) {
       console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
       
       // Check if SDK supports workflows
+      console.log('[WORKFLOW DEBUG] OpenAI client properties:', {
+        hasWorkflows: !!openai.workflows,
+        hasRuns: !!openai.workflows?.runs,
+        hasCreate: !!openai.workflows?.runs?.create,
+        clientKeys: Object.keys(openai),
+        workflowsKeys: openai.workflows ? Object.keys(openai.workflows) : 'no workflows'
+      });
+      
       if (!openai.workflows?.runs) {
         throw new Error("OpenAI SDK too old: upgrade to openai >= 4.67.0");
       }
