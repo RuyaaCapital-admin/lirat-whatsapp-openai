@@ -1,69 +1,142 @@
 import { TF } from "./normalize";
-import { get_ohlc } from "./ohlc";
+import { get_ohlc, Candle, OhlcResult } from "./ohlc";
 
-const ema = (arr:number[], p:number)=>{ const k=2/(p+1); let e=arr.slice(0,p).reduce((a,b)=>a+b)/p;
-  for(let i=p;i<arr.length;i++) e=arr[i]*k+e*(1-k); return e; };
-const rsi = (arr:number[], p=14)=>{ let g=0,l=0; for(let i=1;i<=p;i++){const d=arr[i]-arr[i-1]; g+=Math.max(d,0); l+=Math.max(-d,0);}
-  g/=p; l=l||1e-12; let rs=g/l, r=100-100/(1+rs);
-  for(let i=p+1;i<arr.length;i++){const d=arr[i]-arr[i-1]; const G=Math.max(d,0), L=Math.max(-d,0);
-    g=(g*(p-1)+G)/p; l=(l*(p-1)+L)/p||1e-12; rs=g/l; r=100-100/(1+rs);} return r; };
-const macdVals = (arr:number[])=>{ const emaN=(n:number)=>{ let e=arr[0]; const k=2/(n+1); for(let i=1;i<arr.length;i++) e=arr[i]*k+e*(1-k); return e; };
-  const macd=emaN(12)-emaN(26); const signal=macd*0.8; const hist=macd-signal; return { macd, signal, hist }; };
-const atr14 = (H:number[],L:number[],C:number[])=>{ const tr:number[]=[]; for(let i=1;i<H.length;i++){ tr.push(Math.max(H[i]-L[i],Math.abs(H[i]-C[i-1]),Math.abs(L[i]-C[i-1])));}
-  if(tr.length<14) return { value:NaN, proxy:true }; let a=tr.slice(0,14).reduce((x,y)=>x+y)/14; for(let i=14;i<tr.length;i++) a=(a*13+tr[i])/14;
-  return { value:a, proxy:false }; };
+export interface SignalPayload extends Record<string, unknown> {
+  signal: "BUY" | "SELL" | "NEUTRAL";
+  entry: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  timeUTC: string;
+  symbol: string;
+  interval: TF;
+}
 
-export async function compute_trading_signal(symbol: string, timeframe: TF) {
-  const { rows, lastClosed } = await get_ohlc(symbol, timeframe);
-  const C = rows.map((r) => r.c);
-  const H = rows.map((r) => r.h);
-  const L = rows.map((r) => r.l);
-  const prev = rows.at(-2)!;
+function ema(values: number[], period: number) {
+  const weight = 2 / (period + 1);
+  let current = values.slice(0, period).reduce((acc, value) => acc + value, 0) / period;
+  for (let i = period; i < values.length; i += 1) {
+    current = values[i] * weight + current * (1 - weight);
+  }
+  return current;
+}
 
-  const ema20 = ema(C, 20);
-  const ema50 = ema(C, 50);
-  const rsi14 = rsi(C, 14);
-  const { macd, signal, hist } = macdVals(C);
-  const { value: atrVal, proxy } = atr14(H, L, C);
+function rsi(values: number[], period = 14) {
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period; i += 1) {
+    const delta = values[i] - values[i - 1];
+    gains += Math.max(delta, 0);
+    losses += Math.max(-delta, 0);
+  }
+  gains /= period;
+  losses = losses || 1e-12;
+  let rs = gains / losses;
+  let result = 100 - 100 / (1 + rs);
+  for (let i = period + 1; i < values.length; i += 1) {
+    const delta = values[i] - values[i - 1];
+    const gain = Math.max(delta, 0);
+    const loss = Math.max(-delta, 0);
+    gains = (gains * (period - 1) + gain) / period;
+    losses = (losses * (period - 1) + loss) / period || 1e-12;
+    rs = gains / losses;
+    result = 100 - 100 / (1 + rs);
+  }
+  return result;
+}
 
-  let decision: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
-  if (ema20 > ema50 && rsi14 >= 55) decision = "BUY";
-  if (ema20 < ema50 && rsi14 <= 45) decision = "SELL";
-
-  const close = lastClosed.c;
-  const risk = Number.isFinite(atrVal) ? atrVal : Math.max(close * 0.0015, Math.abs(close - prev.c) || 1);
-  const entry = close;
-  const sl = decision === "BUY" ? entry - risk : decision === "SELL" ? entry + risk : entry;
-  const tp1 = decision === "BUY" ? entry + risk : decision === "SELL" ? entry - risk : entry;
-  const tp2 = decision === "BUY" ? entry + 2 * risk : decision === "SELL" ? entry - 2 * risk : entry;
-
-  const lastClosedISO = new Date(lastClosed.t).toISOString();
-  const lastClosedUTCISO = `${lastClosedISO.slice(0, 10)} ${lastClosedISO.slice(11, 16)} UTC`;
-
-  const block = {
-    symbol,
-    timeframe,
-    time_utc: lastClosedUTCISO,
-    last_closed_iso: lastClosedISO,
-    close,
-    prev: prev.c,
-    ema20,
-    ema50,
-    rsi: rsi14,
-    macd,
-    macd_signal: signal,
-    macd_hist: hist,
-    atr: risk,
-    atr_is_proxy: !Number.isFinite(atrVal) || proxy,
-    decision,
-    signal: decision,
-    entry,
-    sl,
-    tp1,
-    tp2,
+function macd(values: number[]) {
+  const emaWeighted = (period: number) => {
+    let current = values[0];
+    const weight = 2 / (period + 1);
+    for (let i = 1; i < values.length; i += 1) {
+      current = values[i] * weight + current * (1 - weight);
+    }
+    return current;
   };
+  const fast = emaWeighted(12);
+  const slow = emaWeighted(26);
+  const macdValue = fast - slow;
+  const signal = emaWeighted(9);
+  return { macd: macdValue, signal };
+}
+
+function atr14(highs: number[], lows: number[], closes: number[]) {
+  const tr: number[] = [];
+  for (let i = 1; i < highs.length; i += 1) {
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  if (tr.length < 14) {
+    return { value: NaN };
+  }
+  let avg = tr.slice(0, 14).reduce((acc, value) => acc + value, 0) / 14;
+  for (let i = 14; i < tr.length; i += 1) {
+    avg = (avg * 13 + tr[i]) / 14;
+  }
+  return { value: avg };
+}
+
+function toUtcString(timestamp: number) {
+  const iso = new Date(timestamp).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+function round(value: number) {
+  const abs = Math.abs(value);
+  const decimals = abs >= 1000 ? 2 : abs >= 100 ? 3 : abs >= 1 ? 4 : 6;
+  return Number(value.toFixed(decimals));
+}
+
+function normaliseSymbol(symbol: string) {
+  return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+
+export function buildSignalFromSeries(symbol: string, timeframe: TF, series: OhlcResult): SignalPayload {
+  const candles = series.candles;
+  if (!Array.isArray(candles) || candles.length < 3) {
+    throw new Error("insufficient_ohlc");
+  }
+  const closes = candles.map((candle) => candle.c);
+  const highs = candles.map((candle) => candle.h);
+  const lows = candles.map((candle) => candle.l);
+  const lastIndex = candles.findIndex((candle) => candle.t === series.lastClosed.t);
+  const previous = lastIndex > 0 ? (candles[lastIndex - 1] as Candle | undefined) : undefined;
+  if (!previous) {
+    throw new Error("missing_previous_bar");
+  }
+
+  const ema20 = ema(closes, Math.min(20, closes.length));
+  const ema50 = ema(closes, Math.min(50, closes.length));
+  const rsiValue = rsi(closes, Math.min(14, closes.length - 1));
+  const { macd: macdValue } = macd(closes);
+  const { value: atrValue } = atr14(highs, lows, closes);
+
+  let decision: SignalPayload["signal"] = "NEUTRAL";
+  if (ema20 > ema50 && rsiValue >= 55 && macdValue > 0) decision = "BUY";
+  if (ema20 < ema50 && rsiValue <= 45 && macdValue < 0) decision = "SELL";
+
+  const close = series.lastClosed.c;
+  const fallbackRisk = Math.max(close * 0.0015, Math.abs(close - previous.c) || 1);
+  const risk = Number.isFinite(atrValue) && atrValue > 0 ? atrValue : fallbackRisk;
+
+  const entry = round(close);
+  const stopLoss = round(decision === "BUY" ? close - risk : decision === "SELL" ? close + risk : close);
+  const takeProfit1 = round(decision === "BUY" ? close + risk : decision === "SELL" ? close - risk : close);
+  const takeProfit2 = round(decision === "BUY" ? close + 2 * risk : decision === "SELL" ? close - 2 * risk : close);
 
   return {
-    text: JSON.stringify(block),
+    signal: decision,
+    entry: decision === "NEUTRAL" ? null : entry,
+    sl: decision === "NEUTRAL" ? null : stopLoss,
+    tp1: decision === "NEUTRAL" ? null : takeProfit1,
+    tp2: decision === "NEUTRAL" ? null : takeProfit2,
+    timeUTC: toUtcString(series.lastClosed.t),
+    symbol: normaliseSymbol(symbol),
+    interval: timeframe,
   };
+}
+
+export async function compute_trading_signal(symbol: string, timeframe: TF): Promise<SignalPayload> {
+  const data = await get_ohlc(symbol, timeframe);
+  return buildSignalFromSeries(symbol, timeframe, data);
 }
