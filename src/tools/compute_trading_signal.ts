@@ -46,37 +46,29 @@ function rsi(values: number[], period = 14) {
 }
 
 function macd(values: number[]) {
-  // Calculate EMA arrays for fast and slow periods
   const calculateEMA = (period: number) => {
     const emaValues: number[] = [];
     const weight = 2 / (period + 1);
-    
-    // Initialize with SMA for the first period values
     let sum = 0;
-    for (let i = 0; i < period && i < values.length; i++) {
+    for (let i = 0; i < period && i < values.length; i += 1) {
       sum += values[i];
     }
     emaValues.push(sum / Math.min(period, values.length));
-    
-    // Calculate EMA for remaining values
-    for (let i = period; i < values.length; i++) {
+    for (let i = period; i < values.length; i += 1) {
       const ema = values[i] * weight + emaValues[emaValues.length - 1] * (1 - weight);
       emaValues.push(ema);
     }
-    
     return emaValues;
   };
-  
+
   const fastEMA = calculateEMA(12);
   const slowEMA = calculateEMA(26);
-  
-  // Calculate MACD line (fast - slow)
   const macdValues: number[] = [];
   const minLength = Math.min(fastEMA.length, slowEMA.length);
-  for (let i = 0; i < minLength; i++) {
+  for (let i = 0; i < minLength; i += 1) {
     macdValues.push(fastEMA[i] - slowEMA[i]);
   }
-  
+
   const macdValue = macdValues[macdValues.length - 1];
   const signal = ema(macdValues, 9);
   return { macd: macdValue, signal };
@@ -110,6 +102,55 @@ function round(value: number) {
 
 function normaliseSymbol(symbol: string) {
   return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+
+const TF_TO_MS: Record<TF, number> = {
+  "1min": 60_000,
+  "5min": 5 * 60_000,
+  "15min": 15 * 60_000,
+  "30min": 30 * 60_000,
+  "1hour": 60 * 60_000,
+  "4hour": 4 * 60 * 60_000,
+  "1day": 24 * 60 * 60_000,
+};
+
+function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+  const now = Date.now();
+  const sorted = candles.slice().sort((a, b) => a.t - b.t);
+  const last = sorted.at(-1) ?? null;
+  const prev = sorted.at(-2) ?? null;
+  if (!last) {
+    throw new Error("INVALID_CANDLES");
+  }
+  const candidate = last && now - last.t < tfMs * 0.5 ? prev ?? last : last;
+  if (!candidate) {
+    throw new Error("NO_CLOSED_BAR");
+  }
+  const values = [candidate.o, candidate.h, candidate.l, candidate.c];
+  if (!values.every((value) => Number.isFinite(value))) {
+    throw new Error("INVALID_CANDLE_VALUES");
+  }
+  return candidate;
+}
+
+function normalizeCandles(candles: Candle[]): Candle[] {
+  return candles
+    .map((candle) => ({
+      o: Number(candle.o),
+      h: Number(candle.h),
+      l: Number(candle.l),
+      c: Number(candle.c),
+      t: Number(candle.t),
+    }))
+    .filter((candle) =>
+      Number.isFinite(candle.o) &&
+      Number.isFinite(candle.h) &&
+      Number.isFinite(candle.l) &&
+      Number.isFinite(candle.c) &&
+      Number.isFinite(candle.t),
+    )
+    .sort((a, b) => a.t - b.t);
 }
 
 export function buildSignalFromSeries(symbol: string, timeframe: TF, series: OhlcResult): SignalPayload {
@@ -157,35 +198,15 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
   };
 }
 
-export async function compute_trading_signal(symbol: string, timeframe: TF, candles?: Candle[]): Promise<{ text: string }> {
-  const payload = await computeSignalPayload(symbol, timeframe, candles);
-  return { text: formatSignalPayload(payload) };
-}
-
-export async function computeSignalPayload(symbol: string, timeframe: TF, candles?: Candle[]): Promise<SignalPayload> {
+export async function computeSignal(symbol: string, timeframe: TF, candles?: Candle[]): Promise<SignalPayload> {
   if (candles && candles.length > 0) {
-    const sorted = candles
-      .map((candle) => ({
-        o: Number(candle.o),
-        h: Number(candle.h),
-        l: Number(candle.l),
-        c: Number(candle.c),
-        t: Number(candle.t),
-      }))
-      .filter((candle) =>
-        Number.isFinite(candle.o) &&
-        Number.isFinite(candle.h) &&
-        Number.isFinite(candle.l) &&
-        Number.isFinite(candle.c) &&
-        Number.isFinite(candle.t),
-      )
-      .sort((a, b) => a.t - b.t);
-    if (!sorted.length) {
+    const normalized = normalizeCandles(candles);
+    if (!normalized.length) {
       throw new Error("invalid_candles");
     }
-    const lastClosed = deriveLastClosed(sorted, timeframe);
+    const lastClosed = deriveLastClosed(normalized, timeframe);
     const data: OhlcResult = {
-      candles: sorted,
+      candles: normalized,
       lastClosed,
       timeframe,
       source: "PROVIDED" as OhlcSource,
@@ -193,41 +214,11 @@ export async function computeSignalPayload(symbol: string, timeframe: TF, candle
     return buildSignalFromSeries(symbol, timeframe, data);
   }
 
-  const data = await get_ohlc(symbol, timeframe);
-  return buildSignalFromSeries(symbol, data.timeframe, data);
-}
-
-const TF_TO_MS: Record<TF, number> = {
-  "1m": 60_000,
-  "5m": 5 * 60_000,
-  "15m": 15 * 60_000,
-  "30m": 30 * 60_000,
-  "1h": 60 * 60_000,
-  "4h": 4 * 60 * 60_000,
-  "1d": 24 * 60 * 60_000,
-};
-
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
-  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const now = Date.now();
-  const sorted = candles.slice().sort((a, b) => a.t - b.t);
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  if (!last) {
-    throw new Error("INVALID_CANDLES");
+  const fetched = await get_ohlc(symbol, timeframe);
+  if (!fetched.candles.length) {
+    throw new Error("missing_ohlc");
   }
-  const candidate = last && now - last.t < tfMs * 0.5 ? prev ?? last : last;
-  if (!candidate) {
-    throw new Error("NO_CLOSED_BAR");
-  }
-  const values = [candidate.o, candidate.h, candidate.l, candidate.c];
-  if (!values.every((value) => Number.isFinite(value))) {
-    throw new Error("INVALID_CANDLE_VALUES");
-  }
-  if (now - candidate.t > tfMs * 6) {
-    throw new Error("STALE_DATA");
-  }
-  return candidate;
+  return buildSignalFromSeries(symbol, fetched.timeframe, fetched);
 }
 
 export function formatSignalPayload(signal: SignalPayload): string {
@@ -243,4 +234,13 @@ export function formatSignalPayload(signal: SignalPayload): string {
     `- TP1: ${signal.tp1} (R 1.0)`,
     `- TP2: ${signal.tp2} (R 2.0)`,
   ].join("\n");
+}
+
+export async function compute_trading_signal(
+  symbol: string,
+  timeframe: TF,
+  candles?: Candle[],
+): Promise<{ text: string }> {
+  const payload = await computeSignal(symbol, timeframe, candles);
+  return { text: formatSignalPayload(payload) };
 }

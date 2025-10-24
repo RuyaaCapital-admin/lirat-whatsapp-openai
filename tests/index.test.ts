@@ -50,7 +50,7 @@ async function testNeutralFormatting() {
     tp2: null,
     timeUTC: "2024-01-01 00:00 UTC",
     symbol: "BTCUSDT",
-    interval: "1h",
+    interval: "1hour",
   });
   assert.strictEqual(neutral, "- SIGNAL: NEUTRAL");
 }
@@ -65,7 +65,7 @@ async function testBuyFormatting() {
     tp2: 12,
     timeUTC: "2024-01-01 00:00 UTC",
     symbol: "XAUUSD",
-    interval: "1h",
+    interval: "1hour",
   });
   const lines = text.split("\n");
   assert.strictEqual(lines.length, 7, "formatted BUY payload should have 7 lines");

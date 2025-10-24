@@ -1,5 +1,5 @@
 // src/tools/normalize.ts
-export type TF = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
+export type TF = "1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "1day";
 
 const DIGIT_MAP: Record<string, string> = {
   '٠': '0','١': '1','٢': '2','٣': '3','٤': '4','٥': '5','٦': '6','٧': '7','٨': '8','٩': '9'
@@ -66,48 +66,48 @@ export function toTimeframe(user?: string): TF {
   if (
     /(\b1\s*(m|min|minute)\b|\bدقيقة\b|\bعلى دقيقة\b|\bعالدقيقة\b)/.test(t)
   )
-    return "1m";
+    return "1min";
   if (
     /(\b5\s*(m|min)\b|\b5\s*(دقايق|دقائق)\b|\b٥\s*(دقايق|دقائق)\b|\bخمس دقائق\b)/.test(t)
   )
-    return "5m";
-  if (/(\b15\s*(m|min)?\b|\b١٥\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) return "15m";
+    return "5min";
+  if (/(\b15\s*(m|min)?\b|\b١٥\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) return "15min";
   if (
     /(\b30\s*(m|min)?\b|\b٣٠\s*(دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/.test(t)
   )
-    return "30m";
-  if (/(\b1\s*(hour|h)\b|\bساعة\b|\bساعه\b)/.test(t)) return "1h";
-  if (/(\b4\s*(hour|h)\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b)/.test(t)) return "4h";
-  if (/(\bdaily\b|\bيومي\b|\bيوم\b)/.test(t)) return "1d";
-  return "1h";
+    return "30min";
+  if (/(\b1\s*(hour|h)\b|\bساعة\b|\bساعه\b)/.test(t)) return "1hour";
+  if (/(\b4\s*(hour|h)\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b)/.test(t)) return "4hour";
+  if (/(\bdaily\b|\bيومي\b|\bيوم\b)/.test(t)) return "1day";
+  return "1hour";
 }
 
 export const TIMEFRAME_FALLBACKS: Record<TF, TF[]> = {
-  "1m": ["5m", "15m"],
-  "5m": ["15m"],
-  "15m": ["30m", "1h"],
-  "30m": ["1h", "4h"],
-  "1h": ["4h", "1d"],
-  "4h": ["1d"],
-  "1d": [],
+  "1min": ["5min", "15min"],
+  "5min": ["15min"],
+  "15min": ["30min", "1hour"],
+  "30min": ["1hour", "4hour"],
+  "1hour": ["4hour", "1day"],
+  "4hour": ["1day"],
+  "1day": [],
 };
 
 export function timeframeToLabel(tf: TF): string {
   switch (tf) {
-    case "1m":
-      return "1m";
-    case "5m":
-      return "5m";
-    case "15m":
-      return "15m";
-    case "30m":
-      return "30m";
-    case "1h":
-      return "1h";
-    case "4h":
-      return "4h";
-    case "1d":
+    case "1min":
+      return "1min";
+    case "5min":
+      return "5min";
+    case "15min":
+      return "15min";
+    case "30min":
+      return "30min";
+    case "1hour":
+      return "1hour";
+    case "4hour":
+      return "4hour";
+    case "1day":
     default:
-      return "1d";
+      return "1day";
   }
 }
