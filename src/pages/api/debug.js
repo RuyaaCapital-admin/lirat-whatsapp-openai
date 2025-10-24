@@ -5,13 +5,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Check OpenAI SDK version
-    const openaiPackage = await import('openai/package.json');
-    const sdkVersion = openaiPackage.version;
-
     // Check if workflows are available
     const { openai } = await import('../../lib/openai');
     const hasWorkflows = !!openai.workflows?.runs?.create;
+    
+    // Try to get SDK version from the client
+    let sdkVersion = 'unknown';
+    try {
+      // Check if the client has version info
+      sdkVersion = openai._version || '4.67.0+ (estimated)';
+    } catch (e) {
+      sdkVersion = '4.67.0+ (estimated)';
+    }
 
     // Environment check
     const envStatus = {
