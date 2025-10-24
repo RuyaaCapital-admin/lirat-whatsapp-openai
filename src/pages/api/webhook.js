@@ -36,45 +36,35 @@ async function smartReply(userText, meta = {}) {
   try {
     console.log('[WORKFLOW] Calling workflow with input:', userText);
     
-    // Try workflow first
-    if (openai.workflows?.runs?.create) {
-      console.log('[WORKFLOW] Using SDK workflow method');
-      const run = await openai.workflows.runs.create({
+    // Try direct HTTP call to workflow API (this was working before)
+    const response = await fetch('https://api.openai.com/v1/workflows/runs', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Project': process.env.OPENAI_PROJECT || process.env.OPENAI_PROJECT_ID || ''
+      },
+      body: JSON.stringify({
         workflow_id: OPENAI_WORKFLOW_ID,
         input: userText,
         metadata: { channel: "whatsapp", ...meta }
-      });
-      
-      console.log('[WORKFLOW] Run response:', JSON.stringify(run, null, 2));
-      
-      const text = run.output_text ?? 
-                  (Array.isArray(run.output) ? 
-                    run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                    "");
-      
-      if (text) {
-        console.log('[WORKFLOW] Success via SDK, response length:', text.length);
-        return text;
-      }
-    }
-    
-    // Fallback to responses API if workflow method not available
-    console.log('[WORKFLOW] SDK workflow method not available, trying responses API');
-    const resp = await openai.responses.create({
-      model: "gpt-4o-mini",
-      input: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userText }
-      ],
+      })
     });
+
+    if (!response.ok) {
+      throw new Error(`Workflow API error: ${response.status} ${response.statusText}`);
+    }
+
+    const run = await response.json();
+    console.log('[WORKFLOW] Run response:', JSON.stringify(run, null, 2));
     
-    const text = resp.output_text ?? 
-                (Array.isArray(resp.output) ? 
-                  resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+    const text = run.output_text ?? 
+                (Array.isArray(run.output) ? 
+                  run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                   "");
     
     if (text) {
-      console.log('[WORKFLOW] Success via responses API, response length:', text.length);
+      console.log('[WORKFLOW] Success via HTTP, response length:', text.length);
       return text;
     }
     
