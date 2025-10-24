@@ -12,9 +12,11 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
 
 // Debug environment variables
-console.log('[ENV DEBUG] Available env vars:', {
-  OPENAI_WORKFLOW_ID: OPENAI_WORKFLOW_ID ? (OPENAI_WORKFLOW_ID.startsWith('wf_') ? 'SET (wf_...)' : `SET (${OPENAI_WORKFLOW_ID})`) : 'MISSING',
-  VERIFY_TOKEN: VERIFY_TOKEN ? 'SET' : 'MISSING'
+console.log("[ENV DEBUG] Available env vars:", {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY ? "SET" : "MISSING",
+  OPENAI_PROJECT: process.env.OPENAI_PROJECT ? "SET (proj_…)" : "MISSING",
+  OPENAI_WORKFLOW_ID: process.env.OPENAI_WORKFLOW_ID ? "SET (wf_…)" : "MISSING",
+  VERIFY_TOKEN: process.env.VERIFY_TOKEN ? "SET" : "MISSING",
 });
 
 // System prompt for fallback
@@ -187,25 +189,21 @@ async function smartReply(userText, meta = {}) {
     if (OPENAI_WORKFLOW_ID) {
       console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
       
-      // Call Agent Builder workflow using direct HTTP API with correct endpoint
-      const response = await fetch(`https://api.openai.com/v1/agents/${OPENAI_WORKFLOW_ID}/invoke`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          input: {
-            input_as_text: userText
-          }
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Agent API error: ${response.status} ${response.statusText}`);
+      // Check if SDK supports workflows
+      if (!openai.workflows?.runs) {
+        throw new Error("OpenAI SDK too old: upgrade to openai >= 4.67.0");
       }
-      
-      const workflowResult = await response.json();
+      if (!process.env.OPENAI_WORKFLOW_ID) {
+        throw new Error("Missing OPENAI_WORKFLOW_ID");
+      }
+
+      // Call Agent Builder workflow using correct SDK method
+      const workflowResult = await openai.workflows.runs.create({
+        workflow_id: process.env.OPENAI_WORKFLOW_ID,
+        input: {
+          input_as_text: userText
+        }
+      });
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
