@@ -216,7 +216,7 @@ async function smartReply(userText, meta = {}) {
       });
       
       // Try the correct Agent Builder API endpoint
-      const response = await fetch('https://api.openai.com/v1/beta/workflows/runs', {
+      const response = await fetch('https://api.openai.com/v1/agents/invoke', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -224,10 +224,8 @@ async function smartReply(userText, meta = {}) {
           'OpenAI-Project': process.env.OPENAI_PROJECT
         },
         body: JSON.stringify({
-          workflow_id: process.env.OPENAI_WORKFLOW_ID,
-          input: {
-            input_as_text: userText
-          }
+          agent_id: process.env.OPENAI_WORKFLOW_ID,
+          input: userText
         })
       });
       
@@ -261,6 +259,8 @@ async function smartReply(userText, meta = {}) {
   
   const intent = parseIntent(userText);
   console.log('[FALLBACK] Parsed intent:', intent);
+  console.log('[FALLBACK] Debug - userText:', userText);
+  console.log('[FALLBACK] Debug - userText.toLowerCase():', userText.toLowerCase());
   
   // Handle price requests
   if (intent.wantsPrice && intent.symbol) {
