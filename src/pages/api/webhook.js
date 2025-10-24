@@ -257,10 +257,13 @@ async function smartReply(userText, meta = {}) {
     }
   }
   
-  // Final fallback: Use model directly
+  // Final fallback: Use model directly (without project to avoid 401)
   try {
     console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
-    const resp = await openai.responses.create({
+    const fallbackClient = new (await import('openai')).default({
+      apiKey: process.env.OPENAI_API_KEY
+    });
+    const resp = await fallbackClient.responses.create({
       model: "gpt-4o-mini",
       input: userText // Use input format for Responses API
     });
