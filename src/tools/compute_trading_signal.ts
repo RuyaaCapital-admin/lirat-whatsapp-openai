@@ -46,18 +46,39 @@ function rsi(values: number[], period = 14) {
 }
 
 function macd(values: number[]) {
-  const emaWeighted = (period: number) => {
-    let current = values[0];
+  // Calculate EMA arrays for fast and slow periods
+  const calculateEMA = (period: number) => {
+    const emaValues: number[] = [];
     const weight = 2 / (period + 1);
-    for (let i = 1; i < values.length; i += 1) {
-      current = values[i] * weight + current * (1 - weight);
+    
+    // Initialize with SMA for the first period values
+    let sum = 0;
+    for (let i = 0; i < period && i < values.length; i++) {
+      sum += values[i];
     }
-    return current;
+    emaValues.push(sum / Math.min(period, values.length));
+    
+    // Calculate EMA for remaining values
+    for (let i = period; i < values.length; i++) {
+      const ema = values[i] * weight + emaValues[emaValues.length - 1] * (1 - weight);
+      emaValues.push(ema);
+    }
+    
+    return emaValues;
   };
-  const fast = emaWeighted(12);
-  const slow = emaWeighted(26);
-  const macdValue = fast - slow;
-  const signal = emaWeighted(9);
+  
+  const fastEMA = calculateEMA(12);
+  const slowEMA = calculateEMA(26);
+  
+  // Calculate MACD line (fast - slow)
+  const macdValues: number[] = [];
+  const minLength = Math.min(fastEMA.length, slowEMA.length);
+  for (let i = 0; i < minLength; i++) {
+    macdValues.push(fastEMA[i] - slowEMA[i]);
+  }
+  
+  const macdValue = macdValues[macdValues.length - 1];
+  const signal = ema(macdValues, 9);
   return { macd: macdValue, signal };
 }
 
@@ -176,6 +197,8 @@ export async function compute_trading_signal(symbol: string, timeframe: TF, cand
   if (candles && candles.length > 0) {
     // Use provided candles
     const sorted = candles.slice().sort((a, b) => a.t - b.t);
+ main
+
     
     // Real-time sanity checks for staleness
     const last = sorted[sorted.length - 1];
@@ -196,6 +219,7 @@ export async function compute_trading_signal(symbol: string, timeframe: TF, cand
       // Still proceed with stale data but mark it
     }
     
+ codex/refactor-whatsapp-bot-into-stateful-agent
     const lastClosed = deriveLastClosed(sorted, timeframe);
     data = {
       candles: sorted,
@@ -204,11 +228,74 @@ export async function compute_trading_signal(symbol: string, timeframe: TF, cand
       source: "PROVIDED" as OhlcSource
     };
   } else {
+ main
+    // Fetch internally
+
     // Fetch internally if no candles provided
+ codex/refactor-whatsapp-bot-into-stateful-agent
     data = await get_ohlc(symbol, timeframe);
   }
   
   const signal = buildSignalFromSeries(symbol, timeframe, data);
+main
+  return formatSignalOutput(signal);
+}
+
+function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+  const sorted = candles.slice().sort((a, b) => a.t - b.t);
+  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+  const now = Date.now();
+  const last = sorted.at(-1) ?? null;
+  const prev = sorted.at(-2) ?? null;
+  if (!last || !isFiniteCandle(last)) {
+    throw new Error("INVALID_CANDLES");
+  }
+  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
+  if (!candidate || !isFiniteCandle(candidate)) {
+    throw new Error("NO_CLOSED_BAR");
+  }
+  if (now - candidate.t > tfMs * 6) {
+    throw new Error("STALE_DATA");
+  }
+  return candidate;
+}
+
+function isFiniteCandle(value: Candle | null | undefined): value is Candle {
+  if (!value) return false;
+  return [value.o, value.h, value.l, value.c].every((x) => Number.isFinite(x));
+}
+
+const TF_TO_MS: Record<TF, number> = {
+  "1m": 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "30m": 30 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+};
+
+function formatSignalOutput(signal: SignalPayload): { text: string } {
+  const { signal: decision, entry, sl, tp1, tp2, timeUTC, symbol, interval } = signal;
+  
+  if (decision === "NEUTRAL") {
+    return {
+      text: `- SIGNAL: NEUTRAL — Time: ${timeUTC} (${interval}) — Symbol: ${symbol}`
+    };
+  }
+  
+  return {
+    text: [
+      `- Time: ${timeUTC}`,
+      `- Symbol: ${symbol}`,
+      `- SIGNAL: ${decision}`,
+      `- Entry: ${entry}`,
+      `- SL: ${sl}`,
+      `- TP1: ${tp1} (R 1.0)`,
+      `- TP2: ${tp2} (R 2.0)`
+    ].join('\n')
+  };
+
   
   // Format output according to the specified format
   if (signal.signal === "NEUTRAL") {
@@ -226,4 +313,5 @@ export async function compute_trading_signal(symbol: string, timeframe: TF, cand
 - TP2: ${signal.tp2} (R 2.0)`
     };
   }
+ codex/refactor-whatsapp-bot-into-stateful-agent
 }

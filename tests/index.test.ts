@@ -92,7 +92,8 @@ const toolHandlers = {
   },
   async compute_trading_signal() {
     toolCalls.push("compute_trading_signal");
-    return signalOutputs.shift() ?? signalOutputs[0];
+    const signal = signalOutputs.shift() ?? signalOutputs[0];
+    return { text: SIGNAL_TEXT };
   },
   async about_liirat_knowledge() {
     return { text: "معلومات ليرات" };

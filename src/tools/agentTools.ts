@@ -1,8 +1,13 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
+ main
+import { get_ohlc as fetchOhlc, OhlcError, OhlcResult } from "./ohlc";
+import { compute_trading_signal as computeSignal, SignalPayload, buildSignalFromSeries } from "./compute_trading_signal";
+
 import { get_ohlc as fetchOhlc, OhlcError, OhlcResult, Candle } from "./ohlc";
 import { buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
+ codex/refactor-whatsapp-bot-into-stateful-agent
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
 
@@ -81,7 +86,7 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
   }
 }
 
-async function computeWithFallback(symbol: string, requested: TF): Promise<SignalPayload> {
+async function computeWithFallback(symbol: string, requested: TF): Promise<ToolPayload> {
   const ladder = [requested, ...TIMEFRAME_FALLBACKS[requested]];
   let lastError: unknown;
   for (const tf of ladder) {
@@ -90,15 +95,14 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<Signa
       if (tf !== requested) {
         console.info("[TF] ladder", { symbol, requested, used: tf, lastClosed: series.lastClosed.t });
       }
-      const payload = buildSignalFromSeries(symbol, tf, series);
+      const result = await computeSignal(symbol, tf, series.candles);
       console.info("[SIGNAL] resolved", {
         symbol,
         requested,
         used: tf,
-        timeUTC: payload.timeUTC,
-        signal: payload.signal,
+        result: result.text.substring(0, 100) + "..."
       });
-      return { ...payload, interval: tf };
+      return result;
     } catch (error) {
       if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
         console.warn("[TF] no data", { symbol, requested, attempted: tf });
@@ -111,13 +115,26 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<Signa
   throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
 }
 
+ main
+export async function compute_trading_signal(symbol: string, timeframe: string, candles?: any[]): Promise<ToolPayload> {
+
 export async function compute_trading_signal(symbol: string, timeframe: string, candles?: Candle[]): Promise<ToolPayload> {
+ codex/refactor-whatsapp-bot-into-stateful-agent
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
   
+ main
+  // If candles are provided, use them directly
+  if (candles && Array.isArray(candles) && candles.length > 0) {
+    return await computeSignal(mappedSymbol, tf, candles);
+  }
+  
+  // Otherwise use fallback logic
+  return computeWithFallback(mappedSymbol, tf);
+
   if (candles && candles.length > 0) {
     // Use provided candles with the new compute_trading_signal function
     const { compute_trading_signal: computeSignal } = await import('./compute_trading_signal');
@@ -126,6 +143,7 @@ export async function compute_trading_signal(symbol: string, timeframe: string, 
     // Fallback to the old method if no candles provided
     return computeWithFallback(mappedSymbol, tf);
   }
+ codex/refactor-whatsapp-bot-into-stateful-agent
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {
