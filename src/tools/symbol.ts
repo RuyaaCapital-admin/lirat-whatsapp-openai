@@ -61,7 +61,7 @@ export function parseIntent(text: string): {
     tf='1min';
     console.log('[PARSE] Found 1min timeframe');
   }
-  else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق)\b/.test(t)) {
+  else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق|5 دقايق|٥ دقايق)\b/.test(t)) {
     tf='5min';
     console.log('[PARSE] Found 5min timeframe');
   }
@@ -88,7 +88,7 @@ export function parseIntent(text: string): {
   console.log('[PARSE] Final timeframe:', tf);
 
   // price intent - more comprehensive detection
-  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade)\b/.test(t);
+  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade|صفقة|صفقه)\b/i.test(t);
   const hasSymbolInText = Boolean(symbol);
   const wantsPrice = hasSymbolInText && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc|ذهب|فضة|دهب/u.test(t));
   
