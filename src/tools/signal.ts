@@ -1,6 +1,6 @@
 // src/tools/signal.ts
 import { TF } from './normalize';
-import { compute_trading_signal } from './compute_trading_signal';
+import { computeSignalPayload, formatSignalPayload } from './compute_trading_signal';
 
 export type SignalBlock = {
   timeUTC: string;
@@ -24,39 +24,10 @@ export type SignalBlock = {
 };
 
 export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock> {
-  const result = await compute_trading_signal(symbol, tf);
-  let trading_signal: any = result;
-  if (trading_signal && typeof (trading_signal as any).text === 'string') {
-    try {
-      const parsed = JSON.parse((trading_signal as any).text);
-      trading_signal = parsed?.trading_signal || parsed;
-    } catch (error) {
-      throw new Error('Failed to parse trading signal payload');
-    }
-  }
-  if (trading_signal && typeof trading_signal === 'object' && 'text' in trading_signal) {
-    trading_signal = (trading_signal as any).text;
-  }
-  if (trading_signal && typeof trading_signal === 'string') {
-    try {
-      const parsed = JSON.parse(trading_signal);
-      trading_signal = parsed?.trading_signal || parsed;
-    } catch (error) {
-      throw new Error('Failed to parse trading signal payload string');
-    }
-  }
-  if (!trading_signal) {
-    throw new Error('Missing trading signal data');
-  }
-  const timeUTC =
-    trading_signal.timeUTC ||
-    trading_signal.time_utc ||
-    trading_signal.last_closed_iso ||
-    trading_signal.last_closed_utc ||
-    new Date().toISOString();
-  const lastClosedUTC = trading_signal.last_closed_iso || trading_signal.last_closed_utc || timeUTC;
-  const decision = trading_signal.decision || trading_signal.signal || 'NEUTRAL';
-  const entry = Number(trading_signal.entry ?? trading_signal.close ?? trading_signal.price ?? NaN);
+  const trading_signal = await computeSignalPayload(symbol, tf);
+  const timeUTC = trading_signal.timeUTC || new Date().toISOString();
+  const decision = trading_signal.signal || 'NEUTRAL';
+  const entry = Number(trading_signal.entry ?? NaN);
   const sl = Number(trading_signal.sl ?? NaN);
   const tp1 = Number(trading_signal.tp1 ?? NaN);
   const tp2 = Number(trading_signal.tp2 ?? NaN);
@@ -64,20 +35,33 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
     timeUTC,
     symbol: trading_signal.symbol || symbol,
     interval: tf,
-    lastClosedUTC,
-    close: Number.isFinite(entry) ? entry : Number(trading_signal.close ?? NaN),
-    prev: Number(trading_signal.prev ?? trading_signal.close ?? NaN),
-    ema20: trading_signal.ema20,
-    ema50: trading_signal.ema50,
-    rsi14: trading_signal.rsi,
-    macd: trading_signal.macd,
-    macdSignal: trading_signal.macd_signal ?? trading_signal.signal,
-    macdHist: trading_signal.macd_hist ?? trading_signal.hist,
-    atr14: trading_signal.atr,
+    lastClosedUTC: timeUTC,
+    close: Number.isFinite(entry) ? entry : NaN,
+    prev: Number(trading_signal.entry ?? NaN),
+    ema20: undefined,
+    ema50: undefined,
+    rsi14: undefined,
+    macd: undefined,
+    macdSignal: undefined,
+    macdHist: undefined,
+    atr14: undefined,
     signal: decision,
     entry: Number.isFinite(entry) ? entry : undefined,
     sl: Number.isFinite(sl) ? sl : undefined,
     tp1: Number.isFinite(tp1) ? tp1 : undefined,
     tp2: Number.isFinite(tp2) ? tp2 : undefined,
   };
+}
+
+export function formatSignalBlock(block: SignalBlock): string {
+  return formatSignalPayload({
+    signal: block.signal,
+    entry: block.entry ?? null,
+    sl: block.sl ?? null,
+    tp1: block.tp1 ?? null,
+    tp2: block.tp2 ?? null,
+    timeUTC: block.timeUTC,
+    symbol: block.symbol,
+    interval: block.interval,
+  });
 }

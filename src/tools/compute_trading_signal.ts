@@ -112,40 +112,6 @@ function normaliseSymbol(symbol: string) {
   return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
-  const TF_TO_MS: Record<TF, number> = {
-    "1m": 60_000,
-    "5m": 5 * 60_000,
-    "15m": 15 * 60_000,
-    "30m": 30 * 60_000,
-    "1h": 60 * 60_000,
-    "4h": 4 * 60 * 60_000,
-    "1d": 24 * 60 * 60_000,
-  };
-  
-  const sorted = candles.slice().sort((a, b) => a.t - b.t);
-  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const now = Date.now();
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  
-  if (!last || !isFiniteCandle(last)) {
-    throw new Error("INVALID_CANDLES");
-  }
-  
-  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
-  if (!candidate || !isFiniteCandle(candidate)) {
-    throw new Error("NO_CLOSED_BAR");
-  }
-  
-  return candidate;
-}
-
-function isFiniteCandle(value: Candle | null | undefined): value is Candle {
-  if (!value) return false;
-  return [value.o, value.h, value.l, value.c].every((x) => Number.isFinite(x));
-}
-
 export function buildSignalFromSeries(symbol: string, timeframe: TF, series: OhlcResult): SignalPayload {
   const candles = series.candles;
   if (!Array.isArray(candles) || candles.length < 3) {
@@ -192,77 +158,43 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
 }
 
 export async function compute_trading_signal(symbol: string, timeframe: TF, candles?: Candle[]): Promise<{ text: string }> {
-  let data: OhlcResult;
-  
-  if (candles && candles.length > 0) {
-    // Use provided candles
-    const sorted = candles.slice().sort((a, b) => a.t - b.t);
- main
+  const payload = await computeSignalPayload(symbol, timeframe, candles);
+  return { text: formatSignalPayload(payload) };
+}
 
-    
-    // Real-time sanity checks for staleness
-    const last = sorted[sorted.length - 1];
-    const TF_TO_MS: Record<TF, number> = {
-      "1m": 60_000,
-      "5m": 5 * 60_000,
-      "15m": 15 * 60_000,
-      "30m": 30 * 60_000,
-      "1h": 60 * 60_000,
-      "4h": 4 * 60 * 60_000,
-      "1d": 24 * 60 * 60_000,
-    };
-    const intervalMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-    const lastTMs = last.t;
-    
-    if (Date.now() - lastTMs > 3 * intervalMs) {
-      console.warn(`[STALE] Candles are stale for ${symbol} ${timeframe}, age: ${Math.round((Date.now() - lastTMs) / 1000)}s`);
-      // Still proceed with stale data but mark it
+export async function computeSignalPayload(symbol: string, timeframe: TF, candles?: Candle[]): Promise<SignalPayload> {
+  if (candles && candles.length > 0) {
+    const sorted = candles
+      .map((candle) => ({
+        o: Number(candle.o),
+        h: Number(candle.h),
+        l: Number(candle.l),
+        c: Number(candle.c),
+        t: Number(candle.t),
+      }))
+      .filter((candle) =>
+        Number.isFinite(candle.o) &&
+        Number.isFinite(candle.h) &&
+        Number.isFinite(candle.l) &&
+        Number.isFinite(candle.c) &&
+        Number.isFinite(candle.t),
+      )
+      .sort((a, b) => a.t - b.t);
+    if (!sorted.length) {
+      throw new Error("invalid_candles");
     }
-    
- codex/refactor-whatsapp-bot-into-stateful-agent
     const lastClosed = deriveLastClosed(sorted, timeframe);
-    data = {
+    const data: OhlcResult = {
       candles: sorted,
       lastClosed,
       timeframe,
-      source: "PROVIDED" as OhlcSource
+      source: "PROVIDED" as OhlcSource,
     };
-  } else {
- main
-    // Fetch internally
+    return buildSignalFromSeries(symbol, timeframe, data);
+  }
 
-    // Fetch internally if no candles provided
- codex/refactor-whatsapp-bot-into-stateful-agent
-    data = await get_ohlc(symbol, timeframe);
-  }
-  
-  const signal = buildSignalFromSeries(symbol, timeframe, data);
-main
-  return formatSignalOutput(signal);
-}
-
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
-  const sorted = candles.slice().sort((a, b) => a.t - b.t);
-  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const now = Date.now();
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  if (!last || !isFiniteCandle(last)) {
-    throw new Error("INVALID_CANDLES");
-  }
-  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
-  if (!candidate || !isFiniteCandle(candidate)) {
-    throw new Error("NO_CLOSED_BAR");
-  }
-  if (now - candidate.t > tfMs * 6) {
-    throw new Error("STALE_DATA");
-  }
-  return candidate;
-}
-
-function isFiniteCandle(value: Candle | null | undefined): value is Candle {
-  if (!value) return false;
-  return [value.o, value.h, value.l, value.c].every((x) => Number.isFinite(x));
+  const data = await get_ohlc(symbol, timeframe);
+  return buildSignalFromSeries(symbol, data.timeframe, data);
 }
 
 const TF_TO_MS: Record<TF, number> = {
@@ -275,43 +207,40 @@ const TF_TO_MS: Record<TF, number> = {
   "1d": 24 * 60 * 60_000,
 };
 
-function formatSignalOutput(signal: SignalPayload): { text: string } {
-  const { signal: decision, entry, sl, tp1, tp2, timeUTC, symbol, interval } = signal;
-  
-  if (decision === "NEUTRAL") {
-    return {
-      text: `- SIGNAL: NEUTRAL — Time: ${timeUTC} (${interval}) — Symbol: ${symbol}`
-    };
+function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+  const now = Date.now();
+  const sorted = candles.slice().sort((a, b) => a.t - b.t);
+  const last = sorted.at(-1) ?? null;
+  const prev = sorted.at(-2) ?? null;
+  if (!last) {
+    throw new Error("INVALID_CANDLES");
   }
-  
-  return {
-    text: [
-      `- Time: ${timeUTC}`,
-      `- Symbol: ${symbol}`,
-      `- SIGNAL: ${decision}`,
-      `- Entry: ${entry}`,
-      `- SL: ${sl}`,
-      `- TP1: ${tp1} (R 1.0)`,
-      `- TP2: ${tp2} (R 2.0)`
-    ].join('\n')
-  };
+  const candidate = last && now - last.t < tfMs * 0.5 ? prev ?? last : last;
+  if (!candidate) {
+    throw new Error("NO_CLOSED_BAR");
+  }
+  const values = [candidate.o, candidate.h, candidate.l, candidate.c];
+  if (!values.every((value) => Number.isFinite(value))) {
+    throw new Error("INVALID_CANDLE_VALUES");
+  }
+  if (now - candidate.t > tfMs * 6) {
+    throw new Error("STALE_DATA");
+  }
+  return candidate;
+}
 
-  
-  // Format output according to the specified format
+export function formatSignalPayload(signal: SignalPayload): string {
   if (signal.signal === "NEUTRAL") {
-    return {
-      text: `- SIGNAL: NEUTRAL — Time: ${signal.timeUTC} (${signal.interval}) — Symbol: ${signal.symbol}`
-    };
-  } else {
-    return {
-      text: `- Time: ${signal.timeUTC}
-- Symbol: ${signal.symbol}
-- SIGNAL: ${signal.signal}
-- Entry: ${signal.entry}
-- SL: ${signal.sl}
-- TP1: ${signal.tp1} (R 1.0)
-- TP2: ${signal.tp2} (R 2.0)`
-    };
+    return "- SIGNAL: NEUTRAL";
   }
- codex/refactor-whatsapp-bot-into-stateful-agent
+  return [
+    `- Time: ${signal.timeUTC}`,
+    `- Symbol: ${signal.symbol}`,
+    `- SIGNAL: ${signal.signal}`,
+    `- Entry: ${signal.entry}`,
+    `- SL: ${signal.sl}`,
+    `- TP1: ${signal.tp1} (R 1.0)`,
+    `- TP2: ${signal.tp2} (R 2.0)`,
+  ].join("\n");
 }
