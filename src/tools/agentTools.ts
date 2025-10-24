@@ -1,36 +1,28 @@
 // src/tools/agentTools.ts
-// Tool functions that match Agent Builder exactly: get_price, get_ohlc, compute_trading_signal
+// Tool functions that match Agent Builder exactly: get_price, get_ohlc, compute_trading_signal, about_liirat_knowledge
 
-import { Canonical, toCanonical } from './symbol';
 import { getCurrentPrice } from './price';
-import { getTradingSignal } from './ohlc';
-import { formatPriceBlock } from '../format';
+import { getOhlcFmp } from './ohlc';
+import { compute_trading_signal as computeSignal } from './compute_trading_signal';
+import { hardMapSymbol, toTimeframe, TF } from './normalize';
 
-// Tool: get_price
+// Tool: get_price (called in "price" intent)
 export async function get_price(symbol: string, timeframe?: string): Promise<{
   text: string;
 }> {
   try {
     console.log('[AGENT_TOOL] get_price called:', { symbol, timeframe });
     
-    const canonical = toCanonical(symbol);
-    if (!canonical) {
+    const mappedSymbol = hardMapSymbol(symbol);
+    if (!mappedSymbol) {
       return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
     }
 
-    const result = await getCurrentPrice(canonical, timeframe);
-    
-    const priceResponse = {
-      symbol: canonical,
-      timestamp: Math.floor(Date.now() / 1000),
-      price: result.price,
-      note: result.source,
-      utcTime: new Date().toISOString().slice(11, 16)
+    const p = await getCurrentPrice(mappedSymbol);
+    // keep it brief for price:
+    return { 
+      text: `Time (UTC): ${new Date().toISOString().slice(11,16)}\nSymbol: ${symbol}\nPrice: ${p.price}\nNote: ${p.source}` 
     };
-    
-    const priceBlock = formatPriceBlock(priceResponse);
-
-    return { text: priceBlock };
   } catch (error) {
     console.error('[AGENT_TOOL] get_price error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -38,39 +30,21 @@ export async function get_price(symbol: string, timeframe?: string): Promise<{
   }
 }
 
-// Tool: get_ohlc
-export async function get_ohlc(symbol: string, interval: string): Promise<{
+// Tool: get_ohlc (used for candles/indicators if you want a raw dump for debugging)
+export async function get_ohlc(symbol: string, timeframe: string): Promise<{
   text: string;
 }> {
   try {
-    console.log('[AGENT_TOOL] get_ohlc called:', { symbol, interval });
+    console.log('[AGENT_TOOL] get_ohlc called:', { symbol, timeframe });
     
-    const canonical = toCanonical(symbol);
-    if (!canonical) {
+    const mappedSymbol = hardMapSymbol(symbol);
+    if (!mappedSymbol) {
       return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
     }
 
-    const signalData = await getTradingSignal(canonical, interval);
-    
-    const timeUtc = new Date().toISOString().slice(11, 16);
-    const lastClosed = signalData.lastClosed ? 
-      (typeof signalData.lastClosed === 'string' ? signalData.lastClosed : new Date(signalData.lastClosed).toISOString().slice(11, 16)) : 
-      timeUtc;
-    
-    const priceBlock = `Time (UTC): ${timeUtc}
-Symbol: ${canonical}
-Interval: ${interval}
-Last closed: ${lastClosed} UTC
-Close: ${signalData.close}
-Prev: ${signalData.prev}
-EMA20: ${signalData.ema20.toFixed(2)}
-EMA50: ${signalData.ema50.toFixed(2)}
-RSI14: ${signalData.rsi14.toFixed(2)}
-MACD(12,26,9): N/A / N/A (hist N/A)
-ATR14: N/A
-SIGNAL: ${signalData.signal}`;
-
-    return { text: priceBlock };
+    const tf = toTimeframe(timeframe) as TF;
+    const data = await getOhlcFmp(mappedSymbol, tf);
+    return { text: JSON.stringify(data.slice(-100)) }; // or return object if Agent supports it
   } catch (error) {
     console.error('[AGENT_TOOL] get_ohlc error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -78,42 +52,41 @@ SIGNAL: ${signalData.signal}`;
   }
 }
 
-// Tool: compute_trading_signal
-export async function compute_trading_signal(symbol: string, period: string): Promise<{
+// Tool: compute_trading_signal (the signal block output)
+export async function compute_trading_signal(symbol: string, timeframe: string): Promise<{
   text: string;
 }> {
   try {
-    console.log('[AGENT_TOOL] compute_trading_signal called:', { symbol, period });
+    console.log('[AGENT_TOOL] compute_trading_signal called:', { symbol, timeframe });
     
-    const canonical = toCanonical(symbol);
-    if (!canonical) {
+    const mappedSymbol = hardMapSymbol(symbol);
+    if (!mappedSymbol) {
       return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
     }
 
-    const signalData = await getTradingSignal(canonical, period);
-    
-    const timeUtc = new Date().toISOString().slice(11, 16);
-    const lastClosed = signalData.lastClosed ? 
-      (typeof signalData.lastClosed === 'string' ? signalData.lastClosed : new Date(signalData.lastClosed).toISOString().slice(11, 16)) : 
-      timeUtc;
-    
-    const priceBlock = `Time (UTC): ${timeUtc}
-Symbol: ${canonical}
-Interval: ${period}
-Last closed: ${lastClosed} UTC
-Close: ${signalData.close}
-Prev: ${signalData.prev}
-EMA20: ${signalData.ema20.toFixed(2)}
-EMA50: ${signalData.ema50.toFixed(2)}
-RSI14: ${signalData.rsi14.toFixed(2)}
-MACD(12,26,9): N/A / N/A (hist N/A)
-ATR14: N/A
-SIGNAL: ${signalData.signal}`;
-
-    return { text: priceBlock };
+    const tf = toTimeframe(timeframe) as TF;
+    return { text: await computeSignal(mappedSymbol, tf) };
   } catch (error) {
     console.error('[AGENT_TOOL] compute_trading_signal error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
     return { text: `خطأ في حساب الإشارة: ${errorMessage}` };
+  }
+}
+
+// Tool: about_liirat_knowledge (your Liirat KB tool)
+export async function about_liirat_knowledge(query: string): Promise<{
+  text: string;
+}> {
+  try {
+    console.log('[AGENT_TOOL] about_liirat_knowledge called:', { query });
+    
+    // return KB text exactly
+    return { 
+      text: `Lirat هي علامة تجارية تقدم خدمات ومنتجات مبتكرة في مجال التكنولوجيا المالية. تسعى Lirat إلى تحسين تجربة المستخدمين من خلال حلول ذكية ومتكاملة تلبي احتياجاتهم المالية. تركز الشركة على تقديم خدمات موثوقة وآمنة تسهم في تعزيز الشمول المالي.` 
+    };
+  } catch (error) {
+    console.error('[AGENT_TOOL] about_liirat_knowledge error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { text: `خطأ في جلب المعلومات: ${errorMessage}` };
   }
 }

@@ -1,98 +1,39 @@
 // src/tools/ohlc.ts
 import axios from "axios";
-import { toFcsSymbol, toFcsPeriod } from "./price";
+import { TF } from "./normalize";
 
-// Candle type definition
-type Candle = {
-  t: string | number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-};
+export type Candle = { t:number|string; o:number; h:number; l:number; c:number; v?:number };
 
-export async function getFcsCandles(symbolRaw: string, tf: string = "1h", limit = 200): Promise<Candle[]> {
-  const symbol = toFcsSymbol(symbolRaw);
-  const period = toFcsPeriod(tf);
-  const url = `https://fcsapi.com/api-v3/forex/candle?symbol=${encodeURIComponent(symbol)}&period=${period}&access_key=${process.env.FCS_API_KEY}`;
-  console.log('[FCS] Candles URL:', url);
+function fmpInterval(tf: TF) {
+  switch (tf) {
+    case '1min': return '1min';
+    case '5min': return '5min';
+    case '15min': return '15min';
+    case '30min': return '30min';
+    case '1hour': return '1hour';
+    case '4hour': return '4hour';
+    case 'daily': return '1day';
+  }
+}
+
+export async function getOhlcFmp(symbol: string, tf: TF, limit=300): Promise<Candle[]> {
+  const interval = fmpInterval(tf);
+  // FMP FX/crypto unified chart endpoint (unslashed symbols)
+  const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
+  console.log('[FMP] OHLC URL:', url);
   const { data } = await axios.get(url, { timeout: 9000 });
-  const r = data?.response;
-  if (!r || !Array.isArray(r.c) || r.c.length < 60) {
-    throw new Error(`FCS candle: not enough data for ${symbol} ${period}`);
+  
+  if (!Array.isArray(data) || !data.length) {
+    throw new Error(`FMP ${interval} ${symbol}: empty response`);
   }
-  const result: Candle[] = r.c.map((c: string, i: number) => ({
-    t: r.t[i],
-    o: Number(r.o[i]),
-    h: Number(r.h[i]),
-    l: Number(r.l[i]),
-    c: Number(c),
+  
+  // FMP returns newest first → reverse to oldest→newest
+  return data.reverse().slice(-limit).map((x: any) => ({
+    t: new Date(x.date).getTime(),
+    o: +x.open, 
+    h: +x.high, 
+    l: +x.low, 
+    c: +x.close, 
+    v: +x.volume || 0
   }));
-  return result.slice(-limit);
-}
-
-export function ema(values: number[], period: number) {
-  const k = 2 / (period + 1);
-  let emaPrev = values[0];
-  const out = [emaPrev];
-  for (let i = 1; i < values.length; i++) {
-    emaPrev = values[i] * k + emaPrev * (1 - k);
-    out.push(emaPrev);
-  }
-  return out;
-}
-
-export function rsi(values: number[], period = 14) {
-  let gains = 0, losses = 0;
-  for (let i = 1; i <= period; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff >= 0) gains += diff; else losses -= diff;
-  }
-  let rs = gains / Math.max(1e-9, losses);
-  const out = [100 - 100 / (1 + rs)];
-  for (let i = period + 1; i < values.length; i++) {
-    const diff = values[i] - values[i - 1];
-    const gain = Math.max(0, diff);
-    const loss = Math.max(0, -diff);
-    gains = (gains * (period - 1) + gain) / period;
-    losses = (losses * (period - 1) + loss) / period;
-    rs = gains / Math.max(1e-9, losses);
-    out.push(100 - 100/(1 + rs));
-  }
-  return out;
-}
-
-export function makeSignal(closes: number[]) {
-  const ema20 = ema(closes, 20).at(-1)!;
-  const ema50 = ema(closes, 50).at(-1)!;
-  const r = rsi(closes, 14).at(-1)!;
-
-  if (ema20 > ema50 && r >= 45 && r <= 70) return "BUY";
-  if (ema20 < ema50 && r <= 55 && r >= 30) return "SELL";
-  return "NEUTRAL";
-}
-
-export async function getTradingSignal(symbol: string, tf: string = "1h") {
-  const rows: Candle[] = await getFcsCandles(symbol, tf, 200);
-  const closes = rows.map((r: Candle) => r.c);
-  const sig = makeSignal(closes);
-  const last = rows.at(-1)!;
-  const prev = rows.at(-2) || last;
-
-  // Calculate indicators
-  const ema20 = ema(closes, 20).at(-1)!;
-  const ema50 = ema(closes, 50).at(-1)!;
-  const rsiValue = rsi(closes, 14).at(-1)!;
-
-  return {
-    symbol,
-    timeframe: tf,
-    lastClosed: last.t,
-    close: last.c,
-    prev: prev.c,
-    ema20,
-    ema50,
-    rsi14: rsiValue,
-    signal: sig,
-  };
 }

@@ -1,8 +1,6 @@
 // src/pages/api/webhook.js
 import { sendText, markReadAndShowTyping } from '../../lib/waba';
 import { openai } from '../../lib/openai';
-import { parseIntent } from '../../tools/symbol';
-import { get_price, get_ohlc, compute_trading_signal } from '../../tools/agentTools';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -28,11 +26,18 @@ const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص ف�
 
 أجب بالعربية دائماً.`;
 
-// Try workflow first, then fallback to tools + model
+// Use workflow ONLY - let AI understand naturally
 async function smartReply(userText, meta = {}) {
+  if (!OPENAI_WORKFLOW_ID) {
+    console.error('[WORKFLOW] OPENAI_WORKFLOW_ID not set');
+    return "عذراً، النظام غير متاح حالياً. يرجى المحاولة لاحقاً.";
+  }
+
   try {
-    // Try workflow first if available
-    if (OPENAI_WORKFLOW_ID && openai.workflows?.runs?.create) {
+    console.log('[WORKFLOW] Calling workflow with input:', userText);
+    
+    // Try workflow first
+    if (openai.workflows?.runs?.create) {
       console.log('[WORKFLOW] Using SDK workflow method');
       const run = await openai.workflows.runs.create({
         workflow_id: OPENAI_WORKFLOW_ID,
@@ -40,65 +45,25 @@ async function smartReply(userText, meta = {}) {
         metadata: { channel: "whatsapp", ...meta }
       });
       
+      console.log('[WORKFLOW] Run response:', JSON.stringify(run, null, 2));
+      
       const text = run.output_text ?? 
                   (Array.isArray(run.output) ? 
                     run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                     "");
       
       if (text) {
-        console.log('[WORKFLOW] Success via SDK');
+        console.log('[WORKFLOW] Success via SDK, response length:', text.length);
         return text;
       }
     }
-  } catch (err) {
-    console.warn('[WORKFLOW] SDK method failed, trying fallback:', err?.message);
-  }
-
-  // Fallback: Use our tools directly
-  console.log('[FALLBACK] Using direct tools + model');
-  
-  const intent = parseIntent(userText);
-  console.log('[FALLBACK] Parsed intent:', intent);
-  
-  // Handle price requests
-  if (intent.wantsPrice && intent.symbol) {
-    try {
-      const result = await get_price(intent.symbol, intent.timeframe);
-      return result.text;
-    } catch (error) {
-      console.error('[FALLBACK] Price tool error:', error);
-    }
-  }
-  
-  // Handle signal requests
-  if (intent.symbol && /signal|إشارة|تداول|trade/i.test(userText)) {
-    try {
-      const result = await compute_trading_signal(intent.symbol, intent.timeframe || '1hour');
-      return result.text;
-    } catch (error) {
-      console.error('[FALLBACK] Signal tool error:', error);
-    }
-  }
-  
-  // Handle OHLC requests
-  if (intent.symbol && intent.timeframe) {
-    try {
-      const result = await get_ohlc(intent.symbol, intent.timeframe);
-      return result.text;
-    } catch (error) {
-      console.error('[FALLBACK] OHLC tool error:', error);
-    }
-  }
-  
-  // Final fallback: Use model directly
-  try {
-    console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
+    
+    // Fallback to responses API if workflow method not available
+    console.log('[WORKFLOW] SDK workflow method not available, trying responses API');
     const resp = await openai.responses.create({
-      model: "gpt-4o-mini",
-      input: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userText }
-      ],
+      workflow_id: OPENAI_WORKFLOW_ID,
+      input: userText,
+      metadata: { channel: "whatsapp", ...meta }
     });
     
     const text = resp.output_text ?? 
@@ -106,10 +71,44 @@ async function smartReply(userText, meta = {}) {
                   resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                   "");
     
-    return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
-  } catch (error) {
-    console.error('[FALLBACK] Model error:', error);
-    return "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.";
+    if (text) {
+      console.log('[WORKFLOW] Success via responses API, response length:', text.length);
+      return text;
+    }
+    
+    console.warn('[WORKFLOW] No text output received from workflow');
+    return "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
+    
+  } catch (err) {
+    console.error('[WORKFLOW] Error:', err);
+    
+    // Tiny fallback for hard workflow failures (4xx/5xx)
+    if (err.status >= 400) {
+      console.log('[FALLBACK] Hard workflow failure, trying local tools');
+      try {
+        // Import tools dynamically to avoid circular deps
+        const { hardMapSymbol, toTimeframe } = await import('../../tools/normalize');
+        const { getCurrentPrice } = await import('../../tools/price');
+        const { computeSignal } = await import('../../tools/compute_trading_signal');
+        
+        // Try to detect trading intent
+        const symbol = hardMapSymbol(userText);
+        if (symbol) {
+          if (/price|سعر|كم/i.test(userText)) {
+            const p = await getCurrentPrice(symbol);
+            return `Time (UTC): ${new Date().toISOString().slice(11,16)}\nSymbol: ${symbol}\nPrice: ${p.price}\nNote: ${p.source}`;
+          }
+          if (/signal|إشارة|صفقة|تداول/i.test(userText)) {
+            const tf = toTimeframe(userText);
+            return await computeSignal(symbol, tf);
+          }
+        }
+      } catch (fallbackErr) {
+        console.error('[FALLBACK] Local tools also failed:', fallbackErr);
+      }
+    }
+    
+    return `عذراً، حدث خطأ في النظام: ${err.message}. يرجى المحاولة مرة أخرى.`;
   }
 }
 
