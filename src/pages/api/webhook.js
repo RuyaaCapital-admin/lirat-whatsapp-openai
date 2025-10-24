@@ -3,6 +3,7 @@ import { sendText, markReadAndShowTyping } from '../../lib/waba';
 import { openai } from '../../lib/openai';
 import { parseIntent } from '../../tools/symbol';
 import { get_price, get_ohlc, compute_trading_signal } from '../../tools/agentTools';
+import { Agent } from '@openai/agents';
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -203,19 +204,24 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Try Agent Builder workflow via Responses API
-      console.log('[WORKFLOW] Using Responses API with workflow_id');
+      // Try Agent Builder workflow via Agents SDK
+      console.log('[WORKFLOW] Using Agents SDK to invoke workflow');
       
-      const workflowResult = await openai.responses.create({
-        model: "gpt-4o-mini",
-        input: userText,
-        workflow_id: process.env.OPENAI_WORKFLOW_ID,
-        max_tokens: 1000
+      const agent = new Agent({
+        apiKey: process.env.OPENAI_API_KEY,
+        project: process.env.OPENAI_PROJECT,
+        workflowId: process.env.OPENAI_WORKFLOW_ID
+      });
+      
+      const workflowResult = await agent.invoke({
+        input: userText
       });
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
       const text = workflowResult.output_text ?? 
+                  workflowResult.text ?? 
+                  workflowResult.message ?? 
                   (Array.isArray(workflowResult.output) ? 
                     workflowResult.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                     "");
