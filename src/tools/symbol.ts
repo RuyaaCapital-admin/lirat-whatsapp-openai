@@ -10,7 +10,9 @@ const MAP: Record<string, Canonical> = {
   'يورو دولار':'EURUSD','اليورو دولار':'EURUSD',
   'باوند دولار':'GBPUSD','الجنيه دولار':'GBPUSD','الباوند دولار':'GBPUSD',
   // crypto
-  'بتكوين':'BTCUSD','بيتكوين':'BTCUSD','btc':'BTCUSD','btcusdt':'BTCUSD'
+  'بتكوين':'BTCUSD','بيتكوين':'BTCUSD','btc':'BTCUSD','btcusdt':'BTCUSD',
+  // common trading terms (default to gold if no specific symbol)
+  'صفقة':'XAUUSD','صفقه':'XAUUSD','تداول':'XAUUSD','trade':'XAUUSD'
 };
 
 const ALIASES: Record<string, Canonical> = {
@@ -88,7 +90,7 @@ export function parseIntent(text: string): {
   console.log('[PARSE] Final timeframe:', tf);
 
   // price intent - more comprehensive detection
-  const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade|صفقة|صفقه)\b/i.test(t);
+  const hasPriceWord = /(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade|صفقه)/i.test(t);
   const hasSymbolInText = Boolean(symbol);
   const wantsPrice = hasSymbolInText && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc|ذهب|فضة|دهب/u.test(t));
   
