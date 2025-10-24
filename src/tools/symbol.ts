@@ -29,11 +29,11 @@ const MAP: [RegExp, string][] = [
   [/\b(نيوزلندي)\b/i, "NZDUSD"],
 ];
 
-function pickSymbol(s: string): string | null {
+function pickSymbol(s: string): string | undefined {
   for (const [re, val] of MAP) {
     if (re.test(s)) return val;
   }
-  return null;
+  return undefined;
 }
 
 // Check if symbol is crypto
@@ -63,7 +63,7 @@ export function parseIntent(text: string): {
   timeframe?: '1min'|'5min'|'15min'|'30min'|'1hour'|'4hour'|'daily',
   wantsPrice: boolean,
   wantsSignal: boolean,
-  route: 'forex' | 'crypto' | null
+  route?: 'forex' | 'crypto'
 } {
   const normalizedText = arNorm(text.toLowerCase().replace(/\s+/g, ' ').trim());
   console.log('[PARSE] Input text:', text);
@@ -110,7 +110,7 @@ export function parseIntent(text: string): {
   console.log('[PARSE] Final timeframe:', timeframe);
   
   // Determine route
-  const route = symbol ? (isCrypto(symbol) ? 'crypto' : 'forex') : null;
+  const route = symbol ? (isCrypto(symbol) ? 'crypto' : 'forex') : undefined;
   
   console.log('[PARSE] Final result:', { symbol, timeframe, wantsPrice, wantsSignal, route });
   
