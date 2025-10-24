@@ -97,6 +97,9 @@ export function createSmartReply(deps: SmartReplyDeps) {
       { role: "user", content: trimmed },
     ];
 
+    // Track last OHLC result for automatic candle injection
+    let lastOhlcResult: { candles: any[], symbol: string, timeframe: string } | null = null;
+
     while (true) {
       const completion = await chat.create({
         model,
@@ -146,7 +149,29 @@ export function createSmartReply(deps: SmartReplyDeps) {
           if (!handler) {
             throw new Error(`unknown_tool:${name}`);
           }
+
+          // Special handling for compute_trading_signal to inject candles from last get_ohlc
+          if (name === "compute_trading_signal" && !args.candles && lastOhlcResult) {
+            const symbol = String(args.symbol ?? "").trim();
+            const timeframe = String(args.timeframe ?? "").trim();
+            if (lastOhlcResult.symbol === symbol && lastOhlcResult.timeframe === timeframe) {
+              args.candles = lastOhlcResult.candles;
+              console.info(`[CANDLE_INJECTION] Auto-injecting candles for ${symbol} ${timeframe}`);
+            }
+          }
+
           result = await handler(args);
+
+          // Track get_ohlc results for potential use by compute_trading_signal
+          if (name === "get_ohlc" && result && typeof result === 'object' && 'candles' in result) {
+            const symbol = String(args.symbol ?? "").trim();
+            const timeframe = String(args.timeframe ?? "").trim();
+            lastOhlcResult = {
+              candles: (result as any).candles || [],
+              symbol,
+              timeframe
+            };
+          }
         } catch (error) {
           const err = error as Error;
           result = { error: err?.message || String(error) };

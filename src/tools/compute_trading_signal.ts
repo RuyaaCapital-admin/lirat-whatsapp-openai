@@ -1,5 +1,5 @@
 import { TF } from "./normalize";
-import { get_ohlc, Candle, OhlcResult } from "./ohlc";
+import { get_ohlc, Candle, OhlcResult, OhlcSource } from "./ohlc";
 
 export interface SignalPayload extends Record<string, unknown> {
   signal: "BUY" | "SELL" | "NEUTRAL";
@@ -91,6 +91,40 @@ function normaliseSymbol(symbol: string) {
   return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
+function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+  const TF_TO_MS: Record<TF, number> = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+  };
+  
+  const sorted = candles.slice().sort((a, b) => a.t - b.t);
+  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+  const now = Date.now();
+  const last = sorted.at(-1) ?? null;
+  const prev = sorted.at(-2) ?? null;
+  
+  if (!last || !isFiniteCandle(last)) {
+    throw new Error("INVALID_CANDLES");
+  }
+  
+  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
+  if (!candidate || !isFiniteCandle(candidate)) {
+    throw new Error("NO_CLOSED_BAR");
+  }
+  
+  return candidate;
+}
+
+function isFiniteCandle(value: Candle | null | undefined): value is Candle {
+  if (!value) return false;
+  return [value.o, value.h, value.l, value.c].every((x) => Number.isFinite(x));
+}
+
 export function buildSignalFromSeries(symbol: string, timeframe: TF, series: OhlcResult): SignalPayload {
   const candles = series.candles;
   if (!Array.isArray(candles) || candles.length < 3) {
@@ -136,7 +170,60 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
   };
 }
 
-export async function compute_trading_signal(symbol: string, timeframe: TF): Promise<SignalPayload> {
-  const data = await get_ohlc(symbol, timeframe);
-  return buildSignalFromSeries(symbol, timeframe, data);
+export async function compute_trading_signal(symbol: string, timeframe: TF, candles?: Candle[]): Promise<{ text: string }> {
+  let data: OhlcResult;
+  
+  if (candles && candles.length > 0) {
+    // Use provided candles
+    const sorted = candles.slice().sort((a, b) => a.t - b.t);
+    
+    // Real-time sanity checks for staleness
+    const last = sorted[sorted.length - 1];
+    const TF_TO_MS: Record<TF, number> = {
+      "1m": 60_000,
+      "5m": 5 * 60_000,
+      "15m": 15 * 60_000,
+      "30m": 30 * 60_000,
+      "1h": 60 * 60_000,
+      "4h": 4 * 60 * 60_000,
+      "1d": 24 * 60 * 60_000,
+    };
+    const intervalMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+    const lastTMs = last.t;
+    
+    if (Date.now() - lastTMs > 3 * intervalMs) {
+      console.warn(`[STALE] Candles are stale for ${symbol} ${timeframe}, age: ${Math.round((Date.now() - lastTMs) / 1000)}s`);
+      // Still proceed with stale data but mark it
+    }
+    
+    const lastClosed = deriveLastClosed(sorted, timeframe);
+    data = {
+      candles: sorted,
+      lastClosed,
+      timeframe,
+      source: "PROVIDED" as OhlcSource
+    };
+  } else {
+    // Fetch internally if no candles provided
+    data = await get_ohlc(symbol, timeframe);
+  }
+  
+  const signal = buildSignalFromSeries(symbol, timeframe, data);
+  
+  // Format output according to the specified format
+  if (signal.signal === "NEUTRAL") {
+    return {
+      text: `- SIGNAL: NEUTRAL — Time: ${signal.timeUTC} (${signal.interval}) — Symbol: ${signal.symbol}`
+    };
+  } else {
+    return {
+      text: `- Time: ${signal.timeUTC}
+- Symbol: ${signal.symbol}
+- SIGNAL: ${signal.signal}
+- Entry: ${signal.entry}
+- SL: ${signal.sl}
+- TP1: ${signal.tp1} (R 1.0)
+- TP2: ${signal.tp2} (R 2.0)`
+    };
+  }
 }

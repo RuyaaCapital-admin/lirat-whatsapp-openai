@@ -41,8 +41,9 @@ const toolHandlers = {
   async compute_trading_signal(args: Record<string, unknown>) {
     const symbol = String(args.symbol ?? "").trim();
     const timeframe = String(args.timeframe ?? "").trim();
+    const candles = Array.isArray(args.candles) ? args.candles : undefined;
     if (!symbol || !timeframe) throw new Error("missing_symbol_or_timeframe");
-    return compute_trading_signal(symbol, timeframe);
+    return compute_trading_signal(symbol, timeframe, candles);
   },
   async about_liirat_knowledge(args: Record<string, unknown>) {
     const query = String(args.query ?? "").trim();
