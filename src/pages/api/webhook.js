@@ -203,25 +203,28 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Try Agent Builder workflow via responses API (since workflows might not be available)
-      let workflowResult;
-      if (openai.workflows?.runs?.create) {
-        console.log('[WORKFLOW] Using workflows.runs.create');
-        workflowResult = await openai.workflows.runs.create({
+      // Try Agent Builder workflow via direct HTTP call (since SDK doesn't have workflows)
+      console.log('[WORKFLOW] Using direct HTTP call to Agent Builder API');
+      const response = await fetch('https://api.openai.com/v1/workflows/runs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Project': process.env.OPENAI_PROJECT
+        },
+        body: JSON.stringify({
           workflow_id: process.env.OPENAI_WORKFLOW_ID,
           input: {
             input_as_text: userText
           }
-        });
-      } else if (openai.responses?.create) {
-        console.log('[WORKFLOW] Using responses.create with workflow_id');
-        workflowResult = await openai.responses.create({
-          workflow_id: process.env.OPENAI_WORKFLOW_ID,
-          input: userText
-        });
-      } else {
-        throw new Error("No workflow API available - SDK too old");
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
       }
+      
+      const workflowResult = await response.json();
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
