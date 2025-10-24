@@ -1,13 +1,8 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
- main
-import { get_ohlc as fetchOhlc, OhlcError, OhlcResult } from "./ohlc";
-import { compute_trading_signal as computeSignal, SignalPayload, buildSignalFromSeries } from "./compute_trading_signal";
-
 import { get_ohlc as fetchOhlc, OhlcError, OhlcResult, Candle } from "./ohlc";
-import { buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
- codex/refactor-whatsapp-bot-into-stateful-agent
+import { compute_trading_signal as computeSignal, SignalPayload } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
 
@@ -100,7 +95,7 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<ToolP
         symbol,
         requested,
         used: tf,
-        result: result.text.substring(0, 100) + "..."
+        result: result.text.substring(0, 100) + "...",
       });
       return result;
     } catch (error) {
@@ -115,35 +110,18 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<ToolP
   throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
 }
 
- main
-export async function compute_trading_signal(symbol: string, timeframe: string, candles?: any[]): Promise<ToolPayload> {
-
 export async function compute_trading_signal(symbol: string, timeframe: string, candles?: Candle[]): Promise<ToolPayload> {
- codex/refactor-whatsapp-bot-into-stateful-agent
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  
- main
-  // If candles are provided, use them directly
-  if (candles && Array.isArray(candles) && candles.length > 0) {
-    return await computeSignal(mappedSymbol, tf, candles);
-  }
-  
-  // Otherwise use fallback logic
-  return computeWithFallback(mappedSymbol, tf);
 
-  if (candles && candles.length > 0) {
-    // Use provided candles with the new compute_trading_signal function
-    const { compute_trading_signal: computeSignal } = await import('./compute_trading_signal');
-    return await computeSignal(mappedSymbol, tf, candles);
-  } else {
-    // Fallback to the old method if no candles provided
-    return computeWithFallback(mappedSymbol, tf);
+  if (Array.isArray(candles) && candles.length > 0) {
+    return computeSignal(mappedSymbol, tf, candles);
   }
- codex/refactor-whatsapp-bot-into-stateful-agent
+
+  return computeWithFallback(mappedSymbol, tf);
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {
@@ -157,7 +135,12 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
     input: [
       {
         role: "system",
-        content: [{ type: "input_text", text: `أجب عن أسئلة ليرات بالاعتماد على الملفات الداخلية فقط. اجعل الإجابة من سطر واحد أو سطرين بحد أقصى.` }],
+        content: [
+          {
+            type: "input_text",
+            text: "أجب عن أسئلة ليرات بالاعتماد على الملفات الداخلية فقط. اجعل الإجابة من سطر واحد أو سطرين بحد أقصى.",
+          },
+        ],
       },
       {
         role: "user",
