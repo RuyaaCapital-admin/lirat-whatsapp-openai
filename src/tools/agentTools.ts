@@ -6,7 +6,19 @@ import { buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
 
+ codex/add-symbol-and-time_utc-to-signal-payload
 type ToolPayload = { text: string } | SignalPayload | Record<string, unknown>;
+
+import { getCurrentPrice } from './price';
+import { get_ohlc as fetchOhlc } from './ohlc';
+import { compute_trading_signal as computeSignal } from './compute_trading_signal';
+import { hardMapSymbol, toTimeframe, TF } from './normalize';
+import { searchNews } from './news';
+import OpenAI from "openai";
+
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+ main
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
@@ -111,6 +123,7 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<Signa
   throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
 }
 
+ codex/add-symbol-and-time_utc-to-signal-payload
 export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
@@ -124,6 +137,40 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
   const vectorStore = process.env.OPENAI_VECTOR_STORE_ID;
   if (!vectorStore) {
     throw new Error("missing_vector_store");
+
+// Tool: about_liirat_knowledge (uses Responses + file_search)
+export async function about_liirat_knowledge(
+  query: string,
+  lang: "ar" | "en" = "ar"
+): Promise<{ text: string }> {
+  try {
+    console.log("[AGENT_TOOL] about_liirat_knowledge called:", { query, lang });
+
+    const vs = process.env.OPENAI_VECTOR_STORE_ID;
+    if (!vs) throw new Error("OPENAI_VECTOR_STORE_ID is missing");
+
+    const sys =
+      lang === "ar"
+        ? "أجب في سطر أو سطرين فقط وبالاعتماد على ملفات ليرات حصراً. لا تضف معلومات من خارج الملفات."
+        : "Answer in 1–2 short lines using ONLY Liirat files. Do not add any outside facts.";
+
+    const resp = await openai.responses.create({
+      model: "gpt-4o-mini",
+      input: [
+        { role: "system", content: sys },
+        { role: "user", content: query }
+      ],
+      tools: [{ type: "file_search", vector_store_ids: [vs] }],
+      max_output_tokens: 160
+    });
+
+    const text = (resp.output_text || "").trim();
+    return { text: text || (lang === "ar" ? "لا توجد معلومة في ملفات ليرات." : "No info found in Liirat files.") };
+  } catch (error) {
+    console.error("[AGENT_TOOL] about_liirat_knowledge error:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    return { text: (lang === "ar" ? "خطأ في جلب المعلومات: " : "Error: ") + msg };
+ main
   }
   const language = lang || detectLang(query);
   const response = await openai.responses.create({
