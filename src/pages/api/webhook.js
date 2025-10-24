@@ -31,31 +31,28 @@ const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص ف�
 // Try Agent Builder workflow first, then fallback to tools + model
 async function smartReply(userText, meta = {}) {
   try {
-    // Try Agent Builder workflow first if available
-    if (OPENAI_WORKFLOW_ID) {
-      console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
-      
-      const response = await openai.responses.create({
-        model: "gpt-4o-mini", // Required parameter
-        workflow_id: OPENAI_WORKFLOW_ID, // Agent Builder workflow ID
-        input: userText, // User message
-        metadata: { channel: "whatsapp", ...meta }
-      });
-      
-      console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(response, null, 2));
-      
-      const text = response.output_text ?? 
-                  (Array.isArray(response.output) ? 
-                    response.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                    "");
-      
-      if (text) {
-        console.log('[WORKFLOW] Success via Agent Builder, response length:', text.length);
-        return text;
-      }
+    // Try Responses API first (official OpenAI agent API)
+    console.log('[AGENT] Calling OpenAI Responses API with input:', userText);
+    
+    const response = await openai.responses.create({
+      model: "gpt-4o-mini", // Required parameter per official docs
+      input: userText, // User message per official docs
+      tools: ["web_search"] // Built-in tools per official docs
+    });
+    
+    console.log('[AGENT] Responses API response:', JSON.stringify(response, null, 2));
+    
+    const text = response.output_text ?? 
+                (Array.isArray(response.output) ? 
+                  response.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+                  "");
+    
+    if (text) {
+      console.log('[AGENT] Success via Responses API, response length:', text.length);
+      return text;
     }
   } catch (err) {
-    console.warn('[WORKFLOW] Agent Builder failed, trying fallback:', err?.message);
+    console.warn('[AGENT] Responses API failed, trying fallback:', err?.message);
   }
 
   // Fallback: Use our tools directly
