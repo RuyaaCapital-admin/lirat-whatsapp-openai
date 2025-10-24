@@ -3,7 +3,7 @@ import { sendText, markReadAndShowTyping } from '../../lib/waba';
 import { openai } from '../../lib/openai';
 import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from '../../tools/agentTools';
 
-// --- OpenAI function tool schemas used by Chat Completions ---
+// --- OpenAI function tool schemas ---
 const TOOL_SCHEMAS = [
   {
     type: "function",
@@ -39,23 +39,21 @@ const TOOL_SCHEMAS = [
     }
   },
   {
-{
-  type: "function",
-  function: {
-    name: "compute_trading_signal",
-    description: "Compute trading signal from recent OHLC (server fetches/uses candles internally).",
-    parameters: {
-      type: "object",
-      properties: {
-        symbol:    { type: "string" },
-        timeframe: { type: "string", enum: ["1min","5min","15min","30min","1hour","4hour","daily"] }
-      },
-      required: ["symbol","timeframe"],
-      additionalProperties: false
+    type: "function",
+    function: {
+      name: "compute_trading_signal",
+      description: "Compute trading signal from recent OHLC (server uses candles internally).",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          timeframe: { type: "string", enum: ["1min","5min","15min","30min","1hour","4hour","daily"] }
+        },
+        required: ["symbol","timeframe"],
+        additionalProperties: false
+      }
     }
-  }
-}
-,
+  },
   {
     type: "function",
     function: {
@@ -65,23 +63,8 @@ const TOOL_SCHEMAS = [
         type: "object",
         properties: {
           query: { type: "string" },
-          lang:  { type: "string" },
+          lang: { type: "string" },
           count: { type: "integer", minimum: 1, maximum: 5, default: 3 }
-        },
-        required: ["query"],
-        additionalProperties: false
-      }
-  }
-  },
-  {
-    type: "function",
-    function: {
-      name: "about_liirat_knowledge",
-      description: "Answer company/support questions using internal knowledge base.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string" }
         },
         required: ["query"],
         additionalProperties: false
@@ -89,6 +72,7 @@ const TOOL_SCHEMAS = [
     }
   }
 ];
+
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
