@@ -204,22 +204,107 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Use Responses API with built-in tools
-      console.log('[RESPONSES] Using OpenAI Responses API');
+      // Use Chat Completions API with function calling
+      console.log('[CHAT] Using OpenAI Chat Completions API');
       
-      const response = await openai.responses.create({
+      const response = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        tools: [{ type: "web_search" }],
-        input: [{
-          role: "user",
-          content: userText
-        }],
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: userText }
+        ],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "get_price",
+              description: "Get current price for a trading symbol",
+              parameters: {
+                type: "object",
+                properties: {
+                  symbol: { type: "string", description: "Trading symbol (e.g., XAUUSD, BTCUSDT)" },
+                  timeframe: { type: "string", description: "Timeframe (e.g., 1min, 5min, 1hour)" }
+                },
+                required: ["symbol"]
+              }
+            }
+          },
+          {
+            type: "function", 
+            function: {
+              name: "compute_trading_signal",
+              description: "Compute trading signal for a symbol",
+              parameters: {
+                type: "object",
+                properties: {
+                  symbol: { type: "string", description: "Trading symbol" },
+                  timeframe: { type: "string", description: "Timeframe" }
+                },
+                required: ["symbol"]
+              }
+            }
+          }
+        ],
+        tool_choice: "auto"
       });
       
-      const text = response.output_text?.trim();
+      const message = response.choices[0]?.message;
       
+      // Handle function calls
+      if (message.tool_calls && message.tool_calls.length > 0) {
+        console.log('[CHAT] Function calls detected:', message.tool_calls.length);
+        
+        const toolResults = [];
+        for (const toolCall of message.tool_calls) {
+          const { name, arguments: args } = toolCall.function;
+          console.log('[CHAT] Executing function:', name, 'with args:', args);
+          
+          try {
+            let result;
+            const parsedArgs = JSON.parse(args);
+            
+            if (name === 'get_price') {
+              result = await get_price(parsedArgs.symbol, parsedArgs.timeframe || '1min');
+            } else if (name === 'compute_trading_signal') {
+              result = await compute_trading_signal(parsedArgs.symbol, parsedArgs.timeframe || '1hour');
+            }
+            
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              role: "tool",
+              content: typeof result === 'string' ? result : JSON.stringify(result)
+            });
+          } catch (error) {
+            console.error('[CHAT] Function execution error:', error);
+            toolResults.push({
+              tool_call_id: toolCall.id,
+              role: "tool", 
+              content: `Error: ${error.message}`
+            });
+          }
+        }
+        
+        // Get final response after function execution
+        const finalResponse = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: userText },
+            message,
+            ...toolResults
+          ]
+        });
+        
+        const finalText = finalResponse.choices[0]?.message?.content?.trim();
+        if (finalText) {
+          console.log('[CHAT] Success via Chat Completions API with functions, response length:', finalText.length);
+          return finalText;
+        }
+      }
+      
+      const text = message?.content?.trim();
       if (text) {
-        console.log('[RESPONSES] Success via Responses API, response length:', text.length);
+        console.log('[CHAT] Success via Chat Completions API, response length:', text.length);
         return text;
       }
     }
