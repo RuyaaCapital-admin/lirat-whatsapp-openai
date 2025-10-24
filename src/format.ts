@@ -32,10 +32,10 @@ export function formatSignalBlock(args: {
 }) {
   const { symbol, interval, candles, signal } = args;
   const last = candles.at(-1)!;
-  const lastIso = new Date(last.t * 1000).toISOString();
+  const lastIso = new Date(typeof last.t === 'string' ? parseInt(last.t) * 1000 : last.t * 1000).toISOString();
   const stamp = `${lastIso.slice(0, 10).replace(/-/g, "")}_${lastIso.slice(11, 16)} UTC`;
   const headerLines = [
-    `Time (UTC): ${formatTimeUTC(last.t)}`,
+    `Time (UTC): ${formatTimeUTC(typeof last.t === 'string' ? parseInt(last.t) : last.t)}`,
     `Symbol: ${symbol}`,
     `Interval: ${interval}`,
     `Last closed: ${stamp}`,
