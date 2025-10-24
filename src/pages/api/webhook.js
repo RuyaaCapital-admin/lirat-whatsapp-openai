@@ -187,13 +187,25 @@ async function smartReply(userText, meta = {}) {
     if (OPENAI_WORKFLOW_ID) {
       console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
       
-      // Call Agent Builder workflow using correct SDK method
-      const workflowResult = await openai.workflows.runs.create({
-        workflow_id: OPENAI_WORKFLOW_ID,
-        input: {
-          input_as_text: userText
-        }
+      // Call Agent Builder workflow using direct HTTP API with correct endpoint
+      const response = await fetch(`https://api.openai.com/v1/agents/${OPENAI_WORKFLOW_ID}/invoke`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          input: {
+            input_as_text: userText
+          }
+        })
       });
+      
+      if (!response.ok) {
+        throw new Error(`Agent API error: ${response.status} ${response.statusText}`);
+      }
+      
+      const workflowResult = await response.json();
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
