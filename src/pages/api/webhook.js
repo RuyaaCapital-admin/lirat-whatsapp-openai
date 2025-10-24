@@ -36,36 +36,96 @@ async function smartReply(userText, meta = {}) {
   try {
     console.log('[AGENT] Calling Agent Builder with input:', userText);
     
-    // Use direct HTTP call to Agent Builder API (the correct approach)
-    console.log('[AGENT] Using direct HTTP call to Agent Builder API');
+    // Try using the SDK's responses.create method with proper parameters
+    console.log('[AGENT] Using SDK responses.create method');
     
-    const response = await fetch('https://api.openai.com/v1/beta/workflows/runs', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Project': process.env.OPENAI_PROJECT || process.env.OPENAI_PROJECT_ID || ''
-      },
-      body: JSON.stringify({
-        workflow_id: OPENAI_WORKFLOW_ID,
-        input: userText,
-        metadata: { channel: "whatsapp", ...meta }
-      })
+    const responseData = await openai.responses.create({
+      model: "gpt-4o-mini", // Required parameter
+      messages: [
+        {
+          role: "system",
+          content: `You are Lirat AI Assistant. You have access to tools for getting live prices and trading signals. 
+          
+          When users ask about prices or trading signals, use the available tools.
+          For other questions about Lirat, provide helpful and professional information.
+          
+          Always respond in Arabic.`
+        },
+        {
+          role: "user", 
+          content: userText
+        }
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_price",
+            description: "Get current price for a trading symbol",
+            parameters: {
+              type: "object",
+              properties: {
+                symbol: { type: "string", description: "Trading symbol like XAUUSD, EURUSD, BTCUSDT" }
+              },
+              required: ["symbol"]
+            }
+          }
+        },
+        {
+          type: "function", 
+          function: {
+            name: "compute_trading_signal",
+            description: "Get trading signal for a symbol and timeframe",
+            parameters: {
+              type: "object",
+              properties: {
+                symbol: { type: "string", description: "Trading symbol" },
+                timeframe: { type: "string", description: "Timeframe like 1hour, 4hour, daily" }
+              },
+              required: ["symbol", "timeframe"]
+            }
+          }
+        }
+      ]
     });
-
-    if (!response.ok) {
-      throw new Error(`Agent Builder API error: ${response.status} ${response.statusText}`);
-    }
-
-    const responseData = await response.json();
     
     console.log('[AGENT] Response received:', JSON.stringify(responseData, null, 2));
     
-    // Extract text from response - Agent Builder API format
-    const text = responseData.output_text ?? 
-                (Array.isArray(responseData.output) ? 
-                  responseData.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                  "");
+    // Extract text from response - standard chat completions format
+    const text = responseData.choices?.[0]?.message?.content || "";
+    
+    // Check if the AI wants to call tools
+    const toolCalls = responseData.choices?.[0]?.message?.tool_calls;
+    if (toolCalls && toolCalls.length > 0) {
+      console.log('[AGENT] Tool calls detected:', toolCalls.length);
+      
+      // Handle tool calls
+      for (const toolCall of toolCalls) {
+        if (toolCall.function.name === 'get_price') {
+          const args = JSON.parse(toolCall.function.arguments);
+          const { hardMapSymbol } = await import('../../tools/normalize');
+          const { getCurrentPrice } = await import('../../tools/price');
+          
+          const symbol = hardMapSymbol(args.symbol);
+          if (symbol) {
+            const price = await getCurrentPrice(symbol);
+            return `Time (UTC): ${new Date().toISOString().slice(11,16)}\nSymbol: ${symbol}\nPrice: ${price.price}\nNote: ${price.source}`;
+          }
+        }
+        
+        if (toolCall.function.name === 'compute_trading_signal') {
+          const args = JSON.parse(toolCall.function.arguments);
+          const { hardMapSymbol, toTimeframe } = await import('../../tools/normalize');
+          const { compute_trading_signal: computeSignal } = await import('../../tools/compute_trading_signal');
+          
+          const symbol = hardMapSymbol(args.symbol);
+          if (symbol) {
+            const tf = toTimeframe(args.timeframe);
+            return await computeSignal(symbol, tf);
+          }
+        }
+      }
+    }
     
     if (text) {
       console.log('[AGENT] Success, response length:', text.length);
