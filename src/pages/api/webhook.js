@@ -204,7 +204,7 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Use Chat Completions API with function calling
+      // Use Chat Completions API (Responses API doesn't exist in current SDK)
       console.log('[CHAT] Using OpenAI Chat Completions API');
       
       const response = await openai.chat.completions.create({
@@ -213,96 +213,11 @@ async function smartReply(userText, meta = {}) {
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userText }
         ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "get_price",
-              description: "Get current price for a trading symbol",
-              parameters: {
-                type: "object",
-                properties: {
-                  symbol: { type: "string", description: "Trading symbol (e.g., XAUUSD, BTCUSDT)" },
-                  timeframe: { type: "string", description: "Timeframe (e.g., 1min, 5min, 1hour)" }
-                },
-                required: ["symbol"]
-              }
-            }
-          },
-          {
-            type: "function", 
-            function: {
-              name: "compute_trading_signal",
-              description: "Compute trading signal for a symbol",
-              parameters: {
-                type: "object",
-                properties: {
-                  symbol: { type: "string", description: "Trading symbol" },
-                  timeframe: { type: "string", description: "Timeframe" }
-                },
-                required: ["symbol"]
-              }
-            }
-          }
-        ],
-        tool_choice: "auto"
+        max_tokens: 500
       });
       
-      const message = response.choices[0]?.message;
+      const text = response.choices[0]?.message?.content?.trim();
       
-      // Handle function calls
-      if (message.tool_calls && message.tool_calls.length > 0) {
-        console.log('[CHAT] Function calls detected:', message.tool_calls.length);
-        
-        const toolResults = [];
-        for (const toolCall of message.tool_calls) {
-          const { name, arguments: args } = toolCall.function;
-          console.log('[CHAT] Executing function:', name, 'with args:', args);
-          
-          try {
-            let result;
-            const parsedArgs = JSON.parse(args);
-            
-            if (name === 'get_price') {
-              result = await get_price(parsedArgs.symbol, parsedArgs.timeframe || '1min');
-            } else if (name === 'compute_trading_signal') {
-              result = await compute_trading_signal(parsedArgs.symbol, parsedArgs.timeframe || '1hour');
-            }
-            
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              role: "tool",
-              content: typeof result === 'string' ? result : JSON.stringify(result)
-            });
-          } catch (error) {
-            console.error('[CHAT] Function execution error:', error);
-            toolResults.push({
-              tool_call_id: toolCall.id,
-              role: "tool", 
-              content: `Error: ${error.message}`
-            });
-          }
-        }
-        
-        // Get final response after function execution
-        const finalResponse = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userText },
-            message,
-            ...toolResults
-          ]
-        });
-        
-        const finalText = finalResponse.choices[0]?.message?.content?.trim();
-        if (finalText) {
-          console.log('[CHAT] Success via Chat Completions API with functions, response length:', finalText.length);
-          return finalText;
-        }
-      }
-      
-      const text = message?.content?.trim();
       if (text) {
         console.log('[CHAT] Success via Chat Completions API, response length:', text.length);
         return text;
@@ -320,33 +235,26 @@ async function smartReply(userText, meta = {}) {
   console.log('[FALLBACK] Debug - userText:', userText);
   console.log('[FALLBACK] Debug - userText.toLowerCase():', userText.toLowerCase());
   
-  // Handle price requests
-  if (intent.wantsPrice && intent.symbol) {
-    try {
-      const result = await get_price(intent.symbol, intent.timeframe);
-      return result.text;
-    } catch (error) {
-      console.error('[FALLBACK] Price tool error:', error);
-    }
-  }
-  
-  // Handle signal requests
-  if (intent.symbol && /signal|إشارة|تداول|trade|صفقة|deal/i.test(userText)) {
+  // Route based on intent priority: signal first, then price
+  if (intent.wantsSignal && intent.symbol) {
+    console.log('[FALLBACK] Signal request detected:', intent.symbol, intent.timeframe, 'route:', intent.route);
     try {
       const result = await compute_trading_signal(intent.symbol, intent.timeframe || '1hour');
-      return result; // compute_trading_signal returns string directly, not {text: string}
+      console.log('[FALLBACK] Signal result:', typeof result, result.length);
+      return result;
     } catch (error) {
       console.error('[FALLBACK] Signal tool error:', error);
     }
   }
   
-  // Handle OHLC requests
-  if (intent.symbol && intent.timeframe) {
+  if (intent.wantsPrice && intent.symbol) {
+    console.log('[FALLBACK] Price request detected:', intent.symbol, intent.timeframe, 'route:', intent.route);
     try {
-      const result = await get_ohlc(intent.symbol, intent.timeframe);
+      const result = await get_price(intent.symbol, intent.timeframe || '1min');
+      console.log('[FALLBACK] Price result:', typeof result, result.length);
       return result.text;
     } catch (error) {
-      console.error('[FALLBACK] OHLC tool error:', error);
+      console.error('[FALLBACK] Price tool error:', error);
     }
   }
   
