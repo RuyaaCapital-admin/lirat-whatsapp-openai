@@ -207,15 +207,23 @@ async function smartReply(userText, meta = {}) {
       // Try Agent Builder workflow via Agents SDK
       console.log('[WORKFLOW] Using Agents SDK to invoke workflow');
       
+      // Log environment variables for debugging
+      console.log('[WORKFLOW DEBUG] Environment variables:', {
+        OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+        OPENAI_PROJECT: !!process.env.OPENAI_PROJECT,
+        OPENAI_WORKFLOW_ID: !!process.env.OPENAI_WORKFLOW_ID,
+        AGENT_NAME: process.env.AGENT_NAME
+      });
+      
       const agent = new Agent({
         apiKey: process.env.OPENAI_API_KEY,
         project: process.env.OPENAI_PROJECT,
-        workflowId: process.env.OPENAI_WORKFLOW_ID,
-        name: process.env.AGENT_NAME || 'Liirat-Ai'
+        workflowId: process.env.OPENAI_WORKFLOW_ID
       });
       
       const workflowResult = await agent.invoke({
-        input: userText
+        input: userText,
+        agentName: process.env.AGENT_NAME || 'Liirat-Ai'
       });
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
