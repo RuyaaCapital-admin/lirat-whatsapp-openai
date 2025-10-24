@@ -4,10 +4,14 @@ export type Canonical = 'XAUUSD'|'XAGUSD'|'EURUSD'|'GBPUSD'|'BTCUSDT'|string;
 // Arabic preprocessing function
 function arNorm(t: string): string {
   return t
-    .replace(/[ًٌٍَُِّْـ]/g, "")              // remove diacritics
-    .replace(/\bعال/g, "على ")                // "عالبيتكوين" → "على بيتكوين"
-    .replace(/\bبال/g, "ب ")
-    .replace(/\bال(?=\S)/g, "");              // drop leading "ال"
+    .normalize('NFKC')
+    .replace(/[\u064B-\u0652\u0670\u0640]/gu, '') // remove diacritics + tatweel
+    .replace(/(^|\s)عال/gu, '$1على ')                // "عالبيتكوين" → "على بيتكوين"
+    .replace(/(^|\s)عل(?=\s)/gu, '$1على ')          // "عل الذهب" → "على الذهب"
+    .replace(/(^|\s)بال/gu, '$1ب ')
+    .replace(/(^|\s)ال(?=\S)/gu, '$1')              // drop leading "ال"
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Signal and price detection regexes (order matters - signal first)
@@ -15,23 +19,25 @@ const SIGNAL_RE = /(صفقة|إشارة|تحليل|signal|long|short|buy|sell)/i
 const PRICE_RE = /(سعر|price|quote|كم|قديش)/i;
 
 // Symbol mapping with regex patterns (no keywords like "صفقة")
-const MAP: [RegExp, string][] = [
-  [/\b(بيتكوين|بتكوين|BTC)\b/i, "BTCUSDT"],
-  [/\b(اثيريوم|إيثيريوم|ETH)\b/i, "ETHUSDT"],
-  [/\b(ذهب|دهب|GOLD|XAU)\b/i, "XAUUSD"],
-  [/\b(فضة|سيلفر|SILVER|XAG)\b/i, "XAGUSD"],
-  [/\b(يورو)\b/i, "EURUSD"], 
-  [/\b(ين)\b/i, "USDJPY"],
-  [/\b(فرنك)\b/i, "USDCHF"], 
-  [/\b(استرليني)\b/i, "GBPUSD"],
-  [/\b(كندي)\b/i, "USDCAD"], 
-  [/\b(استرالي)\b/i, "AUDUSD"],
-  [/\b(نيوزلندي)\b/i, "NZDUSD"],
+const MAP: [string[], string][] = [
+  [["بيتكوين", "بتكوين", "btc"], "BTCUSDT"],
+  [["اثيريوم", "إيثيريوم", "eth"], "ETHUSDT"],
+  [["ذهب", "دهب", "gold", "xau"], "XAUUSD"],
+  [["فضة", "سيلفر", "silver", "xag"], "XAGUSD"],
+  [["يورو", "eurusd", "eur/usd", "eur"], "EURUSD"],
+  [["ين"], "USDJPY"],
+  [["فرنك"], "USDCHF"],
+  [["استرليني", "جنيه"], "GBPUSD"],
+  [["كندي"], "USDCAD"],
+  [["استرالي"], "AUDUSD"],
+  [["نيوزلندي"], "NZDUSD"],
 ];
 
 function pickSymbol(s: string): string | undefined {
-  for (const [re, val] of MAP) {
-    if (re.test(s)) return val;
+  for (const [keywords, val] of MAP) {
+    if (keywords.some((keyword) => s.includes(keyword))) {
+      return val;
+    }
   }
   return undefined;
 }
@@ -65,7 +71,7 @@ export function parseIntent(text: string): {
   wantsSignal: boolean,
   route?: 'forex' | 'crypto'
 } {
-  const normalizedText = arNorm(text.toLowerCase().replace(/\s+/g, ' ').trim());
+  const normalizedText = arNorm(text.toLowerCase());
   console.log('[PARSE] Input text:', text);
   console.log('[PARSE] Normalized text:', normalizedText);
   
@@ -82,19 +88,19 @@ export function parseIntent(text: string): {
   
   // Extract timeframe
   let timeframe: any;
-  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى|الدقيقة|عالدقيقة|على الدقيقة)\b/.test(normalizedText)) {
+  if (/(^|\s)(1 ?min|1m|دقيقة|دقيقه|عالدقيقة|على دقيقة|على الدقيقه)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '1min';
-  } else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق|5 دقايق|٥ دقايق)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(5 ?min|5m|٥ دقائق|5 دقائق|5 دقايق|٥ دقايق)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '5min';
-  } else if (/\b(15 ?min|15m|15 دقيقة|15 دقائق)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(15 ?min|15m|15 دقيقة|15 دقائق)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '15min';
-  } else if (/\b(30 ?min|30m|30 دقيقة|30 دقائق)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(30 ?min|30m|30 دقيقة|30 دقائق)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '30min';
-  } else if (/\b(1 ?hour|1h|ساعة|الساعة|ساعه|الساعه)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(1 ?hour|1h|ساعة|ساعه)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '1hour';
-  } else if (/\b(4 ?hour|4h|4 ساعات|4 ساعة)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(4 ?hour|4h|4 ساعات|4 ساعة)(?=$|\s)/u.test(normalizedText)) {
     timeframe = '4hour';
-  } else if (/\b(1 ?day|1d|يوم|اليوم)\b/.test(normalizedText)) {
+  } else if (/(^|\s)(1 ?day|1d|يوم)(?=$|\s)/u.test(normalizedText)) {
     timeframe = 'daily';
   }
   
