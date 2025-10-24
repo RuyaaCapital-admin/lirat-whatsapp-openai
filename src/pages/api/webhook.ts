@@ -9,7 +9,7 @@ import {
   fetchHistoryFromSupabase,
   logSupabaseMessage,
   reserveMessageProcessing,
-  shouldGreet as shouldGreetFromSupabase,
+  isSupabaseEnabled,
 } from "../../lib/supabase";
 import { createSmartReply } from "../../lib/whatsappAgent";
 import { TOOL_SCHEMAS } from "../../lib/toolSchemas";
@@ -112,12 +112,6 @@ function detectLanguage(text: string) {
   return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
 }
 
-function greetingLine(lang: string) {
-  return lang === "ar"
-    ? "مرحباً، أنا مساعد ليرات. كيف يمكنني مساعدتك؟"
-    : "Hi, I’m Liirat assistant. How can I help you?";
-}
-
 async function handleMessage(message: WebhookMessage, history: HistoryMessage[]) {
   const text = message.text.trim();
   if (!text) {
@@ -178,6 +172,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     let finalReply = "";
     const text = message.text || "";
     const lang = detectLanguage(text);
+    const supabaseActive = isSupabaseEnabled();
 
     try {
       try {
@@ -186,35 +181,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         console.warn("[WEBHOOK] markReadAndShowTyping failed", error);
       }
 
-      const { messages: history, lastInboundAt } = await fetchHistoryFromSupabase(message.from, 15);
+      const historyResult = supabaseActive
+        ? await fetchHistoryFromSupabase(message.from, 15)
+        : { messages: [] as HistoryMessage[], lastInboundAt: null };
+      const history = historyResult.messages;
 
-      void logSupabaseMessage({
-        waId: message.from,
-        role: "user",
-        content: text,
-        lang,
-        messageId: message.id,
-        contactName: message.contactName,
-      });
+      if (supabaseActive) {
+        void logSupabaseMessage({
+          waId: message.from,
+          role: "user",
+          content: text,
+          lang,
+          messageId: message.id,
+          contactName: message.contactName,
+        });
+      }
 
       const reply = await handleMessage(message, history);
       const baseReply = reply || fallbackUnavailableMessage(text);
-      const shouldGreet = await shouldGreetFromSupabase(message.from, lastInboundAt);
-      if (shouldGreet) {
-        console.info("[GREET] first message in 24h", { waId: message.from });
-      }
-      const greeting = shouldGreet ? greetingLine(lang) : "";
-      finalReply = [greeting, baseReply].filter(Boolean).join("\n").trim();
+      finalReply = baseReply.trim();
 
       if (finalReply) {
+        console.info("[WEBHOOK] sending reply", {
+          to: message.from,
+          preview: finalReply.slice(0, 120),
+        });
         await sendText(message.from, finalReply);
         sent = true;
-        void logSupabaseMessage({
-          waId: message.from,
-          role: "assistant",
-          content: finalReply,
-          lang,
-        });
+        if (supabaseActive) {
+          void logSupabaseMessage({
+            waId: message.from,
+            role: "assistant",
+            content: finalReply,
+            lang,
+          });
+        }
       }
     } catch (error) {
       console.error("[WEBHOOK] processing error", error);
@@ -223,12 +224,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         try {
           await sendText(message.from, fallback);
           sent = true;
-          void logSupabaseMessage({
-            waId: message.from,
-            role: "assistant",
-            content: fallback,
-            lang,
-          });
+          if (supabaseActive) {
+            void logSupabaseMessage({
+              waId: message.from,
+              role: "assistant",
+              content: fallback,
+              lang,
+            });
+          }
         } catch (sendError) {
           console.error("[WEBHOOK] failed to send fallback", sendError);
         }

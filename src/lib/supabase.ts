@@ -29,12 +29,24 @@ const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 const MESSAGES_TABLE = process.env.SUPABASE_MESSAGES_TABLE || "messages";
 const PROCESSED_TABLE = process.env.SUPABASE_PROCESSED_TABLE || "processed_messages";
 
+function isDisabledFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalised = value.trim().toLowerCase();
+  return normalised === "1" || normalised === "true" || normalised === "yes";
+}
+
+const SUPABASE_DISABLED = isDisabledFlag(process.env.SUPABASE_DISABLED);
+
 let client: SupabaseClient | null = null;
 
-if (SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
+if (!SUPABASE_DISABLED && SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
   client = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+export function isSupabaseEnabled(): boolean {
+  return client !== null;
 }
 
 function coerceRole(row: StoredMessage): StoredMessageRole | null {

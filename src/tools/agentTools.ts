@@ -152,6 +152,8 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
 }
 
 export async function search_web_news(query: string, lang = "en", count = 3): Promise<ToolPayload> {
-  const rows = await fetchNews(query, count);
-  return { text: JSON.stringify({ items: rows, lang }) };
+  const language = lang === "ar" ? "ar" : "en";
+  const safeCount = Math.max(1, Math.min(count, 5));
+  const rows = await fetchNews(query, safeCount, language);
+  return { text: JSON.stringify({ items: rows, lang: language }) };
 }

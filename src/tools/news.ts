@@ -1,5 +1,5 @@
 // src/tools/news.ts
-import axios from "axios";
+import { openai } from "../lib/openai";
 
 export interface NewsItem {
   date: string;
@@ -9,78 +9,102 @@ export interface NewsItem {
   impact?: string;
 }
 
-const FMP_NEWS_ENDPOINT = "https://financialmodelingprep.com/api/v3/stock_news";
+function extractText(response: any): string {
+  if (!response) return "";
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+  const output = response.output;
+  if (Array.isArray(output)) {
+    const chunks = output
+      .flatMap((item: any) => (Array.isArray(item.content) ? item.content : item.content ? [item.content] : []))
+      .map((c: any) => (typeof c === "string" ? c : c?.text ?? ""))
+      .filter(Boolean);
+    if (chunks.length) {
+      return chunks.join("\n").trim();
+    }
+  }
+  return "";
+}
 
-function normaliseDate(value: string): string {
-  if (!value) return "";
-  const parsed = Date.parse(value);
+function normaliseDate(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return "";
+  }
+  const trimmed = value.trim();
+  const isoCandidate = /^\d{4}-\d{2}-\d{2}/.test(trimmed) ? trimmed : new Date(trimmed).toISOString();
+  if (!isoCandidate) return "";
+  const parsed = Date.parse(isoCandidate);
   if (Number.isNaN(parsed)) return "";
   return new Date(parsed).toISOString().slice(0, 10);
 }
 
-function mapRow(row: any): NewsItem | null {
-  const title = typeof row?.title === "string" ? row.title.trim() : "";
-  const url = typeof row?.url === "string" ? row.url.trim() : "";
-  const date = normaliseDate(String(row?.publishedDate ?? row?.date ?? ""));
-  const source = typeof row?.site === "string" ? row.site.trim() : "";
-  if (!title || !url || !date || !source) return null;
-  const impact = typeof row?.text === "string" ? row.text.slice(0, 120).trim() : undefined;
+function mapItem(raw: any): NewsItem | null {
+  const date = normaliseDate(raw?.date ?? raw?.published_at ?? raw?.publishedDate);
+  const source = typeof raw?.source === "string" ? raw.source.trim() : typeof raw?.site === "string" ? raw.site.trim() : "";
+  const title = typeof raw?.title === "string" ? raw.title.trim() : "";
+  const url = typeof raw?.url === "string" ? raw.url.trim() : "";
+  const impact = typeof raw?.impact === "string" ? raw.impact.trim() : undefined;
+  if (!date || !source || !title || !url) return null;
   return { date, source, title, url, impact };
 }
 
-function scoreNews(item: NewsItem, query: string): number {
-  if (!query) return 0;
-  const lowerTitle = item.title.toLowerCase();
-  const lowerSource = item.source.toLowerCase();
-  let score = 0;
-  for (const token of query.split(/\s+/g)) {
-    if (!token) continue;
-    if (lowerTitle.includes(token)) score += 2;
-    if (lowerSource.includes(token)) score += 1;
-  }
-  return score;
-}
-
-export async function fetchNews(query: string, count: number): Promise<NewsItem[]> {
-  const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) {
-    console.warn("[NEWS] missing FMP_API_KEY");
+export async function fetchNews(query: string, count: number, lang = "en"): Promise<NewsItem[]> {
+  const safeCount = Math.max(1, Math.min(count, 5));
+  const language = lang === "ar" ? "ar" : "en";
+  if (!query.trim()) {
     return [];
   }
 
-  const safeCount = Math.max(1, Math.min(count, 5));
-  const limit = Math.max(safeCount * 3, 10);
-  const url = `${FMP_NEWS_ENDPOINT}?limit=${limit}&apikey=${apiKey}`;
-
   try {
-    const { data } = await axios.get(url, { timeout: 9000 });
-    const rows = Array.isArray(data) ? data : [];
-    const queryTokens = query.trim().toLowerCase();
+    const response = await openai.responses.create({
+      model: process.env.OPENAI_NEWS_MODEL || "gpt-4.1-mini",
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: `Use the web_search tool to find up to ${safeCount} recent market or economic headlines relevant to the user's query. Respond ONLY with valid JSON matching {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"...","url":"..."}]}. Write title and impact in ${language} when possible. If impact is unknown, omit it or use null.`,
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: query }],
+        },
+      ],
+      tools: [{ type: "web_search" as any }],
+      tool_choice: "auto",
+      max_output_tokens: 800,
+    });
 
-    const mapped = rows
-      .map(mapRow)
-      .filter((item): item is NewsItem => Boolean(item));
-
-    if (!mapped.length) {
+    const text = extractText(response);
+    if (!text) {
       return [];
     }
 
-    const scored = mapped
-      .map((item) => ({ item, score: scoreNews(item, queryTokens) }))
-      .sort((a, b) => b.score - a.score || (a.item.date < b.item.date ? 1 : -1));
-
-    const deduped: NewsItem[] = [];
-    const seen = new Set<string>();
-    for (const { item } of scored) {
-      if (seen.has(item.url)) continue;
-      seen.add(item.url);
-      deduped.push(item);
-      if (deduped.length >= safeCount) break;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      console.warn("[NEWS] failed to parse response", error, { text });
+      return [];
     }
 
-    return deduped.slice(0, safeCount);
+    const itemsSource = Array.isArray(parsed?.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(itemsSource)) {
+      return [];
+    }
+
+    const mapped = itemsSource
+      .map(mapItem)
+      .filter((item): item is NewsItem => Boolean(item))
+      .slice(0, safeCount);
+
+    return mapped;
   } catch (error) {
-    console.warn("[NEWS] fetch failed", error);
+    console.warn("[NEWS] search failed", error);
     return [];
   }
 }
