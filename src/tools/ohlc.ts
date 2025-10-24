@@ -18,6 +18,7 @@ function fmpInterval(tf: TF) {
 
 export async function getOhlcFmp(symbol: string, tf: TF, limit=300): Promise<Candle[]> {
   const interval = fmpInterval(tf);
+  console.log('[FMP] API Key available:', !!process.env.FMP_API_KEY);
   // FMP FX/crypto unified chart endpoint (unslashed symbols)
   const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
   console.log('[FMP] OHLC URL:', url);
@@ -41,6 +42,7 @@ export async function getOhlcFmp(symbol: string, tf: TF, limit=300): Promise<Can
 // NEW: Get technical indicators from FMP
 export async function getFmpTechnicalIndicators(symbol: string, tf: TF): Promise<any[]> {
   const interval = fmpInterval(tf);
+  console.log('[FMP] API Key available for indicators:', !!process.env.FMP_API_KEY);
   const url = `https://financialmodelingprep.com/api/v3/technical_indicator/${interval}/${symbol}?type=rsi&period=14&apikey=${process.env.FMP_API_KEY}`;
   console.log('[FMP] Technical Indicators URL:', url);
   

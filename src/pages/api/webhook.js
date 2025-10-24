@@ -278,7 +278,7 @@ async function smartReply(userText, meta = {}) {
   if (intent.symbol && /signal|إشارة|تداول|trade|صفقة|deal/i.test(userText)) {
     try {
       const result = await compute_trading_signal(intent.symbol, intent.timeframe || '1hour');
-      return result.text;
+      return result; // compute_trading_signal returns string directly, not {text: string}
     } catch (error) {
       console.error('[FALLBACK] Signal tool error:', error);
     }
