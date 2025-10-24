@@ -39,22 +39,23 @@ const TOOL_SCHEMAS = [
     }
   },
   {
-    type: "function",
-    function: {
-      name: "compute_trading_signal",
-      description: "Compute trading signal from recent OHLC.",
-      parameters: {
-        type: "object",
-        properties: {
-          symbol: { type: "string" },
-          timeframe: { type: "string" },
-          candles: { type: "array" } // optional; executor can ignore if your wrapper fetches internally
-        },
-        required: ["symbol","timeframe"],
-        additionalProperties: true
-      }
+{
+  type: "function",
+  function: {
+    name: "compute_trading_signal",
+    description: "Compute trading signal from recent OHLC (server fetches/uses candles internally).",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol:    { type: "string" },
+        timeframe: { type: "string", enum: ["1min","5min","15min","30min","1hour","4hour","daily"] }
+      },
+      required: ["symbol","timeframe"],
+      additionalProperties: false
     }
-  },
+  }
+}
+,
   {
     type: "function",
     function: {
