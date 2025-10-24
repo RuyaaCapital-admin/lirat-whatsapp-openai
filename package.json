@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.1.11",
+    "@upstash/redis": "^1.32.0",
     "axios": "^1.7.7",
     "dotenv": "^17.2.3",
     "next": "^14.2.5",

@@ -1,104 +1,139 @@
 // src/tools/agentTools.ts
-// Tool functions that match Agent Builder exactly: get_price, get_ohlc, compute_trading_signal, about_liirat_knowledge, search_web_news
+import { openai } from "../lib/openai";
+import { getCurrentPrice } from "./price";
+import { get_ohlc as fetchOhlc } from "./ohlc";
+import { compute_trading_signal as computeSignal } from "./compute_trading_signal";
+import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
-import { getCurrentPrice } from './price';
-import { get_ohlc as fetchOhlc } from './ohlc';
-import { compute_trading_signal as computeSignal } from './compute_trading_signal';
-import { hardMapSymbol, toTimeframe, TF } from './normalize';
-import { searchNews } from './news';
+type ToolText = { text: string };
 
-// Tool: get_price (called in "price" intent)
-export async function get_price(symbol: string, timeframe?: string): Promise<{
-  text: string;
-}> {
-  try {
-    console.log('[AGENT_TOOL] get_price called:', { symbol, timeframe });
+function detectLang(text?: string) {
+  if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
+  return "en";
+}
 
-    const mappedSymbol = hardMapSymbol(symbol);
-    if (!mappedSymbol) {
-      return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
+function formatPriceOutput(symbol: string, price: number, time: string | number | null, source: string) {
+  let timeValue: string;
+  if (typeof time === "number") {
+    const date = new Date(time * (time > 10_000_000_000 ? 1 : 1000));
+    const iso = date.toISOString();
+    timeValue = `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+  } else if (typeof time === "string") {
+    const parsed = new Date(time);
+    if (!Number.isNaN(parsed.getTime())) {
+      const iso = parsed.toISOString();
+      timeValue = `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+    } else {
+      timeValue = `${new Date().toISOString().slice(0, 16)} UTC`;
     }
-
-    const p = await getCurrentPrice(mappedSymbol);
-    return {
-      text: `Time (UTC): ${new Date().toISOString().slice(11,16)}\nSymbol: ${symbol}\nPrice: ${p.price}\nNote: ${p.source}`
-    };
-  } catch (error) {
-    console.error('[AGENT_TOOL] get_price error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في جلب السعر: ${errorMessage}` };
+  } else {
+    timeValue = `${new Date().toISOString().slice(0, 16)} UTC`;
   }
+  return `Time (UTC): ${timeValue}\nSymbol: ${symbol.toUpperCase()}\nPrice: ${price}\nSource: ${source}`;
 }
 
-// Tool: get_ohlc
-export async function get_ohlc(symbol: string, timeframe: string): Promise<{
-  text: string;
-}> {
-  try {
-    console.log('[AGENT_TOOL] get_ohlc called:', { symbol, timeframe });
-
-    const mappedSymbol = hardMapSymbol(symbol);
-    if (!mappedSymbol) {
-      return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
-    }
-
-    const tf = toTimeframe(timeframe) as TF;
-    const data = await fetchOhlc(mappedSymbol, tf);
-    return { text: JSON.stringify(data) };
-  } catch (error) {
-    console.error('[AGENT_TOOL] get_ohlc error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في جلب البيانات: ${errorMessage}` };
+function responseText(response: any) {
+  if (!response) return "";
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
   }
+  const output = response.output;
+  if (Array.isArray(output)) {
+    const chunks = output
+      .flatMap((item: any) => (Array.isArray(item.content) ? item.content : item.content ? [item.content] : []))
+      .map((c: any) => (typeof c === "string" ? c : c?.text ?? ""))
+      .filter(Boolean);
+    return chunks.join("\n").trim();
+  }
+  return "";
 }
 
-// Tool: compute_trading_signal
-export async function compute_trading_signal(symbol: string, timeframe: string): Promise<{
-  text: string;
-}> {
-  try {
-    console.log('[AGENT_TOOL] compute_trading_signal called:', { symbol, timeframe });
-
-    const mappedSymbol = hardMapSymbol(symbol);
-    if (!mappedSymbol) {
-      return { text: `رمز غير صحيح: ${symbol}. جرب: XAUUSD, EURUSD, BTCUSDT` };
-    }
-
-    const tf = toTimeframe(timeframe) as TF;
-    return await computeSignal(mappedSymbol, tf);
-  } catch (error) {
-    console.error('[AGENT_TOOL] compute_trading_signal error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في حساب الإشارة: ${errorMessage}` };
+export async function get_price(symbol: string, timeframe?: string): Promise<ToolText> {
+  const mappedSymbol = hardMapSymbol(symbol);
+  if (!mappedSymbol) {
+    throw new Error(`invalid_symbol:${symbol}`);
   }
+  const price = await getCurrentPrice(mappedSymbol);
+  const text = formatPriceOutput(mappedSymbol, price.price, price.time ?? null, price.source);
+  return { text };
 }
 
-export async function search_web_news(query: string): Promise<{
-  text: string;
-}> {
-  try {
-    const rows = await searchNews(query);
-    return { text: JSON.stringify(rows) };
-  } catch (error) {
-    console.error('[AGENT_TOOL] search_web_news error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في جلب الأخبار: ${errorMessage}` };
+export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<ToolText> {
+  const mappedSymbol = hardMapSymbol(symbol);
+  if (!mappedSymbol) {
+    throw new Error(`invalid_symbol:${symbol}`);
   }
+  const tf = toTimeframe(timeframe) as TF;
+  const data = await fetchOhlc(mappedSymbol, tf, Math.max(50, Math.min(limit, 400)));
+  return { text: JSON.stringify(data) };
 }
 
-// Tool: about_liirat_knowledge
-export async function about_liirat_knowledge(query: string): Promise<{
-  text: string;
-}> {
-  try {
-    console.log('[AGENT_TOOL] about_liirat_knowledge called:', { query });
-
-    return {
-      text: `Lirat هي علامة تجارية تقدم خدمات ومنتجات مبتكرة في مجال التكنولوجيا المالية. تسعى Lirat إلى تحسين تجربة المستخدمين من خلال حلول ذكية ومتكاملة تلبي احتياجاتهم المالية. تركز الشركة على تقديم خدمات موثوقة وآمنة تسهم في تعزيز الشمول المالي.`
-    };
-  } catch (error) {
-    console.error('[AGENT_TOOL] about_liirat_knowledge error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في جلب المعلومات: ${errorMessage}` };
+export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolText> {
+  const mappedSymbol = hardMapSymbol(symbol);
+  if (!mappedSymbol) {
+    throw new Error(`invalid_symbol:${symbol}`);
   }
+  const tf = toTimeframe(timeframe) as TF;
+  return await computeSignal(mappedSymbol, tf);
+}
+
+export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolText> {
+  const vectorStore = process.env.OPENAI_VECTOR_STORE_ID;
+  if (!vectorStore) {
+    throw new Error("missing_vector_store");
+  }
+  const language = lang || detectLang(query);
+  const response = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: `أجب عن أسئلة ليرات بالاعتماد على الملفات الداخلية فقط. اجعل الإجابة من سطر واحد أو سطرين بحد أقصى.` }],
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: query }],
+      },
+    ],
+    tools: [{ type: "file_search", vector_store_ids: [vectorStore] }],
+    max_output_tokens: 400,
+  });
+  let text = responseText(response);
+  if (!text) {
+    throw new Error("empty_knowledge_response");
+  }
+  if (language === "en") {
+    text = text.replace(/\s+/g, " ").trim();
+  }
+  return { text };
+}
+
+export async function search_web_news(query: string, lang?: string, count = 3): Promise<ToolText> {
+  const language = lang || detectLang(query);
+  const instruction = language === "ar"
+    ? `لخّص أحدث الأخبار المالية. أعط بالضبط ${count} نقاط تبدأ بشرطة. الصيغة: - YYYY-MM-DD — المصدر — العنوان — التأثير (كلمتان إلى ست كلمات).`
+    : `Summarise the latest market-moving news. Return exactly ${count} bullet lines. Format: - YYYY-MM-DD — Source — Title — impact (2-6 words).`;
+  const response = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    input: [
+      { role: "system", content: [{ type: "input_text", text: instruction }] },
+      { role: "user", content: [{ type: "input_text", text: query }] },
+    ],
+    tools: [{ type: "web_search" } as any],
+    max_output_tokens: 600,
+  });
+  let text = responseText(response);
+  if (!text) {
+    throw new Error("empty_news_response");
+  }
+  const lines = text
+    .split(/\n+/)
+    .map((line: string) => line.trim())
+    .filter(Boolean)
+    .slice(0, count)
+    .map((line: string) => (line.startsWith("-") ? line : `- ${line}`));
+  if (lines.length !== count) {
+    throw new Error("insufficient_news");
+  }
+  return { text: lines.join("\n") };
 }

@@ -1,0 +1,165 @@
+// src/lib/whatsappAgent.ts
+import type {
+  ChatCompletion,
+  ChatCompletionMessageParam,
+  ChatCompletionCreateParams,
+} from "openai/resources/chat/completions";
+import type { ConversationMemoryAdapter, HistoryMessage } from "./memory";
+import { fallbackUnavailableMessage } from "./memory";
+
+export type ToolResult = string | { text?: string } | { error?: string } | Record<string, unknown> | null;
+
+export type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+
+export interface SmartReplyDeps {
+  chat: {
+    create: (params: ChatCompletionCreateParams) => Promise<ChatCompletion>;
+  };
+  toolSchemas: readonly any[];
+  toolHandlers: Record<string, ToolHandler>;
+  systemPrompt: string;
+  memory: ConversationMemoryAdapter;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface SmartReplyInput {
+  userId: string;
+  text: string;
+}
+
+function asMessage(historyMessage: HistoryMessage): ChatCompletionMessageParam {
+  return {
+    role: historyMessage.role,
+    content: historyMessage.content,
+  };
+}
+
+function serialiseToolResult(result: ToolResult): string {
+  if (result == null) return "";
+  if (typeof result === "string") return result;
+  if (typeof result === "object") {
+    if ("text" in result && typeof (result as any).text === "string") {
+      return (result as any).text;
+    }
+    try {
+      return JSON.stringify(result);
+    } catch (error) {
+      return String(result);
+    }
+  }
+  return String(result);
+}
+
+function readMessageContent(message: ChatCompletion["choices"][0]["message"]): string {
+  if (!message) return "";
+  if (typeof message.content === "string") return message.content;
+  const content = message.content as any;
+  if (Array.isArray(content)) {
+    return content
+      .map((chunk: any) => {
+        if (!chunk) return "";
+        if (typeof chunk === "string") return chunk;
+        if (typeof chunk === "object" && "text" in chunk) {
+          return typeof chunk.text === "string" ? chunk.text : "";
+        }
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+export function createSmartReply(deps: SmartReplyDeps) {
+  const {
+    chat,
+    toolSchemas,
+    toolHandlers,
+    systemPrompt,
+    memory,
+    model = "gpt-4o",
+    temperature = 0,
+    maxTokens = 700,
+  } = deps;
+
+  if (!chat?.create) {
+    throw new Error("chat client with create(...) is required");
+  }
+
+  return async function smartReply({ userId, text }: SmartReplyInput): Promise<string> {
+    const trimmed = text?.trim() ?? "";
+    const history = await memory.getHistory(userId);
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: systemPrompt },
+      ...history.map(asMessage),
+      { role: "user", content: trimmed },
+    ];
+
+    while (true) {
+      const completion = await chat.create({
+        model,
+        temperature,
+        max_tokens: maxTokens,
+        messages,
+        tool_choice: "auto",
+        tools: toolSchemas as ChatCompletionCreateParams["tools"],
+      });
+
+      const message = completion.choices[0].message;
+      const toolCalls = message.tool_calls || [];
+
+      if (!toolCalls.length) {
+        const finalText = readMessageContent(message).trim();
+        const output = finalText || fallbackUnavailableMessage(trimmed);
+        await memory.appendHistory(userId, [
+          { role: "user", content: trimmed },
+          { role: "assistant", content: output },
+        ]);
+        return output;
+      }
+
+      messages.push({
+        role: message.role,
+        content: readMessageContent(message),
+        tool_calls: message.tool_calls,
+      } as ChatCompletionMessageParam);
+
+      for (const call of toolCalls) {
+        const name = call.function?.name ?? "";
+        let args: Record<string, unknown> = {};
+        try {
+          args = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
+        } catch (error) {
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: JSON.stringify({ error: "invalid_arguments" }),
+          });
+          continue;
+        }
+
+        let result: ToolResult;
+        try {
+          const handler = toolHandlers[name];
+          if (!handler) {
+            throw new Error(`unknown_tool:${name}`);
+          }
+          result = await handler(args);
+        } catch (error) {
+          const err = error as Error;
+          result = { error: err?.message || String(error) };
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: serialiseToolResult(result),
+        });
+      }
+    }
+  };
+}
+
+export type SmartReply = ReturnType<typeof createSmartReply>;
+
