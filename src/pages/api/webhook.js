@@ -194,24 +194,34 @@ async function smartReply(userText, meta = {}) {
         hasWorkflows: !!openai.workflows,
         hasRuns: !!openai.workflows?.runs,
         hasCreate: !!openai.workflows?.runs?.create,
+        hasResponses: !!openai.responses,
         clientKeys: Object.keys(openai),
         workflowsKeys: openai.workflows ? Object.keys(openai.workflows) : 'no workflows'
       });
       
-      if (!openai.workflows?.runs) {
-        throw new Error("OpenAI SDK too old: upgrade to openai >= 4.67.0");
-      }
       if (!process.env.OPENAI_WORKFLOW_ID) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Call Agent Builder workflow using correct SDK method
-      const workflowResult = await openai.workflows.runs.create({
-        workflow_id: process.env.OPENAI_WORKFLOW_ID,
-        input: {
-          input_as_text: userText
-        }
-      });
+      // Try Agent Builder workflow via responses API (since workflows might not be available)
+      let workflowResult;
+      if (openai.workflows?.runs?.create) {
+        console.log('[WORKFLOW] Using workflows.runs.create');
+        workflowResult = await openai.workflows.runs.create({
+          workflow_id: process.env.OPENAI_WORKFLOW_ID,
+          input: {
+            input_as_text: userText
+          }
+        });
+      } else if (openai.responses?.create) {
+        console.log('[WORKFLOW] Using responses.create with workflow_id');
+        workflowResult = await openai.responses.create({
+          workflow_id: process.env.OPENAI_WORKFLOW_ID,
+          input: userText
+        });
+      } else {
+        throw new Error("No workflow API available - SDK too old");
+      }
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
