@@ -1,124 +1,74 @@
 // src/tools/symbol.ts
+import { normalizeArabic, hardMapSymbol, isCrypto } from './normalize';
+
 export type Canonical = 'XAUUSD'|'XAGUSD'|'EURUSD'|'GBPUSD'|'BTCUSDT'|string;
 
-// Arabic preprocessing function
-function arNorm(t: string): string {
-  return t
-    .normalize('NFKC')
-    .replace(/[\u064B-\u0652\u0670\u0640]/gu, '') // remove diacritics + tatweel
-    .replace(/(^|\s)عال/gu, '$1على ')                // "عالبيتكوين" → "على بيتكوين"
-    .replace(/(^|\s)عل(?=\s)/gu, '$1على ')          // "عل الذهب" → "على الذهب"
-    .replace(/(^|\s)بال/gu, '$1ب ')
-    .replace(/(^|\s)ال(?=\S)/gu, '$1')              // drop leading "ال"
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+type IntentMatch = {
+  symbol?: Canonical;
+  timeframe?: '1min'|'5min'|'15min'|'30min'|'1hour'|'4hour'|'daily';
+  wantsPrice: boolean;
+  wantsSignal: boolean;
+  wantsNews: boolean;
+  route?: 'forex' | 'crypto';
+};
 
-// Signal and price detection regexes (order matters - signal first)
-const SIGNAL_RE = /(صفقة|إشارة|تحليل|signal|long|short|buy|sell)/i;
-const PRICE_RE = /(سعر|price|quote|كم|قديش)/i;
+const SIGNAL_RE = /(صفقة|اشارة|إشارة|تحليل|signal|analysis|buy|sell|long|short)/i;
+const PRICE_RE = /(سعر|price|quote|كم|قديش|قيمة)/i;
+const NEWS_RE = /(خبر|أخبار|اخبار|news)/i;
 
-// Symbol mapping with regex patterns (no keywords like "صفقة")
-const MAP: [string[], string][] = [
-  [["بيتكوين", "بتكوين", "btc"], "BTCUSDT"],
-  [["اثيريوم", "إيثيريوم", "eth"], "ETHUSDT"],
-  [["ذهب", "دهب", "gold", "xau"], "XAUUSD"],
-  [["فضة", "سيلفر", "silver", "xag"], "XAGUSD"],
-  [["يورو", "eurusd", "eur/usd", "eur"], "EURUSD"],
-  [["ين"], "USDJPY"],
-  [["فرنك"], "USDCHF"],
-  [["استرليني", "جنيه"], "GBPUSD"],
-  [["كندي"], "USDCAD"],
-  [["استرالي"], "AUDUSD"],
-  [["نيوزلندي"], "NZDUSD"],
+const SYMBOL_PATTERNS: Array<{ regex: RegExp; symbol: Canonical }> = [
+  { regex: /\b(بيتكوين|بتكوين|btc)\b/i, symbol: 'BTCUSDT' },
+  { regex: /\b(إيثيريوم|اثيريوم|eth)\b/i, symbol: 'ETHUSDT' },
+  { regex: /\b(ذهب|دهب|gold|xau)\b/i, symbol: 'XAUUSD' },
+  { regex: /\b(فضة|سيلفر|silver|xag)\b/i, symbol: 'XAGUSD' },
+  { regex: /\b(برنت|brent)\b/i, symbol: 'XBRUSD' },
+  { regex: /\b(نفط|خام|wti)\b/i, symbol: 'XTIUSD' },
+  { regex: /\b(يورو|eur)\b/i, symbol: 'EURUSD' },
+  { regex: /\b(استرليني|جنيه|gbp)\b/i, symbol: 'GBPUSD' },
+  { regex: /\b(ين|ين ياباني|jpy)\b/i, symbol: 'USDJPY' },
+  { regex: /\b(فرنك|chf)\b/i, symbol: 'USDCHF' },
+  { regex: /\b(كندي|cad)\b/i, symbol: 'USDCAD' },
+  { regex: /\b(استرالي|أسترالي|aud)\b/i, symbol: 'AUDUSD' },
+  { regex: /\b(نيوزلندي|nzd)\b/i, symbol: 'NZDUSD' },
 ];
 
-function pickSymbol(s: string): string | undefined {
-  for (const [keywords, val] of MAP) {
-    if (keywords.some((keyword) => s.includes(keyword))) {
-      return val;
-    }
+function extractTimeframe(text: string): IntentMatch['timeframe'] {
+  if (/(^|\s)(1 ?min|1m|دقيقة|عالدقيقة)(?=$|\s)/i.test(text)) return '1min';
+  if (/(^|\s)(5 ?min|5m|٥ ?دقائق|٥ ?دقايق|5 ?دقائق)(?=$|\s)/i.test(text)) return '5min';
+  if (/(^|\s)(15 ?min|15m|ربع|١٥ ?دقيقة)(?=$|\s)/i.test(text)) return '15min';
+  if (/(^|\s)(30 ?min|30m|نص ساعة|نصف ساعة)(?=$|\s)/i.test(text)) return '30min';
+  if (/(^|\s)(1 ?hour|1h|ساعة|ساعه)(?=$|\s)/i.test(text)) return '1hour';
+  if (/(^|\s)(4 ?hour|4h|٤ ?ساعات|اربع ساعات)(?=$|\s)/i.test(text)) return '4hour';
+  if (/(^|\s)(daily|يومي|يوم)(?=$|\s)/i.test(text)) return 'daily';
+  return undefined;
+}
+
+function findSymbol(text: string): Canonical | undefined {
+  const mapped = hardMapSymbol(text);
+  if (mapped) return mapped;
+  for (const { regex, symbol } of SYMBOL_PATTERNS) {
+    if (regex.test(text)) return symbol;
   }
   return undefined;
 }
 
-// Check if symbol is crypto
-function isCrypto(sym: string): boolean {
-  return /USDT$/.test(sym);
-}
+export function parseIntent(input: string): IntentMatch {
+  const normalized = normalizeArabic(input.toLowerCase());
+  console.log('[PARSE] Input text:', input);
+  console.log('[PARSE] Normalized text:', normalized);
 
-const ALIASES: Record<string, Canonical> = {
-  'xau':'XAUUSD','xauusd':'XAUUSD','xau/usd':'XAUUSD',
-  'xag':'XAGUSD','xagusd':'XAGUSD','xag/usd':'XAGUSD',
-  'eurusd':'EURUSD','eur/usd':'EURUSD',
-  'gbpusd':'GBPUSD','gbp/usd':'GBPUSD',
-  'btcusdt':'BTCUSDT','btc/usdt':'BTCUSDT','btcusd':'BTCUSDT'
-};
+  const wantsSignal = SIGNAL_RE.test(normalized);
+  const wantsPrice = PRICE_RE.test(normalized);
+  const wantsNews = NEWS_RE.test(normalized);
 
-export function toCanonical(s: string): Canonical|undefined {
-  const t = s.trim().toLowerCase();
-  return ALIASES[t];
-}
+  const symbol = findSymbol(normalized);
+  const timeframe = extractTimeframe(normalized);
 
-export const toFcsSymbol = (c: Canonical) =>
-  c.includes('/') ? c.toUpperCase() : `${c.slice(0,3)}/${c.slice(3)}`.toUpperCase();
-export const toFmpSymbol = (c: Canonical) => c.replace('/','').toUpperCase();
-
-export function parseIntent(text: string): {
-  symbol?: Canonical,
-  timeframe?: '1min'|'5min'|'15min'|'30min'|'1hour'|'4hour'|'daily',
-  wantsPrice: boolean,
-  wantsSignal: boolean,
-  route?: 'forex' | 'crypto'
-} {
-  const normalizedText = arNorm(text.toLowerCase());
-  console.log('[PARSE] Input text:', text);
-  console.log('[PARSE] Normalized text:', normalizedText);
-  
-  // Check routing priority: signal first, then price
-  const wantsSignal = SIGNAL_RE.test(normalizedText);
-  const wantsPrice = PRICE_RE.test(normalizedText);
-  
-  console.log('[PARSE] wantsSignal:', wantsSignal);
-  console.log('[PARSE] wantsPrice:', wantsPrice);
-  
-  // Extract symbol using new mapping
-  const symbol = pickSymbol(normalizedText);
-  console.log('[PARSE] Detected symbol:', symbol);
-  
-  // Extract timeframe
-  let timeframe: any;
-  if (/(^|\s)(1 ?min|1m|دقيقة|دقيقه|عالدقيقة|على دقيقة|على الدقيقه)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '1min';
-  } else if (/(^|\s)(5 ?min|5m|٥ دقائق|5 دقائق|5 دقايق|٥ دقايق)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '5min';
-  } else if (/(^|\s)(15 ?min|15m|15 دقيقة|15 دقائق)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '15min';
-  } else if (/(^|\s)(30 ?min|30m|30 دقيقة|30 دقائق)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '30min';
-  } else if (/(^|\s)(1 ?hour|1h|ساعة|ساعه)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '1hour';
-  } else if (/(^|\s)(4 ?hour|4h|4 ساعات|4 ساعة)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = '4hour';
-  } else if (/(^|\s)(1 ?day|1d|يوم)(?=$|\s)/u.test(normalizedText)) {
-    timeframe = 'daily';
-  }
-  
-  // Default timeframes based on intent
-  if (!timeframe) {
-    if (wantsSignal) {
-      timeframe = '1hour';  // Default for signals
-    } else if (wantsPrice) {
-      timeframe = '1min';    // Default for prices
-    }
-  }
-  
-  console.log('[PARSE] Final timeframe:', timeframe);
-  
-  // Determine route
+  const finalTimeframe = timeframe ?? (wantsSignal ? '1hour' : wantsPrice ? '1min' : undefined);
   const route = symbol ? (isCrypto(symbol) ? 'crypto' : 'forex') : undefined;
-  
-  console.log('[PARSE] Final result:', { symbol, timeframe, wantsPrice, wantsSignal, route });
-  
-  return { symbol, timeframe, wantsPrice, wantsSignal, route };
+
+  console.log('[PARSE] wantsSignal:', wantsSignal, 'wantsPrice:', wantsPrice, 'wantsNews:', wantsNews);
+  console.log('[PARSE] Detected symbol:', symbol, 'timeframe:', finalTimeframe, 'route:', route);
+
+  return { symbol, timeframe: finalTimeframe, wantsPrice, wantsSignal, wantsNews, route };
 }
