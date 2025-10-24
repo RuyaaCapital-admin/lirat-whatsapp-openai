@@ -204,50 +204,22 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Try Agent Builder workflow via direct HTTP call
-      console.log('[WORKFLOW] Using direct HTTP call to Agent Builder API');
+      // Use Responses API with built-in tools
+      console.log('[RESPONSES] Using OpenAI Responses API');
       
-      // Log environment variables for debugging
-      console.log('[WORKFLOW DEBUG] Environment variables:', {
-        OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
-        OPENAI_PROJECT: !!process.env.OPENAI_PROJECT,
-        OPENAI_WORKFLOW_ID: !!process.env.OPENAI_WORKFLOW_ID,
-        AGENT_NAME: process.env.AGENT_NAME
+      const response = await openai.responses.create({
+        model: "gpt-4o-mini",
+        tools: [{ type: "web_search" }],
+        input: [{
+          role: "user",
+          content: userText
+        }],
       });
       
-      // Try the correct Agent Builder API endpoint
-      const response = await fetch(`https://api.openai.com/v1/beta/workflows/${process.env.OPENAI_WORKFLOW_ID}/runs`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-          'OpenAI-Project': process.env.OPENAI_PROJECT
-        },
-        body: JSON.stringify({
-          input: {
-            input_as_text: userText
-          }
-        })
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-      
-      const workflowResult = await response.json();
-      
-      console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
-      
-      const text = workflowResult.output_text ?? 
-                  workflowResult.text ?? 
-                  workflowResult.message ?? 
-                  (Array.isArray(workflowResult.output) ? 
-                    workflowResult.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                    "");
+      const text = response.output_text?.trim();
       
       if (text) {
-        console.log('[WORKFLOW] Success via Agent Builder, response length:', text.length);
+        console.log('[RESPONSES] Success via Responses API, response length:', text.length);
         return text;
       }
     }
