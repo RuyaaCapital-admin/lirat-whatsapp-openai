@@ -240,7 +240,8 @@ async function smartReply(userText) {
 
       if (asksLiirat && companyIntent && !tradingOrPrice && !called.has("about_liirat_knowledge")) {
         const { text } = await about_liirat_knowledge(userText);
-        return text || (/[\p{Arabic}]/u.test(userText) ? "المعلومة غير متاحة حالياً." : "Info not available.");
+        const hasArabic = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u.test(userText);
+        return text || (hasArabic ? "المعلومة غير متاحة حالياً." : "Info not available.");
       }
 
       return finalText;
