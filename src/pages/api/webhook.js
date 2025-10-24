@@ -267,19 +267,20 @@ async function smartReply(userText, meta = {}) {
   
   // Final fallback: Use model directly (without project to avoid 401)
   try {
-    console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
+    console.log('[FALLBACK] Using chat.completions.create with gpt-4o-mini');
     const fallbackClient = new (await import('openai')).default({
       apiKey: process.env.OPENAI_API_KEY
     });
-    const resp = await fallbackClient.responses.create({
+    const resp = await fallbackClient.chat.completions.create({
       model: "gpt-4o-mini",
-      input: userText // Use input format for Responses API
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ],
+      max_tokens: 500
     });
     
-    const text = resp.output_text ?? 
-                (Array.isArray(resp.output) ? 
-                  resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                  "");
+    const text = resp.choices?.[0]?.message?.content || "";
     
     return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
   } catch (error) {
