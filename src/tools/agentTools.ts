@@ -2,7 +2,7 @@
 // Tool functions that match Agent Builder exactly: get_price, get_ohlc, compute_trading_signal, about_liirat_knowledge
 
 import { getCurrentPrice } from './price';
-import { getOhlcFmp } from './ohlc';
+import {  get_ohlc } from './ohlc';
 import { compute_trading_signal as computeSignal } from './compute_trading_signal';
 import { hardMapSymbol, toTimeframe, TF } from './normalize';
 
@@ -43,7 +43,7 @@ export async function get_ohlc(symbol: string, timeframe: string): Promise<{
     }
 
     const tf = toTimeframe(timeframe) as TF;
-    const data = await getOhlcFmp(mappedSymbol, tf);
+    const data = await get_ohlc(mappedSymbol, tf);
     return { text: JSON.stringify(data.slice(-100)) }; // or return object if Agent supports it
   } catch (error) {
     console.error('[AGENT_TOOL] get_ohlc error:', error);
@@ -90,3 +90,4 @@ export async function about_liirat_knowledge(query: string): Promise<{
     return { text: `خطأ في جلب المعلومات: ${errorMessage}` };
   }
 }
+
