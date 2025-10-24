@@ -28,7 +28,7 @@ export const TOOL_SCHEMAS = [
           symbol: { type: "string" },
           timeframe: {
             type: "string",
-            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "daily"]
+            enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
           },
           limit: { type: "integer", minimum: 50, maximum: 400 }
         },
@@ -48,8 +48,8 @@ export const TOOL_SCHEMAS = [
           symbol: { type: "string" },
           timeframe: {
             type: "string",
-            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "daily"]
-          }
+            enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+          },
         },
         required: ["symbol", "timeframe"],
         additionalProperties: false

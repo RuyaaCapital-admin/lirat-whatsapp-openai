@@ -54,7 +54,7 @@ function extractBody(row: StoredMessage): string {
 }
 
 function parseTimestamp(row: StoredMessage): number | null {
-  const candidates = [row.created_at, row.timestamp];
+  const candidates = [row.created_at, row.timestamp, (row as any).inserted_at, (row as any).updated_at, (row as any).createdAt];
   for (const value of candidates) {
     if (typeof value === "string" && value) {
       const parsed = Date.parse(value);
@@ -74,7 +74,8 @@ export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promis
       .from(MESSAGES_TABLE)
       .select("*")
       .eq("wa_id", waId)
-      .order("created_at", { ascending: false })
+      .order("created_at", { ascending: false, nullsFirst: false })
+      .order("timestamp", { ascending: false, nullsFirst: false })
       .limit(limit);
 
     if (response.error) {
@@ -83,12 +84,13 @@ export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promis
     }
 
     const rows = Array.isArray(response.data) ? (response.data as StoredMessage[]) : [];
+    rows.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
+
     const history: HistoryMessage[] = [];
     let lastRecentAt: number | null = null;
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
 
-    for (let i = rows.length - 1; i >= 0; i -= 1) {
-      const row = rows[i];
+    for (const row of rows) {
       const role = coerceRole(row);
       const content = extractBody(row);
       if (!role || !content) continue;
@@ -98,9 +100,7 @@ export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promis
     for (const row of rows) {
       const ts = parseTimestamp(row);
       if (ts && ts >= cutoff) {
-        if (!lastRecentAt || ts > lastRecentAt) {
-          lastRecentAt = ts;
-        }
+        lastRecentAt = lastRecentAt ? Math.max(lastRecentAt, ts) : ts;
       }
     }
 
@@ -142,6 +142,36 @@ export async function logSupabaseMessage(input: LogMessageInput): Promise<void> 
     }
   } catch (error) {
     console.warn("[SUPABASE] insert exception", error);
+  }
+}
+
+export async function shouldGreet(waId: string, recentTimestamp?: number | null): Promise<boolean> {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  if (typeof recentTimestamp === "number") {
+    return recentTimestamp < cutoff;
+  }
+  if (!client || !waId) return false;
+  try {
+    const { data, error } = await client
+      .from(MESSAGES_TABLE)
+      .select("created_at,timestamp,inserted_at,updated_at")
+      .eq("wa_id", waId)
+      .order("created_at", { ascending: false, nullsFirst: false })
+      .order("timestamp", { ascending: false, nullsFirst: false })
+      .limit(1);
+    if (error) {
+      console.warn("[SUPABASE] shouldGreet query failed", error);
+      return false;
+    }
+    if (!data || !data.length) {
+      return true;
+    }
+    const ts = parseTimestamp(data[0] as StoredMessage);
+    if (!ts) return true;
+    return ts < cutoff;
+  } catch (error) {
+    console.warn("[SUPABASE] shouldGreet exception", error);
+    return false;
   }
 }
 

@@ -1,5 +1,5 @@
 // src/tools/normalize.ts
-export type TF = '1min'|'5min'|'15min'|'30min'|'1hour'|'4hour'|'daily';
+export type TF = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
 
 const DIGIT_MAP: Record<string, string> = {
   '٠': '0','١': '1','٢': '2','٣': '3','٤': '4','٥': '5','٦': '6','٧': '7','٨': '8','٩': '9'
@@ -21,7 +21,7 @@ const SYMBOL_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: 'NZDUSD', aliases: ['nzdusd', 'nzd/usd', 'nzd', 'نيوزلندي', 'دولار نيوزلندي'] },
 ];
 
-const HARD_MAP: Record<string,string> = SYMBOL_ALIASES.reduce((map, entry) => {
+const HARD_MAP: Record<string, string> = SYMBOL_ALIASES.reduce((map, entry) => {
   for (const alias of entry.aliases) {
     map[alias.toLowerCase()] = entry.canonical;
   }
@@ -35,11 +35,11 @@ function normalizeDigits(input: string) {
 
 export function normalizeArabic(text: string) {
   return normalizeDigits(text)
-    .normalize('NFKC')
-    .replace(/[ًٌٍَُِّْـ]/g, '')
-    .replace(/\bعال/g, 'على ')
-    .replace(/\bال(?=\S)/g, '')
-    .replace(/\s+/g, ' ')
+    .normalize("NFKC")
+    .replace(/[ًٌٍَُِّْـ]/g, "")
+    .replace(/\bعال/g, "على ")
+    .replace(/\bال(?=\S)/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -58,17 +58,47 @@ export function isCrypto(sym: string) {
 export function forPriceSource(sym: string): string {
   if (isCrypto(sym)) return sym.toUpperCase();
   const s = sym.toUpperCase();
-  return s.length === 6 ? `${s.slice(0,3)}/${s.slice(3)}` : s.replace(/USD$/,'/USD');
+  return s.length === 6 ? `${s.slice(0, 3)}/${s.slice(3)}` : s.replace(/USD$/, "/USD");
 }
 
 export function toTimeframe(user?: string): TF {
-  const t = normalizeArabic((user || '').toLowerCase());
-  if (/(^|[^0-9])1\s*(m|min|minute|دقيقة)/.test(t)) return '1min';
-  if (/(^|\s)(5\s*(m|min|دقائق|دقايق)|٥\s*(دقائق|دقايق|m|min))/.test(t)) return '5min';
-  if (/(15|ربع)/.test(t)) return '15min';
-  if (/(30\s*(m|min)|نص ساعة|نصف ساعة)/.test(t)) return '30min';
-  if (/(1\s*hour|ساعة|ساعه)/.test(t)) return '1hour';
-  if (/(4\s*hour|4h|٤\s*س|اربع ساعات|٤ ساعات)/.test(t)) return '4hour';
-  if (/(daily|يومي|يوم)/.test(t)) return 'daily';
-  return '1hour';
+  const t = normalizeArabic((user || "").toLowerCase());
+  if (/(^|[^0-9])1\s*(m|min|minute|دقيقة)/.test(t) || /\bعالدقيقة\b/.test(t)) return "1m";
+  if (/(^|\s)(5\s*(m|min|دقائق|دقايق)|٥\s*(دقائق|دقايق|m|min)|خمس دقائق)/.test(t)) return "5m";
+  if (/(15\s*(m|min)?|ربع ساعة|١٥\s*(دقيقة|دقايق))/.test(t)) return "15m";
+  if (/(30\s*(m|min)?|نص ساعة|نصف ساعة|٣٠\s*(دقيقة|دقايق))/.test(t)) return "30m";
+  if (/(1\s*hour|ساعة|ساعه)/.test(t)) return "1h";
+  if (/(4\s*hour|4h|٤\s*س|اربع ساعات|٤ ساعات)/.test(t)) return "4h";
+  if (/(daily|يومي|يوم)/.test(t)) return "1d";
+  return "1h";
+}
+
+export const TIMEFRAME_FALLBACKS: Record<TF, TF[]> = {
+  "1m": ["5m", "15m"],
+  "5m": ["15m"],
+  "15m": ["30m", "1h"],
+  "30m": ["1h", "4h"],
+  "1h": ["4h", "1d"],
+  "4h": ["1d"],
+  "1d": [],
+};
+
+export function timeframeToLabel(tf: TF): string {
+  switch (tf) {
+    case "1m":
+      return "1m";
+    case "5m":
+      return "5m";
+    case "15m":
+      return "15m";
+    case "30m":
+      return "30m";
+    case "1h":
+      return "1h";
+    case "4h":
+      return "4h";
+    case "1d":
+    default:
+      return "1d";
+  }
 }

@@ -66,7 +66,7 @@ const signalOutputs = [
     tp2: 2.5,
     timeUTC: "2024-01-01 10:00 UTC",
     symbol: "XAUUSD",
-    interval: "1hour",
+    interval: "1h",
   },
   {
     signal: "BUY",
@@ -76,7 +76,7 @@ const signalOutputs = [
     tp2: 2.5,
     timeUTC: "2024-01-01 11:00 UTC",
     symbol: "XAUUSD",
-    interval: "1hour",
+    interval: "1h",
   },
 ];
 const toolCalls: string[] = [];
@@ -163,7 +163,7 @@ const scriptedChat = new ScriptedChatClient([
             tool_calls: [
               {
                 id: "call-2",
-                function: { name: "get_ohlc", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1hour" }) },
+              function: { name: "get_ohlc", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1h" }) },
               },
             ],
           },
@@ -180,7 +180,7 @@ const scriptedChat = new ScriptedChatClient([
           tool_calls: [
             {
               id: "call-3",
-              function: { name: "compute_trading_signal", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1hour" }) },
+              function: { name: "compute_trading_signal", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1h" }) },
             },
           ],
         },
@@ -213,7 +213,7 @@ const scriptedChat = new ScriptedChatClient([
             tool_calls: [
               {
                 id: "call-4",
-                function: { name: "compute_trading_signal", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1hour" }) },
+              function: { name: "compute_trading_signal", arguments: JSON.stringify({ symbol: "XAUUSD", timeframe: "1h" }) },
               },
             ],
           },

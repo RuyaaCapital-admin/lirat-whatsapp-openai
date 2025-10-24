@@ -1,11 +1,11 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
-import { get_ohlc as fetchOhlc } from "./ohlc";
-import { compute_trading_signal as computeSignal } from "./compute_trading_signal";
-import { hardMapSymbol, toTimeframe, TF } from "./normalize";
+import { get_ohlc as fetchOhlc, OhlcError, OhlcResult } from "./ohlc";
+import { compute_trading_signal as computeSignal, buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
+import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
 
-type ToolPayload = { text: string } | Record<string, unknown>;
+type ToolPayload = { text: string } | SignalPayload | Record<string, unknown>;
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
@@ -65,7 +65,42 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
   }
   const tf = toTimeframe(timeframe) as TF;
   const data = await fetchOhlc(mappedSymbol, tf, Math.max(50, Math.min(limit, 400)));
-  return { text: JSON.stringify(data) };
+  return {
+    candles: data.candles,
+    lastClosed: data.lastClosed,
+    timeframe: data.timeframe,
+    source: data.source,
+  };
+}
+
+async function computeWithFallback(symbol: string, requested: TF): Promise<SignalPayload> {
+  const ladder = [requested, ...TIMEFRAME_FALLBACKS[requested]];
+  let lastError: unknown;
+  for (const tf of ladder) {
+    try {
+      const series: OhlcResult = await fetchOhlc(symbol, tf, 320);
+      if (tf !== requested) {
+        console.info("[TF] ladder", { symbol, requested, used: tf, lastClosed: series.lastClosed.t });
+      }
+      const payload = buildSignalFromSeries(symbol, tf, series);
+      console.info("[SIGNAL] resolved", {
+        symbol,
+        requested,
+        used: tf,
+        timeUTC: payload.timeUTC,
+        signal: payload.signal,
+      });
+      return { ...payload, interval: tf };
+    } catch (error) {
+      if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
+        console.warn("[TF] no data", { symbol, requested, attempted: tf });
+        lastError = error;
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
 }
 
 export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolPayload> {
@@ -74,7 +109,14 @@ export async function compute_trading_signal(symbol: string, timeframe: string):
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  return await computeSignal(mappedSymbol, tf);
+  try {
+    return await computeWithFallback(mappedSymbol, tf);
+  } catch (error) {
+    if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
+      throw new Error(`no_data_for_interval:${tf}`);
+    }
+    return computeSignal(mappedSymbol, tf);
+  }
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {

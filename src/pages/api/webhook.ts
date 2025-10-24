@@ -5,7 +5,7 @@ import { markReadAndShowTyping, sendText } from "../../lib/waba";
 import { openai } from "../../lib/openai";
 import type { HistoryMessage } from "../../lib/memory";
 import { memory, fallbackUnavailableMessage } from "../../lib/memory";
-import { fetchHistoryFromSupabase, logSupabaseMessage } from "../../lib/supabase";
+import { fetchHistoryFromSupabase, logSupabaseMessage, shouldGreet as shouldGreetFromSupabase } from "../../lib/supabase";
 import { createSmartReply } from "../../lib/whatsappAgent";
 import { TOOL_SCHEMAS } from "../../lib/toolSchemas";
 import SYSTEM_PROMPT from "../../lib/systemPrompt";
@@ -175,7 +175,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
       const reply = await handleMessage(message, history);
       const baseReply = reply || fallbackUnavailableMessage(message.text);
-      const shouldGreet = !lastRecentAt;
+      const shouldGreet = await shouldGreetFromSupabase(message.from, lastRecentAt);
+      if (shouldGreet) {
+        console.info("[GREET] first message in 24h", { waId: message.from });
+      }
       const greeting = shouldGreet ? greetingLine(lang) : "";
       const finalReply = [greeting, baseReply].filter(Boolean).join("\n").trim();
 

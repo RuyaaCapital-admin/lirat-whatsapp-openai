@@ -1,48 +1,188 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { TF } from "./normalize";
 
-export type Candle = { t:number; o:number; h:number; l:number; c:number; v?:number };
-const TFMS: Record<string, number> = { "1min":6e4,"5min":3e5,"15min":9e5,"30min":18e5,"1hour":36e5,"4hour":144e5,"daily":864e5 };
+export type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 
-function fmpInterval(tf: TF) {
-  switch (tf) { case "1min": return "1min"; case "5min": return "5min"; case "15min": return "15min";
-    case "30min": return "30min"; case "1hour": return "1hour"; case "4hour": return "4hour"; case "daily": return "1day"; }
+export type OhlcSource = "FMP" | "FCS";
+
+export interface OhlcResult {
+  candles: Candle[];
+  lastClosed: Candle;
+  timeframe: TF;
+  source: OhlcSource;
 }
 
-async function getOhlcFmp(symbol: string, tf: TF, limit=300): Promise<Candle[]> {
-  const url = `https://financialmodelingprep.com/api/v3/historical-chart/${fmpInterval(tf)!}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
-  const { data } = await axios.get(url, { timeout: 9000 });
-  if (!Array.isArray(data) || !data.length) throw new Error("FMP_EMPTY");
-  return data.reverse().slice(-limit).map((x:any)=>({ t:new Date(x.date).getTime(), o:+x.open, h:+x.high, l:+x.low, c:+x.close, v:+x.volume||0 }));
+export class OhlcError extends Error {
+  constructor(
+    public readonly code:
+      | "NO_DATA_FOR_INTERVAL"
+      | "NO_CLOSED_BAR"
+      | "STALE_DATA"
+      | "HTTP_ERROR"
+      | "INVALID_CANDLES",
+    public readonly timeframe: TF,
+    public readonly source?: OhlcSource,
+  ) {
+    super(code);
+  }
 }
-async function getOhlcFcs(symbol: string, tf: TF, limit=300): Promise<Candle[]> {
-  const isCrypto = /USDT$/i.test(symbol);
-  const pair = isCrypto ? symbol.replace(/USDT$/i,"/USDT") : symbol.replace("USD","/USD");
-  const url = isCrypto
-    ? `https://fcsapi.com/api-v3/crypto/candle?symbol=${pair}&period=${tf}&access_key=${process.env.FCS_API_KEY}`
-    : `https://fcsapi.com/api-v3/forex/candle?symbol=${pair}&period=${tf}&access_key=${process.env.FCS_API_KEY}`;
-  const { data } = await axios.get(url, { timeout: 9000 });
-  const rows = data?.response || data?.candles || [];
-  if (!Array.isArray(rows) || !rows.length) throw new Error("FCS_EMPTY");
-  return rows.slice(-limit).map((o:any)=>(
-    {
-      t:Number(o.t ?? o.tm ?? o.timestamp)*1000,
-      o:Number(o.o ?? o.open),
-      h:Number(o.h ?? o.high),
-      l:Number(o.l ?? o.low),
-      c:Number(o.c ?? o.close),
-      v:Number(o.v ?? o.volume ?? 0)
+
+const TF_TO_MS: Record<TF, number> = {
+  "1m": 60_000,
+  "5m": 5 * 60_000,
+  "15m": 15 * 60_000,
+  "30m": 30 * 60_000,
+  "1h": 60 * 60_000,
+  "4h": 4 * 60 * 60_000,
+  "1d": 24 * 60 * 60_000,
+};
+
+const FMP_INTERVAL: Record<TF, string> = {
+  "1m": "1min",
+  "5m": "5min",
+  "15m": "15min",
+  "30m": "30min",
+  "1h": "1hour",
+  "4h": "4hour",
+  "1d": "1day",
+};
+
+function isFiniteCandle(value: Candle | null | undefined): value is Candle {
+  if (!value) return false;
+  return [value.o, value.h, value.l, value.c].every((x) => Number.isFinite(x));
+}
+
+function mapFmpRow(row: any): Candle | null {
+  const time = Date.parse(String(row?.date ?? ""));
+  if (Number.isNaN(time)) return null;
+  return {
+    t: time,
+    o: Number(row.open),
+    h: Number(row.high),
+    l: Number(row.low),
+    c: Number(row.close),
+    v: Number(row.volume ?? 0),
+  };
+}
+
+function mapFcsRow(row: any): Candle | null {
+  const base = Number(row?.t ?? row?.tm ?? row?.timestamp);
+  const timestamp = Number.isFinite(base) ? base * 1000 : Number(row?.date ?? row?.time ?? 0);
+  if (!Number.isFinite(timestamp)) return null;
+  return {
+    t: timestamp,
+    o: Number(row.o ?? row.open),
+    h: Number(row.h ?? row.high),
+    l: Number(row.l ?? row.low),
+    c: Number(row.c ?? row.close),
+    v: Number(row.v ?? row.volume ?? 0),
+  };
+}
+
+function ensureSorted(candles: Candle[]): Candle[] {
+  return candles.slice().sort((a, b) => a.t - b.t);
+}
+
+function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+  const sorted = ensureSorted(candles);
+  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+  const now = Date.now();
+  const last = sorted.at(-1) ?? null;
+  const prev = sorted.at(-2) ?? null;
+  if (!last || !isFiniteCandle(last)) {
+    throw new OhlcError("INVALID_CANDLES", timeframe);
+  }
+  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
+  if (!candidate || !isFiniteCandle(candidate)) {
+    throw new OhlcError("NO_CLOSED_BAR", timeframe);
+  }
+  if (now - candidate.t > tfMs * 6) {
+    throw new OhlcError("STALE_DATA", timeframe);
+  }
+  return candidate;
+}
+
+async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
+  const interval = FMP_INTERVAL[timeframe];
+  const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
+  try {
+    const { data } = await axios.get(url, { timeout: 9000 });
+    const candles = (Array.isArray(data) ? data : [])
+      .map(mapFmpRow)
+      .filter(isFiniteCandle)
+      .slice(-limit);
+    if (!candles.length) {
+      throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
     }
-  )).sort((a,b)=>a.t-b.t);
+    const sorted = ensureSorted(candles);
+    const lastClosed = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FMP" };
+  } catch (error) {
+    if (error instanceof OhlcError) {
+      throw error;
+    }
+    if (error instanceof AxiosError) {
+      if (error.response?.status === 404) {
+        throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
+      }
+      throw new OhlcError("HTTP_ERROR", timeframe, "FMP");
+    }
+    throw error;
+  }
 }
-export async function get_ohlc(symbol: string, timeframe: TF, limit=300) {
-  let rows:Candle[]; try { rows = await getOhlcFmp(symbol,timeframe,limit); } catch { rows = await getOhlcFcs(symbol,timeframe,limit); }
-  if (!rows?.length) throw new Error("NO_OHLC");
-  rows.sort((a,b)=>a.t-b.t);
-  const tfms = TFMS[timeframe] ?? 36e5;
-  const last = rows.at(-1)!;
-  const closed = (Date.now()-last.t) < tfms*0.5 ? rows.at(-2)! : last;
-  if (!closed) throw new Error("NO_CLOSED_BAR");
-  if (Date.now()-closed.t > tfms*6) throw new Error("STALE_DATA");
-  return { rows, lastClosed: closed };
+
+async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
+  const isCrypto = /USDT$/i.test(symbol);
+  const pair = isCrypto ? symbol.replace(/USDT$/i, "/USDT") : symbol.replace("USD", "/USD");
+  const url = isCrypto
+    ? `https://fcsapi.com/api-v3/crypto/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`
+    : `https://fcsapi.com/api-v3/forex/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`;
+  try {
+    const { data } = await axios.get(url, { timeout: 9000 });
+    const rows = (data?.response ?? data?.candles ?? []) as any[];
+    const candles = rows
+      .slice(-limit)
+      .map(mapFcsRow)
+      .filter(isFiniteCandle);
+    if (!candles.length) {
+      throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
+    }
+    const sorted = ensureSorted(candles);
+    const lastClosed = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FCS" };
+  } catch (error) {
+    if (error instanceof OhlcError) {
+      throw error;
+    }
+    if (error instanceof AxiosError) {
+      if (error.response?.status === 404) {
+        throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
+      }
+      throw new OhlcError("HTTP_ERROR", timeframe, "FCS");
+    }
+    throw error;
+  }
+}
+
+export async function get_ohlc(symbol: string, timeframe: TF, limit = 300): Promise<OhlcResult> {
+  const safeLimit = Math.max(50, Math.min(limit, 400));
+  try {
+    return await fetchFromFmp(symbol, timeframe, safeLimit);
+  } catch (error) {
+    if (error instanceof OhlcError) {
+      if (!["HTTP_ERROR", "NO_DATA_FOR_INTERVAL"].includes(error.code)) {
+        throw error;
+      }
+    } else {
+      throw error;
+    }
+  }
+  try {
+    return await fetchFromFcs(symbol, timeframe, safeLimit);
+  } catch (error) {
+    if (error instanceof OhlcError && error.code === "HTTP_ERROR") {
+      throw new OhlcError("HTTP_ERROR", timeframe, "FCS");
+    }
+    throw error;
+  }
 }

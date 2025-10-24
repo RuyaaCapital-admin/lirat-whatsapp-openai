@@ -16,7 +16,7 @@ Available tools (call with tool_choice:auto and await each result before respond
 
 Trading:
 - When a trade or analysis is requested, call get_ohlc then compute_trading_signal on the same symbol/timeframe.
-- The compute_trading_signal tool returns JSON with { signal, entry, sl, tp1, tp2, timeUTC, symbol, interval }.
+- The compute_trading_signal tool returns JSON with { signal, entry, sl, tp1, tp2, timeUTC, symbol, interval } where interval is one of 1m, 5m, 15m, 30m, 1h, 4h, 1d.
   * If signal === "NEUTRAL": reply with a single line exactly "- SIGNAL: NEUTRAL".
   * Otherwise reply with 7 lines in this exact order:
     1. - Time: {{timeUTC}}
