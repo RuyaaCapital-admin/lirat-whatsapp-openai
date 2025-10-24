@@ -36,12 +36,37 @@ async function smartReply(userText, meta = {}) {
   try {
     console.log('[AGENT] Calling Agent Builder with input:', userText);
     
-    // Use the correct Responses API method for Agent Builder
-    const response = await openai.responses.create({
-      workflow_id: OPENAI_WORKFLOW_ID,
-      input: userText,
-      metadata: { channel: "whatsapp", ...meta }
-    });
+    // Try different methods for Agent Builder
+    let response;
+    
+    // Method 1: Try beta.workflows.runs.create if available
+    if (openai.beta?.workflows?.runs?.create) {
+      console.log('[AGENT] Using beta.workflows.runs.create');
+      response = await openai.beta.workflows.runs.create({
+        workflow_id: OPENAI_WORKFLOW_ID,
+        input: userText,
+        metadata: { channel: "whatsapp", ...meta }
+      });
+    }
+    // Method 2: Try workflows.runs.create if available
+    else if (openai.workflows?.runs?.create) {
+      console.log('[AGENT] Using workflows.runs.create');
+      response = await openai.workflows.runs.create({
+        workflow_id: OPENAI_WORKFLOW_ID,
+        input: userText,
+        metadata: { channel: "whatsapp", ...meta }
+      });
+    }
+    // Method 3: Try responses.create with model (fallback)
+    else {
+      console.log('[AGENT] Using responses.create with model fallback');
+      response = await openai.responses.create({
+        model: "gpt-4o-mini",
+        workflow_id: OPENAI_WORKFLOW_ID,
+        input: userText,
+        metadata: { channel: "whatsapp", ...meta }
+      });
+    }
     
     console.log('[AGENT] Response received:', JSON.stringify(response, null, 2));
     
