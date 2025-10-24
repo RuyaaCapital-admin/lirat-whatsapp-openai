@@ -1,6 +1,6 @@
 // src/tools/signal.ts
 import { TF } from './normalize';
-import { computeSignalPayload, formatSignalPayload } from './compute_trading_signal';
+import { computeSignal as computeSignalPayload, formatSignalPayload } from './compute_trading_signal';
 
 export type SignalBlock = {
   timeUTC: string;
