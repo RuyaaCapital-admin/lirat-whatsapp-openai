@@ -6,6 +6,10 @@ import { get_ohlc as fetchOhlc } from './ohlc';
 import { compute_trading_signal as computeSignal } from './compute_trading_signal';
 import { hardMapSymbol, toTimeframe, TF } from './normalize';
 import { searchNews } from './news';
+import OpenAI from "openai";
+
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 // Tool: get_price (called in "price" intent)
 export async function get_price(symbol: string, timeframe?: string): Promise<{
@@ -86,19 +90,37 @@ export async function search_web_news(query: string): Promise<{
   }
 }
 
-// Tool: about_liirat_knowledge
-export async function about_liirat_knowledge(query: string): Promise<{
-  text: string;
-}> {
+// Tool: about_liirat_knowledge (uses Responses + file_search)
+export async function about_liirat_knowledge(
+  query: string,
+  lang: "ar" | "en" = "ar"
+): Promise<{ text: string }> {
   try {
-    console.log('[AGENT_TOOL] about_liirat_knowledge called:', { query });
+    console.log("[AGENT_TOOL] about_liirat_knowledge called:", { query, lang });
 
-    return {
-      text: `Lirat هي علامة تجارية تقدم خدمات ومنتجات مبتكرة في مجال التكنولوجيا المالية. تسعى Lirat إلى تحسين تجربة المستخدمين من خلال حلول ذكية ومتكاملة تلبي احتياجاتهم المالية. تركز الشركة على تقديم خدمات موثوقة وآمنة تسهم في تعزيز الشمول المالي.`
-    };
+    const vs = process.env.OPENAI_VECTOR_STORE_ID;
+    if (!vs) throw new Error("OPENAI_VECTOR_STORE_ID is missing");
+
+    const sys =
+      lang === "ar"
+        ? "أجب في سطر أو سطرين فقط وبالاعتماد على ملفات ليرات حصراً. لا تضف معلومات من خارج الملفات."
+        : "Answer in 1–2 short lines using ONLY Liirat files. Do not add any outside facts.";
+
+    const resp = await openai.responses.create({
+      model: "gpt-4o-mini",
+      input: [
+        { role: "system", content: sys },
+        { role: "user", content: query }
+      ],
+      tools: [{ type: "file_search", vector_store_ids: [vs] }],
+      max_output_tokens: 160
+    });
+
+    const text = (resp.output_text || "").trim();
+    return { text: text || (lang === "ar" ? "لا توجد معلومة في ملفات ليرات." : "No info found in Liirat files.") };
   } catch (error) {
-    console.error('[AGENT_TOOL] about_liirat_knowledge error:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return { text: `خطأ في جلب المعلومات: ${errorMessage}` };
+    console.error("[AGENT_TOOL] about_liirat_knowledge error:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    return { text: (lang === "ar" ? "خطأ في جلب المعلومات: " : "Error: ") + msg };
   }
 }
