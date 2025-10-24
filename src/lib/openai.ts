@@ -7,5 +7,5 @@ if (!process.env.OPENAI_API_KEY) {
 
 export const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,     // sk-proj-…
-  project: process.env.OPENAI_PROJECT!,    // proj_…
+  // Removed project parameter to avoid 401 errors
 });
