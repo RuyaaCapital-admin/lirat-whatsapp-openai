@@ -216,7 +216,7 @@ async function smartReply(userText, meta = {}) {
       });
       
       // Try the correct Agent Builder API endpoint
-      const response = await fetch('https://api.openai.com/v1/agents/invoke', {
+      const response = await fetch('https://api.openai.com/v1/beta/agents/invoke', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,

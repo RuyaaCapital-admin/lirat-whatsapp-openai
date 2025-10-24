@@ -3,14 +3,14 @@ export type Canonical = 'XAUUSD'|'XAGUSD'|'EURUSD'|'GBPUSD'|'BTCUSDT'|string;
 
 const MAP: Record<string, Canonical> = {
   // gold
-  'ذهب':'XAUUSD','الذهب':'XAUUSD','دهب':'XAUUSD','الدهب':'XAUUSD','عالدهب':'XAUUSD','على الدهب':'XAUUSD',
+  'ذهب':'XAUUSD','الذهب':'XAUUSD','دهب':'XAUUSD','الدهب':'XAUUSD','عالدهب':'XAUUSD','على الدهب':'XAUUSD','gold':'XAUUSD',
   // silver
   'فضة':'XAGUSD','الفضة':'XAGUSD','على الفضة':'XAGUSD',
   // fx
   'يورو دولار':'EURUSD','اليورو دولار':'EURUSD',
   'باوند دولار':'GBPUSD','الجنيه دولار':'GBPUSD','الباوند دولار':'GBPUSD',
   // crypto
-  'بتكوين':'BTCUSDT','بيتكوين':'BTCUSDT','btc':'BTCUSDT'
+  'بتكوين':'BTCUSD','بيتكوين':'BTCUSD','btc':'BTCUSD','btcusdt':'BTCUSD'
 };
 
 const ALIASES: Record<string, Canonical> = {
@@ -18,7 +18,7 @@ const ALIASES: Record<string, Canonical> = {
   'xag':'XAGUSD','xagusd':'XAGUSD','xag/usd':'XAGUSD',
   'eurusd':'EURUSD','eur/usd':'EURUSD',
   'gbpusd':'GBPUSD','gbp/usd':'GBPUSD',
-  'btcusdt':'BTCUSDT','btc/usdt':'BTCUSDT'
+  'btcusdt':'BTCUSD','btc/usdt':'BTCUSD','btcusd':'BTCUSD'
 };
 
 export function toCanonical(s: string): Canonical|undefined {
