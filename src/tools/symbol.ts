@@ -3,9 +3,9 @@ export type Canonical = 'XAUUSD'|'XAGUSD'|'EURUSD'|'GBPUSD'|'BTCUSDT'|string;
 
 const MAP: Record<string, Canonical> = {
   // gold
-  'ذهب':'XAUUSD','الذهب':'XAUUSD','دهب':'XAUUSD','الدهب':'XAUUSD',
+  'ذهب':'XAUUSD','الذهب':'XAUUSD','دهب':'XAUUSD','الدهب':'XAUUSD','عالدهب':'XAUUSD','على الدهب':'XAUUSD',
   // silver
-  'فضة':'XAGUSD','الفضة':'XAGUSD',
+  'فضة':'XAGUSD','الفضة':'XAGUSD','على الفضة':'XAGUSD',
   // fx
   'يورو دولار':'EURUSD','اليورو دولار':'EURUSD',
   'باوند دولار':'GBPUSD','الجنيه دولار':'GBPUSD','الباوند دولار':'GBPUSD',
@@ -57,7 +57,7 @@ export function parseIntent(text: string): {
   // Arabic + EN timeframe
   let tf: any;
   console.log('[PARSE] Checking timeframes...');
-  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى|الدقيقة)\b/.test(t)) {
+  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى|الدقيقة|عالدقيقة|على الدقيقة)\b/.test(t)) {
     tf='1min';
     console.log('[PARSE] Found 1min timeframe');
   }
