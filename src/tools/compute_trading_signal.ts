@@ -46,18 +46,39 @@ function rsi(values: number[], period = 14) {
 }
 
 function macd(values: number[]) {
-  const emaWeighted = (period: number) => {
-    let current = values[0];
+  // Calculate EMA arrays for fast and slow periods
+  const calculateEMA = (period: number) => {
+    const emaValues: number[] = [];
     const weight = 2 / (period + 1);
-    for (let i = 1; i < values.length; i += 1) {
-      current = values[i] * weight + current * (1 - weight);
+    
+    // Initialize with SMA for the first period values
+    let sum = 0;
+    for (let i = 0; i < period && i < values.length; i++) {
+      sum += values[i];
     }
-    return current;
+    emaValues.push(sum / Math.min(period, values.length));
+    
+    // Calculate EMA for remaining values
+    for (let i = period; i < values.length; i++) {
+      const ema = values[i] * weight + emaValues[emaValues.length - 1] * (1 - weight);
+      emaValues.push(ema);
+    }
+    
+    return emaValues;
   };
-  const fast = emaWeighted(12);
-  const slow = emaWeighted(26);
-  const macdValue = fast - slow;
-  const signal = emaWeighted(9);
+  
+  const fastEMA = calculateEMA(12);
+  const slowEMA = calculateEMA(26);
+  
+  // Calculate MACD line (fast - slow)
+  const macdValues: number[] = [];
+  const minLength = Math.min(fastEMA.length, slowEMA.length);
+  for (let i = 0; i < minLength; i++) {
+    macdValues.push(fastEMA[i] - slowEMA[i]);
+  }
+  
+  const macdValue = macdValues[macdValues.length - 1];
+  const signal = ema(macdValues, 9);
   return { macd: macdValue, signal };
 }
 
