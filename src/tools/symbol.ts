@@ -35,31 +35,67 @@ export function parseIntent(text: string): {
   wantsPrice: boolean
 } {
   const t = text.toLowerCase().replace(/\s+/g,' ').trim();
+  console.log('[PARSE] Input text:', text);
+  console.log('[PARSE] Normalized text:', t);
 
   // candidate n-grams
   const toks = t.split(' ');
+  console.log('[PARSE] Tokens:', toks);
   let symbol: Canonical|undefined;
   for (let i=0;i<toks.length;i++){
     const uni = toks[i];
     const bi  = i+1<toks.length ? `${toks[i]} ${toks[i+1]}` : '';
-    symbol = toCanonical(bi) || toCanonical(uni) || symbol;
+    console.log('[PARSE] Checking uni:', uni, 'bi:', bi);
+    const uniResult = toCanonical(uni);
+    const biResult = toCanonical(bi);
+    console.log('[PARSE] uni result:', uniResult, 'bi result:', biResult);
+    symbol = biResult || uniResult || symbol;
     if (symbol) break;
   }
+  console.log('[PARSE] Final symbol:', symbol);
 
   // Arabic + EN timeframe
   let tf: any;
-  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى|الدقيقة)\b/.test(t)) tf='1min';
-  else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق)\b/.test(t)) tf='5min';
-  else if (/\b(15 ?min|15m|١٥ دقيقة|15 دقيقة)\b/.test(t)) tf='15min';
-  else if (/\b(30 ?min|30m|٣٠ دقيقة|30 دقيقة)\b/.test(t)) tf='30min';
-  else if (/\b(1 ?hour|1h|ساعة|ساعه)\b/.test(t)) tf='1hour';
-  else if (/\b(4 ?hour|4h|4 ساعات|٤ ساعات)\b/.test(t)) tf='4hour';
-  else if (/\b(daily|يومي)\b/.test(t)) tf='daily';
+  console.log('[PARSE] Checking timeframes...');
+  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى|الدقيقة)\b/.test(t)) {
+    tf='1min';
+    console.log('[PARSE] Found 1min timeframe');
+  }
+  else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق)\b/.test(t)) {
+    tf='5min';
+    console.log('[PARSE] Found 5min timeframe');
+  }
+  else if (/\b(15 ?min|15m|١٥ دقيقة|15 دقيقة)\b/.test(t)) {
+    tf='15min';
+    console.log('[PARSE] Found 15min timeframe');
+  }
+  else if (/\b(30 ?min|30m|٣٠ دقيقة|30 دقيقة)\b/.test(t)) {
+    tf='30min';
+    console.log('[PARSE] Found 30min timeframe');
+  }
+  else if (/\b(1 ?hour|1h|ساعة|ساعه)\b/.test(t)) {
+    tf='1hour';
+    console.log('[PARSE] Found 1hour timeframe');
+  }
+  else if (/\b(4 ?hour|4h|4 ساعات|٤ ساعات)\b/.test(t)) {
+    tf='4hour';
+    console.log('[PARSE] Found 4hour timeframe');
+  }
+  else if (/\b(daily|يومي)\b/.test(t)) {
+    tf='daily';
+    console.log('[PARSE] Found daily timeframe');
+  }
+  console.log('[PARSE] Final timeframe:', tf);
 
   // price intent - more comprehensive detection
   const hasPriceWord = /\b(سعر|كم|price|quote|شراء|بيع|صفقة|تداول|trade)\b/.test(t);
   const hasSymbolInText = Boolean(symbol);
   const wantsPrice = hasSymbolInText && (hasPriceWord || /xau|xag|eurusd|gbpusd|btc|ذهب|فضة|دهب/u.test(t));
+  
+  console.log('[PARSE] hasPriceWord:', hasPriceWord);
+  console.log('[PARSE] hasSymbolInText:', hasSymbolInText);
+  console.log('[PARSE] wantsPrice:', wantsPrice);
+  console.log('[PARSE] Final result:', { symbol, timeframe: tf, wantsPrice });
 
   return { symbol, timeframe: tf, wantsPrice };
 }
