@@ -26,62 +26,50 @@ const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص ف�
 
 أجب بالعربية دائماً.`;
 
-// Use workflow ONLY - let AI understand naturally
+// Use Agent Builder Responses API - the correct way
 async function smartReply(userText, meta = {}) {
   if (!OPENAI_WORKFLOW_ID) {
-    console.error('[WORKFLOW] OPENAI_WORKFLOW_ID not set');
+    console.error('[AGENT] OPENAI_WORKFLOW_ID not set');
     return "عذراً، النظام غير متاح حالياً. يرجى المحاولة لاحقاً.";
   }
 
   try {
-    console.log('[WORKFLOW] Calling workflow with input:', userText);
+    console.log('[AGENT] Calling Agent Builder with input:', userText);
     
-    // Try direct HTTP call to workflow API (this was working before)
-    const response = await fetch('https://api.openai.com/v1/workflows/runs', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-        'OpenAI-Project': process.env.OPENAI_PROJECT || process.env.OPENAI_PROJECT_ID || ''
-      },
-      body: JSON.stringify({
-        workflow_id: OPENAI_WORKFLOW_ID,
-        input: userText,
-        metadata: { channel: "whatsapp", ...meta }
-      })
+    // Use the correct Responses API method for Agent Builder
+    const response = await openai.responses.create({
+      workflow_id: OPENAI_WORKFLOW_ID,
+      input: userText,
+      metadata: { channel: "whatsapp", ...meta }
     });
-
-    if (!response.ok) {
-      throw new Error(`Workflow API error: ${response.status} ${response.statusText}`);
-    }
-
-    const run = await response.json();
-    console.log('[WORKFLOW] Run response:', JSON.stringify(run, null, 2));
     
-    const text = run.output_text ?? 
-                (Array.isArray(run.output) ? 
-                  run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+    console.log('[AGENT] Response received:', JSON.stringify(response, null, 2));
+    
+    // Extract text from response - Agent Builder Responses API format
+    const text = response.output_text ?? 
+                (Array.isArray(response.output) ? 
+                  response.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                   "");
     
     if (text) {
-      console.log('[WORKFLOW] Success via HTTP, response length:', text.length);
+      console.log('[AGENT] Success, response length:', text.length);
       return text;
     }
     
-    console.warn('[WORKFLOW] No text output received from workflow');
+    console.warn('[AGENT] No text output received from agent');
     return "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
     
   } catch (err) {
-    console.error('[WORKFLOW] Error:', err);
+    console.error('[AGENT] Error:', err);
     
-    // Tiny fallback for hard workflow failures (4xx/5xx)
+    // Fallback for hard failures (4xx/5xx)
     if (err.status >= 400) {
-      console.log('[FALLBACK] Hard workflow failure, trying local tools');
+      console.log('[FALLBACK] Agent failure, trying local tools');
       try {
         // Import tools dynamically to avoid circular deps
         const { hardMapSymbol, toTimeframe } = await import('../../tools/normalize');
         const { getCurrentPrice } = await import('../../tools/price');
-        const { computeSignal } = await import('../../tools/compute_trading_signal');
+        const { compute_trading_signal: computeSignal } = await import('../../tools/compute_trading_signal');
         
         // Try to detect trading intent
         const symbol = hardMapSymbol(userText);
