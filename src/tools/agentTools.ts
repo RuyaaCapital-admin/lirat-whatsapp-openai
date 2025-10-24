@@ -1,7 +1,7 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
-import { get_ohlc as fetchOhlc, OhlcError, OhlcResult } from "./ohlc";
+import { get_ohlc as fetchOhlc, OhlcError, OhlcResult, Candle } from "./ohlc";
 import { buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
@@ -111,13 +111,21 @@ async function computeWithFallback(symbol: string, requested: TF): Promise<Signa
   throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
 }
 
-export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolPayload> {
+export async function compute_trading_signal(symbol: string, timeframe: string, candles?: Candle[]): Promise<ToolPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  return computeWithFallback(mappedSymbol, tf);
+  
+  if (candles && candles.length > 0) {
+    // Use provided candles with the new compute_trading_signal function
+    const { compute_trading_signal: computeSignal } = await import('./compute_trading_signal');
+    return await computeSignal(mappedSymbol, tf, candles);
+  } else {
+    // Fallback to the old method if no candles provided
+    return computeWithFallback(mappedSymbol, tf);
+  }
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {

@@ -50,6 +50,21 @@ export const TOOL_SCHEMAS = [
             type: "string",
             enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
           },
+          candles: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                o: {"type": "number"},
+                h: {"type": "number"},
+                l: {"type": "number"},
+                c: {"type": "number"},
+                t: {"type": "integer"}
+              },
+              required: ["o", "h", "l", "c", "t"],
+              additionalProperties: false
+            }
+          }
         },
         required: ["symbol", "timeframe"],
         additionalProperties: false
