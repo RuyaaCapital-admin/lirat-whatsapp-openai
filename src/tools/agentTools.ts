@@ -65,8 +65,7 @@ export async function compute_trading_signal(symbol: string, timeframe: string):
     }
 
     const tf = toTimeframe(timeframe) as TF;
-    const payload = await computeSignal(mappedSymbol, tf);
-    return { text: JSON.stringify(payload) };
+    return await computeSignal(mappedSymbol, tf);
   } catch (error) {
     console.error('[AGENT_TOOL] compute_trading_signal error:', error);
     const errorMessage = error instanceof Error ? error.message : String(error);
