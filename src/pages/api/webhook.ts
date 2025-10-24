@@ -5,7 +5,12 @@ import { markReadAndShowTyping, sendText } from "../../lib/waba";
 import { openai } from "../../lib/openai";
 import type { HistoryMessage } from "../../lib/memory";
 import { memory, fallbackUnavailableMessage } from "../../lib/memory";
-import { fetchHistoryFromSupabase, logSupabaseMessage, shouldGreet as shouldGreetFromSupabase } from "../../lib/supabase";
+import {
+  fetchHistoryFromSupabase,
+  logSupabaseMessage,
+  reserveMessageProcessing,
+  shouldGreet as shouldGreetFromSupabase,
+} from "../../lib/supabase";
 import { createSmartReply } from "../../lib/whatsappAgent";
 import { TOOL_SCHEMAS } from "../../lib/toolSchemas";
 import SYSTEM_PROMPT from "../../lib/systemPrompt";
@@ -143,47 +148,67 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
+  if (!req.body?.entry?.[0]?.changes?.[0]?.value?.messages) {
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  const message = extractMessage(req.body);
+  if (!message) {
+    res.status(200).json({ received: true });
+    return;
+  }
+
+  let shouldProcess = true;
   try {
-    if (!req.body?.entry?.[0]?.changes?.[0]?.value?.messages) {
-      res.status(200).json({ received: true });
-      return;
-    }
+    shouldProcess = await reserveMessageProcessing(message.id);
+  } catch (error) {
+    console.warn("[WEBHOOK] reserve processing failed", error);
+    shouldProcess = true;
+  }
 
-    const message = extractMessage(req.body);
-    if (!message) {
-      res.status(200).json({ received: true });
-      return;
-    }
+  res.status(200).json({ received: true });
+
+  if (!shouldProcess) {
+    return;
+  }
+
+  void (async () => {
+    let sent = false;
+    let finalReply = "";
+    const text = message.text || "";
+    const lang = detectLanguage(text);
 
     try {
-      await markReadAndShowTyping(message.id);
-    } catch (error) {
-      console.warn("[WEBHOOK] markReadAndShowTyping failed", error);
-    }
+      try {
+        await markReadAndShowTyping(message.id);
+      } catch (error) {
+        console.warn("[WEBHOOK] markReadAndShowTyping failed", error);
+      }
 
-    const lang = detectLanguage(message.text || "");
+      const { messages: history, lastInboundAt } = await fetchHistoryFromSupabase(message.from, 15);
 
-    try {
-      const { messages: history, lastRecentAt } = await fetchHistoryFromSupabase(message.from, 15);
       void logSupabaseMessage({
         waId: message.from,
         role: "user",
-        content: message.text,
+        content: text,
         lang,
         messageId: message.id,
         contactName: message.contactName,
       });
+
       const reply = await handleMessage(message, history);
-      const baseReply = reply || fallbackUnavailableMessage(message.text);
-      const shouldGreet = await shouldGreetFromSupabase(message.from, lastRecentAt);
+      const baseReply = reply || fallbackUnavailableMessage(text);
+      const shouldGreet = await shouldGreetFromSupabase(message.from, lastInboundAt);
       if (shouldGreet) {
         console.info("[GREET] first message in 24h", { waId: message.from });
       }
       const greeting = shouldGreet ? greetingLine(lang) : "";
-      const finalReply = [greeting, baseReply].filter(Boolean).join("\n").trim();
+      finalReply = [greeting, baseReply].filter(Boolean).join("\n").trim();
 
       if (finalReply) {
         await sendText(message.from, finalReply);
+        sent = true;
         void logSupabaseMessage({
           waId: message.from,
           role: "assistant",
@@ -192,20 +217,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         });
       }
     } catch (error) {
-      console.error("[WEBHOOK] smart reply failed", error);
-      const fallback = fallbackUnavailableMessage(message.text || "");
-      await sendText(message.from, fallback);
-      void logSupabaseMessage({
-        waId: message.from,
-        role: "assistant",
-        content: fallback,
-        lang,
-      });
+      console.error("[WEBHOOK] processing error", error);
+      const fallback = fallbackUnavailableMessage(text);
+      if (!sent && fallback) {
+        try {
+          await sendText(message.from, fallback);
+          sent = true;
+          void logSupabaseMessage({
+            waId: message.from,
+            role: "assistant",
+            content: fallback,
+            lang,
+          });
+        } catch (sendError) {
+          console.error("[WEBHOOK] failed to send fallback", sendError);
+        }
+      }
     }
-
-    res.status(200).json({ received: true });
-  } catch (error) {
-    console.error("[WEBHOOK] handler error", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+  })();
 }

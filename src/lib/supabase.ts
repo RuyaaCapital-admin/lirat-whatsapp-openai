@@ -21,12 +21,13 @@ export interface StoredMessage {
 
 export interface LoadedHistory {
   messages: HistoryMessage[];
-  lastRecentAt: number | null;
+  lastInboundAt: number | null;
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 const MESSAGES_TABLE = process.env.SUPABASE_MESSAGES_TABLE || "messages";
+const PROCESSED_TABLE = process.env.SUPABASE_PROCESSED_TABLE || "processed_messages";
 
 let client: SupabaseClient | null = null;
 
@@ -66,7 +67,7 @@ function parseTimestamp(row: StoredMessage): number | null {
 
 export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promise<LoadedHistory> {
   if (!client || !waId) {
-    return { messages: [], lastRecentAt: null };
+    return { messages: [], lastInboundAt: null };
   }
 
   try {
@@ -80,34 +81,32 @@ export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promis
 
     if (response.error) {
       console.warn("[SUPABASE] fetch history failed", response.error);
-      return { messages: [], lastRecentAt: null };
+      return { messages: [], lastInboundAt: null };
     }
 
     const rows = Array.isArray(response.data) ? (response.data as StoredMessage[]) : [];
     rows.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
 
     const history: HistoryMessage[] = [];
-    let lastRecentAt: number | null = null;
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    let lastInboundAt: number | null = null;
 
     for (const row of rows) {
       const role = coerceRole(row);
       const content = extractBody(row);
       if (!role || !content) continue;
       history.push({ role, content });
-    }
-
-    for (const row of rows) {
-      const ts = parseTimestamp(row);
-      if (ts && ts >= cutoff) {
-        lastRecentAt = lastRecentAt ? Math.max(lastRecentAt, ts) : ts;
+      if (role === "user") {
+        const ts = parseTimestamp(row);
+        if (typeof ts === "number") {
+          lastInboundAt = lastInboundAt ? Math.max(lastInboundAt, ts) : ts;
+        }
       }
     }
 
-    return { messages: history.slice(-limit), lastRecentAt };
+    return { messages: history.slice(-limit), lastInboundAt };
   } catch (error) {
     console.warn("[SUPABASE] fetch history exception", error);
-    return { messages: [], lastRecentAt: null };
+    return { messages: [], lastInboundAt: null };
   }
 }
 
@@ -145,10 +144,10 @@ export async function logSupabaseMessage(input: LogMessageInput): Promise<void> 
   }
 }
 
-export async function shouldGreet(waId: string, recentTimestamp?: number | null): Promise<boolean> {
+export async function shouldGreet(waId: string, lastInboundTimestamp?: number | null): Promise<boolean> {
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  if (typeof recentTimestamp === "number") {
-    return recentTimestamp < cutoff;
+  if (typeof lastInboundTimestamp === "number") {
+    return lastInboundTimestamp < cutoff;
   }
   if (!client || !waId) return false;
   try {
@@ -156,6 +155,7 @@ export async function shouldGreet(waId: string, recentTimestamp?: number | null)
       .from(MESSAGES_TABLE)
       .select("created_at,timestamp,inserted_at,updated_at")
       .eq("wa_id", waId)
+      .eq("role", "user")
       .order("created_at", { ascending: false, nullsFirst: false })
       .order("timestamp", { ascending: false, nullsFirst: false })
       .limit(1);
@@ -172,6 +172,28 @@ export async function shouldGreet(waId: string, recentTimestamp?: number | null)
   } catch (error) {
     console.warn("[SUPABASE] shouldGreet exception", error);
     return false;
+  }
+}
+
+export async function reserveMessageProcessing(messageId: string): Promise<boolean> {
+  if (!client || !messageId) {
+    return true;
+  }
+  try {
+    const payload = { id: messageId, created_at: new Date().toISOString() };
+    const { error } = await client.from(PROCESSED_TABLE).insert(payload);
+    if (!error) {
+      return true;
+    }
+    if ((error as any)?.code === "23505" || /duplicate/i.test(String((error as any)?.message ?? ""))) {
+      console.info("[SUPABASE] message already processed", { messageId });
+      return false;
+    }
+    console.warn("[SUPABASE] reserve message failed", error);
+    return true;
+  } catch (error) {
+    console.warn("[SUPABASE] reserve message exception", error);
+    return true;
   }
 }
 

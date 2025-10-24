@@ -13,7 +13,7 @@
   "dependencies": {
     "@openai/agents": "^0.1.11",
     "@supabase/supabase-js": "^2.47.10",
-    "@upstash/redis": "^1.32.0",
+    "@upstash/redis": "^1.35.6",
     "axios": "^1.7.7",
     "dotenv": "^17.2.3",
     "next": "^14.2.5",

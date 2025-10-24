@@ -76,13 +76,13 @@ export const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "search_web_news",
-      description: "Summarise latest market news headlines.",
+      description: "Search top market/economic headlines.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string" },
-          lang: { type: "string" },
-          count: { type: "integer", minimum: 1, maximum: 5 }
+          lang: { type: "string", enum: ["ar", "en"] },
+          count: { type: "integer", minimum: 1, maximum: 5, default: 3 }
         },
         required: ["query"],
         additionalProperties: false

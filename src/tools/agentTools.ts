@@ -2,7 +2,8 @@
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
 import { get_ohlc as fetchOhlc, OhlcError, OhlcResult } from "./ohlc";
-import { compute_trading_signal as computeSignal, buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
+import { buildSignalFromSeries, SignalPayload } from "./compute_trading_signal";
+import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
 
 type ToolPayload = { text: string } | SignalPayload | Record<string, unknown>;
@@ -64,13 +65,20 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  const data = await fetchOhlc(mappedSymbol, tf, Math.max(50, Math.min(limit, 400)));
-  return {
-    candles: data.candles,
-    lastClosed: data.lastClosed,
-    timeframe: data.timeframe,
-    source: data.source,
-  };
+  try {
+    const data = await fetchOhlc(mappedSymbol, tf, Math.max(50, Math.min(limit, 400)));
+    return {
+      candles: data.candles,
+      lastClosed: data.lastClosed,
+      timeframe: data.timeframe,
+      source: data.source,
+    };
+  } catch (error) {
+    if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
+      return { code: error.code, timeframe: tf };
+    }
+    throw error;
+  }
 }
 
 async function computeWithFallback(symbol: string, requested: TF): Promise<SignalPayload> {
@@ -109,14 +117,7 @@ export async function compute_trading_signal(symbol: string, timeframe: string):
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  try {
-    return await computeWithFallback(mappedSymbol, tf);
-  } catch (error) {
-    if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
-      throw new Error(`no_data_for_interval:${tf}`);
-    }
-    return computeSignal(mappedSymbol, tf);
-  }
+  return computeWithFallback(mappedSymbol, tf);
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {
@@ -150,46 +151,7 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
   return { text };
 }
 
-export async function search_web_news(query: string, lang?: string, count = 3): Promise<ToolPayload> {
-  const instruction = `Search for the latest market-moving headlines. Return valid JSON with exactly ${count} objects in an array. Each object must have date (YYYY-MM-DD), source, title, impact (2-6 words), and url.`;
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: [
-      { role: "system", content: [{ type: "input_text", text: instruction }] },
-      { role: "user", content: [{ type: "input_text", text: query }] },
-    ],
-    tools: [{ type: "web_search" } as any],
-    max_output_tokens: 600,
-  });
-  let text = responseText(response);
-  if (!text) {
-    throw new Error("empty_news_response");
-  }
-  text = text.trim();
-  if (text.startsWith("```")) {
-    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  }
-  let parsed: any;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new Error("invalid_news_json");
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("news_not_array");
-  }
-  const items = parsed
-    .slice(0, count)
-    .map((item) => ({
-      date: String(item.date ?? "").slice(0, 10),
-      source: String(item.source ?? "").trim(),
-      title: String(item.title ?? "").trim(),
-      impact: String(item.impact ?? "").trim(),
-      url: String(item.url ?? "").trim(),
-    }))
-    .filter((item) => item.date && item.source && item.title && item.impact && item.url);
-  if (items.length !== count) {
-    throw new Error("insufficient_news_items");
-  }
-  return { items };
+export async function search_web_news(query: string, lang = "en", count = 3): Promise<ToolPayload> {
+  const rows = await fetchNews(query, count);
+  return { text: JSON.stringify({ items: rows, lang }) };
 }

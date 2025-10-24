@@ -63,13 +63,22 @@ export function forPriceSource(sym: string): string {
 
 export function toTimeframe(user?: string): TF {
   const t = normalizeArabic((user || "").toLowerCase());
-  if (/(^|[^0-9])1\s*(m|min|minute|دقيقة)/.test(t) || /\bعالدقيقة\b/.test(t)) return "1m";
-  if (/(^|\s)(5\s*(m|min|دقائق|دقايق)|٥\s*(دقائق|دقايق|m|min)|خمس دقائق)/.test(t)) return "5m";
-  if (/(15\s*(m|min)?|ربع ساعة|١٥\s*(دقيقة|دقايق))/.test(t)) return "15m";
-  if (/(30\s*(m|min)?|نص ساعة|نصف ساعة|٣٠\s*(دقيقة|دقايق))/.test(t)) return "30m";
-  if (/(1\s*hour|ساعة|ساعه)/.test(t)) return "1h";
-  if (/(4\s*hour|4h|٤\s*س|اربع ساعات|٤ ساعات)/.test(t)) return "4h";
-  if (/(daily|يومي|يوم)/.test(t)) return "1d";
+  if (
+    /(\b1\s*(m|min|minute)\b|\bدقيقة\b|\bعلى دقيقة\b|\bعالدقيقة\b)/.test(t)
+  )
+    return "1m";
+  if (
+    /(\b5\s*(m|min)\b|\b5\s*(دقايق|دقائق)\b|\b٥\s*(دقايق|دقائق)\b|\bخمس دقائق\b)/.test(t)
+  )
+    return "5m";
+  if (/(\b15\s*(m|min)?\b|\b١٥\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) return "15m";
+  if (
+    /(\b30\s*(m|min)?\b|\b٣٠\s*(دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/.test(t)
+  )
+    return "30m";
+  if (/(\b1\s*(hour|h)\b|\bساعة\b|\bساعه\b)/.test(t)) return "1h";
+  if (/(\b4\s*(hour|h)\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b)/.test(t)) return "4h";
+  if (/(\bdaily\b|\bيومي\b|\bيوم\b)/.test(t)) return "1d";
   return "1h";
 }
 
