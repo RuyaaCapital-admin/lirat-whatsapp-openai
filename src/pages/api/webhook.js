@@ -36,44 +36,35 @@ async function smartReply(userText, meta = {}) {
   try {
     console.log('[AGENT] Calling Agent Builder with input:', userText);
     
-    // Try different methods for Agent Builder
-    let response;
+    // Use direct HTTP call to Agent Builder API (the correct approach)
+    console.log('[AGENT] Using direct HTTP call to Agent Builder API');
     
-    // Method 1: Try beta.workflows.runs.create if available
-    if (openai.beta?.workflows?.runs?.create) {
-      console.log('[AGENT] Using beta.workflows.runs.create');
-      response = await openai.beta.workflows.runs.create({
+    const response = await fetch('https://api.openai.com/v1/beta/workflows/runs', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+        'OpenAI-Project': process.env.OPENAI_PROJECT || process.env.OPENAI_PROJECT_ID || ''
+      },
+      body: JSON.stringify({
         workflow_id: OPENAI_WORKFLOW_ID,
         input: userText,
         metadata: { channel: "whatsapp", ...meta }
-      });
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Agent Builder API error: ${response.status} ${response.statusText}`);
     }
-    // Method 2: Try workflows.runs.create if available
-    else if (openai.workflows?.runs?.create) {
-      console.log('[AGENT] Using workflows.runs.create');
-      response = await openai.workflows.runs.create({
-        workflow_id: OPENAI_WORKFLOW_ID,
-        input: userText,
-        metadata: { channel: "whatsapp", ...meta }
-      });
-    }
-    // Method 3: Try responses.create with model (fallback)
-    else {
-      console.log('[AGENT] Using responses.create with model fallback');
-      response = await openai.responses.create({
-        model: "gpt-4o-mini",
-        workflow_id: OPENAI_WORKFLOW_ID,
-        input: userText,
-        metadata: { channel: "whatsapp", ...meta }
-      });
-    }
+
+    const responseData = await response.json();
     
-    console.log('[AGENT] Response received:', JSON.stringify(response, null, 2));
+    console.log('[AGENT] Response received:', JSON.stringify(responseData, null, 2));
     
-    // Extract text from response - Agent Builder Responses API format
-    const text = response.output_text ?? 
-                (Array.isArray(response.output) ? 
-                  response.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+    // Extract text from response - Agent Builder API format
+    const text = responseData.output_text ?? 
+                (Array.isArray(responseData.output) ? 
+                  responseData.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                   "");
     
     if (text) {
