@@ -10,6 +10,7 @@ async function loadTools() {
 }
 
 const toolsPromise = loadTools();
+const webhookPromise = import("../src/utils/webhookHelpers");
 
 function buildTrendCandles(type: "buy" | "sell"): Candle[] {
   const base = Date.UTC(2024, 0, 1, 0, 0, 0);
@@ -38,6 +39,36 @@ async function testBuySignal() {
     assert.strictEqual(lines.length, 7, "non-neutral signals should have 7 lines");
     assert.ok(lines[2].includes("SIGNAL:"), "signal line missing");
   }
+}
+
+async function testDigitNormalization() {
+  const { normaliseDigits } = await webhookPromise;
+  const input = "السعر ١٢٣٫٤٥";
+  const output = normaliseDigits(input);
+  assert.strictEqual(output.includes("123"), true);
+}
+
+async function testLanguageDetection() {
+  const { detectLanguage } = await webhookPromise;
+  assert.strictEqual(detectLanguage("مرحبا"), "ar");
+  assert.strictEqual(detectLanguage("hello"), "en");
+}
+
+async function testParseOhlcPayload() {
+  const { parseOhlcPayload } = await webhookPromise;
+  const candles = [
+    { o: 1, h: 2, l: 0.5, c: 1.5, t: 2000 },
+    { o: 2, h: 3, l: 1.5, c: 2.5, t: 1000 },
+  ];
+  const payload = JSON.stringify({
+    text: JSON.stringify({ symbol: "XAUUSD", timeframe: "1hour", candles }),
+  });
+  const snapshot = parseOhlcPayload(payload);
+  assert.ok(snapshot, "snapshot should be parsed");
+  assert.strictEqual(snapshot?.symbol, "XAUUSD");
+  assert.strictEqual(snapshot?.timeframe, "1hour");
+  assert.strictEqual(snapshot?.candles.length, 2);
+  assert.deepStrictEqual(snapshot?.candles.map((c) => c.t), [1000, 2000]);
 }
 
 async function testNeutralFormatting() {
@@ -82,6 +113,9 @@ async function testBuyFormatting() {
 
 async function run() {
   await testBuySignal();
+  await testDigitNormalization();
+  await testLanguageDetection();
+  await testParseOhlcPayload();
   await testNeutralFormatting();
   await testBuyFormatting();
   console.log("All tests passed");

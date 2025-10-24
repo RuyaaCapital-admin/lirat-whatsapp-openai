@@ -14,6 +14,16 @@ import {
   search_web_news,
   about_liirat_knowledge,
 } from "../../tools/agentTools";
+import {
+  detectLanguage,
+  normaliseDigits,
+  normaliseSymbolKey,
+  parseCandles,
+  parseOhlcPayload,
+  type LanguageCode,
+  type OhlcSnapshot,
+  type ToolCandle,
+} from "../../utils/webhookHelpers";
 
 type Role = "user" | "assistant";
 
@@ -33,8 +43,6 @@ type WebhookMessage = {
   text: string;
   timestamp?: number;
 };
-
-type LanguageCode = "ar" | "en";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -210,18 +218,6 @@ function disableSupabase(reason: string, error: unknown) {
 function isMissingTableError(error: unknown): boolean {
   const code = (error as { code?: unknown })?.code;
   return typeof code === "string" && code === "PGRST205";
-}
-
-function detectLanguage(text: string): LanguageCode {
-  return /\p{Script=Arabic}/u.test(text) ? "ar" : "en";
-}
-
-function normaliseDigits(text: string): string {
-  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
-  return text.replace(/[٠-٩]/g, (char) => {
-    const index = arabicDigits.indexOf(char);
-    return index >= 0 ? String(index) : char;
-  });
 }
 
 function parseTimestamp(row: StoredMessageRow): number | null {
@@ -415,65 +411,12 @@ class ToolExecutionError extends Error {
   }
 }
 
-type ToolCandle = { o: number; h: number; l: number; c: number; t: number };
-
-type OhlcSnapshot = { symbol: string; timeframe: string; candles: ToolCandle[] };
-
 function sanitizeArgs(args: Record<string, unknown>): Record<string, unknown> {
   const cloned: Record<string, unknown> = { ...args };
   if (Array.isArray(cloned.candles)) {
     cloned.candles = `len:${cloned.candles.length}`;
   }
   return cloned;
-}
-
-function parseCandles(input: unknown): ToolCandle[] | undefined {
-  if (!Array.isArray(input)) return undefined;
-  return input
-    .map((item) => ({
-      o: Number((item as any)?.o),
-      h: Number((item as any)?.h),
-      l: Number((item as any)?.l),
-      c: Number((item as any)?.c),
-      t: Number((item as any)?.t),
-    }))
-    .filter(
-      (candle) =>
-        Number.isFinite(candle.o) &&
-        Number.isFinite(candle.h) &&
-        Number.isFinite(candle.l) &&
-        Number.isFinite(candle.c) &&
-        Number.isFinite(candle.t),
-    )
-    .sort((a, b) => a.t - b.t);
-}
-
-function parseOhlcPayload(content: string): OhlcSnapshot | null {
-  try {
-    const outer = JSON.parse(content);
-    if (!outer || typeof outer.text !== "string") {
-      return null;
-    }
-    const inner = JSON.parse(outer.text);
-    if (
-      inner &&
-      typeof inner.symbol === "string" &&
-      typeof inner.timeframe === "string" &&
-      Array.isArray(inner.candles)
-    ) {
-      const candles = parseCandles(inner.candles) ?? [];
-      if (candles.length) {
-        return { symbol: inner.symbol, timeframe: inner.timeframe, candles };
-      }
-    }
-  } catch (error) {
-    console.warn("[TOOLS] failed to parse OHLC payload", error);
-  }
-  return null;
-}
-
-function normaliseSymbolKey(value: string): string {
-  return value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
 async function runChatLoop(
