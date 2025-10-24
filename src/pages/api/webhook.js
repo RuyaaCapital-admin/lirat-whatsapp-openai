@@ -204,8 +204,8 @@ async function smartReply(userText, meta = {}) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
 
-      // Try Agent Builder workflow via Agents SDK
-      console.log('[WORKFLOW] Using Agents SDK to invoke workflow');
+      // Try Agent Builder workflow via direct HTTP call
+      console.log('[WORKFLOW] Using direct HTTP call to Agent Builder API');
       
       // Log environment variables for debugging
       console.log('[WORKFLOW DEBUG] Environment variables:', {
@@ -215,16 +215,28 @@ async function smartReply(userText, meta = {}) {
         AGENT_NAME: process.env.AGENT_NAME
       });
       
-      const agent = new Agent({
-        apiKey: process.env.OPENAI_API_KEY,
-        project: process.env.OPENAI_PROJECT,
-        workflowId: process.env.OPENAI_WORKFLOW_ID
+      // Try the correct Agent Builder API endpoint
+      const response = await fetch('https://api.openai.com/v1/workflows/runs', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+          'OpenAI-Project': process.env.OPENAI_PROJECT
+        },
+        body: JSON.stringify({
+          workflow_id: process.env.OPENAI_WORKFLOW_ID,
+          input: {
+            input_as_text: userText
+          }
+        })
       });
       
-      const workflowResult = await agent.invoke({
-        input: userText,
-        agentName: process.env.AGENT_NAME || 'Liirat-Ai'
-      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      
+      const workflowResult = await response.json();
       
       console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(workflowResult, null, 2));
       
@@ -261,7 +273,7 @@ async function smartReply(userText, meta = {}) {
   }
   
   // Handle signal requests
-  if (intent.symbol && /signal|إشارة|تداول|trade/i.test(userText)) {
+  if (intent.symbol && /signal|إشارة|تداول|trade|صفقة|deal/i.test(userText)) {
     try {
       const result = await compute_trading_signal(intent.symbol, intent.timeframe || '1hour');
       return result.text;
