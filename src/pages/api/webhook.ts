@@ -185,15 +185,32 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
 ] as ChatCompletionTool[];
 
 let supabaseClient: SupabaseClient | null = null;
+let supabaseDisabled = false;
 const processedMessageCache = new Set<string>();
 
 function getSupabaseClient(): SupabaseClient | null {
+  if (supabaseDisabled) {
+    return null;
+  }
   if (!supabaseClient && SUPABASE_URL && SUPABASE_KEY) {
     supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
   }
   return supabaseClient;
+}
+
+function disableSupabase(reason: string, error: unknown) {
+  if (!supabaseDisabled) {
+    supabaseDisabled = true;
+    supabaseClient = null;
+    console.warn("[SUPABASE] disabled", { reason, error });
+  }
+}
+
+function isMissingTableError(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return typeof code === "string" && code === "PGRST205";
 }
 
 function detectLanguage(text: string): LanguageCode {
@@ -263,9 +280,17 @@ async function persistMessage(params: {
   try {
     const { error } = await client.from("messages").insert(payload);
     if (error) {
+      if (isMissingTableError(error)) {
+        disableSupabase("missing_table", error);
+        return;
+      }
       console.warn("[SUPABASE] persist failed", error);
     }
   } catch (error) {
+    if (isMissingTableError(error)) {
+      disableSupabase("missing_table_exception", error);
+      return;
+    }
     console.warn("[SUPABASE] persist exception", error);
   }
 }
@@ -284,11 +309,19 @@ async function messageExists(messageId: string): Promise<boolean> {
       .limit(1)
       .maybeSingle();
     if (error && error.code !== "PGRST116") {
+      if (isMissingTableError(error)) {
+        disableSupabase("missing_table", error);
+        return processedMessageCache.has(messageId);
+      }
       console.warn("[SUPABASE] duplicate check failed", error);
       return false;
     }
     return Boolean(data);
   } catch (error) {
+    if (isMissingTableError(error)) {
+      disableSupabase("missing_table_exception", error);
+      return processedMessageCache.has(messageId);
+    }
     console.warn("[SUPABASE] duplicate check exception", error);
     return false;
   }
@@ -312,6 +345,10 @@ async function loadRecentMessages(
       .order("created_at", { ascending: false, nullsFirst: false })
       .limit(limit * 3);
     if (error) {
+      if (isMissingTableError(error)) {
+        disableSupabase("missing_table", error);
+        return [];
+      }
       console.warn("[SUPABASE] load history failed", error);
       return [];
     }
@@ -331,6 +368,10 @@ async function loadRecentMessages(
       .slice(-limit)
       .map((item): ChatCompletionMessageParam => ({ role: item.role, content: item.text }));
   } catch (error) {
+    if (isMissingTableError(error)) {
+      disableSupabase("missing_table_exception", error);
+      return [];
+    }
     console.warn("[SUPABASE] load history exception", error);
     return [];
   }
