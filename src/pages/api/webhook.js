@@ -187,9 +187,8 @@ async function smartReply(userText, meta = {}) {
     if (OPENAI_WORKFLOW_ID) {
       console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
       
-      const response = await openai.responses.create({
-        model: "gpt-4o-mini", // Required parameter
-        workflow_id: OPENAI_WORKFLOW_ID, // Agent Builder workflow ID
+      const response = await openai.agents.invoke({
+        agent_id: OPENAI_WORKFLOW_ID, // Agent Builder workflow ID
         input: userText, // User message
         metadata: { channel: "whatsapp", ...meta }
       });
