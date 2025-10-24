@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "tsx tests/index.test.ts",
     "curl:verify": "node -e \"fetch('https://lirat-whatsapp-openai.vercel.app/api/webhook?hub.mode=subscribe&hub.verify_token='+process.env.VERIFY_TOKEN+'&hub.challenge=123').then(r=>r.text().then(t=>console.log(r.status,t)))\"",
     "curl:post": "node scripts/post-webhook.js"
   },
