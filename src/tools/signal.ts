@@ -24,22 +24,35 @@ export type SignalBlock = {
 };
 
 export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock> {
-  const { trading_signal } = await compute_trading_signal(symbol, tf);
+  const result = await compute_trading_signal(symbol, tf);
+  let payload: any;
+  try {
+    payload = JSON.parse(result.text);
+  } catch (error) {
+    throw new Error('Failed to parse trading signal payload');
+  }
+  const trading_signal = payload?.trading_signal || payload;
+  if (!trading_signal) {
+    throw new Error('Missing trading signal data');
+  }
+  const timeUTC = trading_signal.time_utc || trading_signal.last_closed_iso || trading_signal.last_closed_utc;
+  const lastClosedUTC = trading_signal.last_closed_iso || trading_signal.last_closed_utc || timeUTC;
+  const decision = trading_signal.decision || trading_signal.signal || 'NEUTRAL';
   return {
-    timeUTC: trading_signal.time_utc,
-    symbol,
+    timeUTC,
+    symbol: trading_signal.symbol || symbol,
     interval: tf,
-    lastClosedUTC: trading_signal.last_closed_utc,
+    lastClosedUTC,
     close: trading_signal.close,
     prev: trading_signal.prev,
     ema20: trading_signal.ema20,
     ema50: trading_signal.ema50,
     rsi14: trading_signal.rsi,
     macd: trading_signal.macd,
-    macdSignal: trading_signal.signal,
-    macdHist: trading_signal.hist,
+    macdSignal: trading_signal.macd_signal ?? trading_signal.signal,
+    macdHist: trading_signal.macd_hist ?? trading_signal.hist,
     atr14: trading_signal.atr,
-    signal: trading_signal.decision,
+    signal: decision,
     entry: trading_signal.entry,
     sl: trading_signal.sl,
     tp1: trading_signal.tp1,

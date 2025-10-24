@@ -15,30 +15,55 @@ const atr14 = (H:number[],L:number[],C:number[])=>{ const tr:number[]=[]; for(le
 
 export async function compute_trading_signal(symbol: string, timeframe: TF) {
   const { rows, lastClosed } = await get_ohlc(symbol, timeframe);
-  const C = rows.map(r=>r.c), H = rows.map(r=>r.h), L = rows.map(r=>r.l);
+  const C = rows.map((r) => r.c);
+  const H = rows.map((r) => r.h);
+  const L = rows.map((r) => r.l);
   const prev = rows.at(-2)!;
 
-  const ema20 = ema(C,20), ema50 = ema(C,50), rsi14 = rsi(C,14);
+  const ema20 = ema(C, 20);
+  const ema50 = ema(C, 50);
+  const rsi14 = rsi(C, 14);
   const { macd, signal, hist } = macdVals(C);
-  const { value:atrVal, proxy } = atr14(H,L,C);
+  const { value: atrVal, proxy } = atr14(H, L, C);
 
-  let decision:"BUY"|"SELL"|"NEUTRAL"="NEUTRAL";
-  if (ema20>ema50 && rsi14>=55) decision="BUY";
-  if (ema20<ema50 && rsi14<=45) decision="SELL";
+  let decision: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
+  if (ema20 > ema50 && rsi14 >= 55) decision = "BUY";
+  if (ema20 < ema50 && rsi14 <= 45) decision = "SELL";
 
   const close = lastClosed.c;
-  const risk = Number.isFinite(atrVal) ? atrVal : Math.max(close*0.0015, Math.abs(close - prev.c) || 1);
-  const entry=close, sl=decision==="BUY"?entry-risk:decision==="SELL"?entry+risk:entry;
-  const tp1 =decision==="BUY"?entry+risk:decision==="SELL"?entry-risk:entry;
-  const tp2 =decision==="BUY"?entry+2*risk:decision==="SELL"?entry-2*risk:entry;
+  const risk = Number.isFinite(atrVal) ? atrVal : Math.max(close * 0.0015, Math.abs(close - prev.c) || 1);
+  const entry = close;
+  const sl = decision === "BUY" ? entry - risk : decision === "SELL" ? entry + risk : entry;
+  const tp1 = decision === "BUY" ? entry + risk : decision === "SELL" ? entry - risk : entry;
+  const tp2 = decision === "BUY" ? entry + 2 * risk : decision === "SELL" ? entry - 2 * risk : entry;
 
-  return { trading_signal: {
-    time_utc: new Date().toISOString(),
-    interval: timeframe,
-    last_closed_utc: new Date(lastClosed.t).toISOString(),
-    close, prev: prev.c,
-    ema20, ema50, rsi: rsi14, macd, signal, hist,
-    atr: risk, atr_is_proxy: !Number.isFinite(atrVal) || proxy,
-    decision, entry, sl, tp1, tp2
-  }};
+  const lastClosedISO = new Date(lastClosed.t).toISOString();
+  const lastClosedUTCISO = `${lastClosedISO.slice(0, 10)} ${lastClosedISO.slice(11, 16)} UTC`;
+
+  const block = {
+    symbol,
+    timeframe,
+    time_utc: lastClosedUTCISO,
+    last_closed_iso: lastClosedISO,
+    close,
+    prev: prev.c,
+    ema20,
+    ema50,
+    rsi: rsi14,
+    macd,
+    macd_signal: signal,
+    macd_hist: hist,
+    atr: risk,
+    atr_is_proxy: !Number.isFinite(atrVal) || proxy,
+    decision,
+    signal: decision,
+    entry,
+    sl,
+    tp1,
+    tp2,
+  };
+
+  return {
+    text: JSON.stringify(block),
+  };
 }

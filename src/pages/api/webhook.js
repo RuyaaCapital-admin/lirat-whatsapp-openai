@@ -43,16 +43,17 @@ const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "compute_trading_signal",
-      description: "Compute trading signal from recent OHLC (server uses candles internally).",
+      description: "Return a trading signal for a symbol and timeframe.",
       parameters: {
         type: "object",
+        required: ["symbol", "timeframe"],
         properties: {
-          symbol: { type: "string" },
+          symbol:    { type: "string", description: "Unslashed symbol, e.g. XAUUSD" },
           timeframe: { type: "string", enum: ["1min","5min","15min","30min","1hour","4hour","daily"] }
         },
-        required: ["symbol","timeframe"],
         additionalProperties: false
-      }
+      },
+      strict: true
     }
   },
   {
@@ -170,20 +171,27 @@ function parseJsonSafe(text) {
 
 function formatSignalText(payloadText) {
   const payload = parseJsonSafe(payloadText);
-  const block = payload?.trading_signal || payload;
-  if (!block) return payloadText;
-  const decision = String(block.decision || block.signal || 'NEUTRAL').toUpperCase();
+  const s = payload?.trading_signal || payload;
+  if (!s) return payloadText;
+
+  const decision = String(s.decision || s.signal || 'NEUTRAL').toUpperCase();
+  const out = [];
+  if (s.time_utc) out.push(`- Time (UTC): ${s.time_utc}`);
+  if (s.symbol)   out.push(`- Symbol: ${s.symbol}`);
+
   if (decision === 'NEUTRAL') {
-    return '- SIGNAL: NEUTRAL';
+    out.push(`- SIGNAL: NEUTRAL`);
+    return out.join('\n');
   }
-  const fmt = (value) => (value ?? '').toString();
-  return [
+  const fmt = v => (v ?? '').toString();
+  out.push(
     `- SIGNAL: ${decision}`,
-    `- Entry: ${fmt(block.entry)}`,
-    `- SL: ${fmt(block.sl)}`,
-    `- TP1: ${fmt(block.tp1)} (R 1.0)`,
-    `- TP2: ${fmt(block.tp2)} (R 2.0)`
-  ].join('\n');
+    `- Entry: ${fmt(s.entry)}`,
+    `- SL: ${fmt(s.sl)}`,
+    `- TP1: ${fmt(s.tp1)} (R 1.0)`,
+    `- TP2: ${fmt(s.tp2)} (R 2.0)`
+  );
+  return out.join('\n');
 }
 
 function formatNewsText(text) {
@@ -202,6 +210,7 @@ function formatNewsText(text) {
 
 // Single path: system prompt + tool loop. No workflow, no parseIntent, no simulation.
 async function smartReply(userText) {
+  const called = new Set();
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userText }
@@ -222,8 +231,20 @@ async function smartReply(userText) {
 
     // Final text from model → return to WhatsApp
     if (!calls.length) {
-      const final = (msg.content || "").trim();
-      return final || "عذراً، لم أتمكن من معالجة طلبك.";
+      const finalText = (msg.content || "").trim() || "عذراً، لم أتمكن من معالجة طلبك.";
+
+      // Force use of company KB for Liirat/support queries
+      const asksLiirat = /\b(?:ليرات|ليـرات|Liirat|Lirat)\b/i.test(userText);
+      const companyIntent = /(وين|أين|مكاتب|عنوان|موقع|ساعات|دعم|خدمة|support|office|location|address|contact)/i.test(userText);
+      const tradingOrPrice = /(سعر|price|quote|صفقة|إشارة|تحليل|signal|buy|sell|long|short)/i.test(userText);
+
+      if (asksLiirat && companyIntent && !tradingOrPrice && !called.has("about_liirat_knowledge")) {
+        const { text } = await about_liirat_knowledge(userText);
+        const hasArabic = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/u.test(userText);
+        return text || (hasArabic ? "المعلومة غير متاحة حالياً." : "Info not available.");
+      }
+
+      return finalText;
     }
 
     // Keep the tool-call message in history
@@ -267,6 +288,8 @@ async function smartReply(userText) {
       } catch (e) {
         result = { error: String(e?.message || e) };
       }
+
+      called.add(name);
 
       // Return the tool’s JSON/text back to the model
       messages.push({
