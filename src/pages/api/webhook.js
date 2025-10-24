@@ -187,9 +187,9 @@ async function smartReply(userText, meta = {}) {
     if (OPENAI_WORKFLOW_ID) {
       console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
       
-      // Call Agent Builder workflow using agents.invoke
-      const workflowResult = await openai.agents.invoke({
-        agent_id: OPENAI_WORKFLOW_ID,
+      // Call Agent Builder workflow using correct SDK method
+      const workflowResult = await openai.workflows.runs.create({
+        workflow_id: OPENAI_WORKFLOW_ID,
         input: {
           input_as_text: userText
         }
