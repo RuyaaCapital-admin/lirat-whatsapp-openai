@@ -48,7 +48,7 @@ export function parseIntent(text: string): {
 
   // Arabic + EN timeframe
   let tf: any;
-  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه)\b/.test(t)) tf='1min';
+  if (/\b(1 ?min|1m|دقيقة|الدقيقة|دقيقه|الدقيقى)\b/.test(t)) tf='1min';
   else if (/\b(5 ?min|5m|٥ دقائق|5 دقائق)\b/.test(t)) tf='5min';
   else if (/\b(15 ?min|15m|١٥ دقيقة|15 دقيقة)\b/.test(t)) tf='15min';
   else if (/\b(30 ?min|30m|٣٠ دقيقة|30 دقيقة)\b/.test(t)) tf='30min';
