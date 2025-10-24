@@ -63,52 +63,56 @@ function formatNumber(value: number) {
   return value.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function formatTime(timestamp: number, timeframe: TF) {
+function formatTime(timestamp: number) {
   const iso = new Date(timestamp).toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC (${timeframe})`;
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+function normaliseSymbol(symbol: string) {
+  return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
 export async function compute_trading_signal(symbol: string, timeframe: TF) {
   const { rows, lastClosed } = await get_ohlc(symbol, timeframe);
+  if (rows.length < 3) {
+    throw new Error("insufficient_ohlc");
+  }
   const C = rows.map((r) => r.c);
   const H = rows.map((r) => r.h);
   const L = rows.map((r) => r.l);
-  const prev = rows.at(-2)!;
+  const prev = rows.at(-2);
+  if (!prev) {
+    throw new Error("missing_previous_bar");
+  }
 
-  const ema20 = ema(C, 20);
-  const ema50 = ema(C, 50);
-  const rsi14 = rsi(C, 14);
+  const ema20 = ema(C, Math.min(20, C.length));
+  const ema50 = ema(C, Math.min(50, C.length));
+  const rsi14 = rsi(C, Math.min(14, C.length - 1));
   const { macd } = macdVals(C);
   const { value: atrVal } = atr14(H, L, C);
 
   let decision: "BUY" | "SELL" | "NEUTRAL" = "NEUTRAL";
-  if (ema20 > ema50 && rsi14 >= 55) decision = "BUY";
-  if (ema20 < ema50 && rsi14 <= 45) decision = "SELL";
+  if (ema20 > ema50 && rsi14 >= 55 && macd > 0) decision = "BUY";
+  if (ema20 < ema50 && rsi14 <= 45 && macd < 0) decision = "SELL";
 
   const close = lastClosed.c;
   const fallbackRisk = Math.max(close * 0.0015, Math.abs(close - prev.c) || 1);
-  const risk = Number.isFinite(atrVal) ? atrVal : fallbackRisk;
+  const risk = Number.isFinite(atrVal) && atrVal > 0 ? atrVal : fallbackRisk;
   const entry = close;
-  const sl = decision === "BUY" ? entry - risk : decision === "SELL" ? entry + risk : entry;
-  const tp1 = decision === "BUY" ? entry + risk : decision === "SELL" ? entry - risk : entry;
-  const tp2 = decision === "BUY" ? entry + 2 * risk : decision === "SELL" ? entry - 2 * risk : entry;
+  const sl = decision === "BUY" ? entry - risk : decision === "SELL" ? entry + risk : null;
+  const tp1 = decision === "BUY" ? entry + risk : decision === "SELL" ? entry - risk : null;
+  const tp2 = decision === "BUY" ? entry + 2 * risk : decision === "SELL" ? entry - 2 * risk : null;
 
-  const formattedTime = formatTime(lastClosed.t, timeframe);
+  const payload = {
+    signal: decision,
+    entry: decision === "NEUTRAL" ? null : formatNumber(entry),
+    sl: sl == null ? null : formatNumber(sl),
+    tp1: tp1 == null ? null : formatNumber(tp1),
+    tp2: tp2 == null ? null : formatNumber(tp2),
+    timeUTC: formatTime(lastClosed.t),
+    symbol: normaliseSymbol(symbol),
+    interval: timeframe,
+  };
 
-  if (decision === "NEUTRAL") {
-    const neutralLine = `- SIGNAL: NEUTRAL — Time: ${formattedTime} — Symbol: ${symbol}`;
-    return { text: neutralLine };
-  }
-
-  const lines = [
-    `- Time: ${formattedTime}`,
-    `- Symbol: ${symbol}`,
-    `- SIGNAL: ${decision}`,
-    `- Entry: ${formatNumber(entry)}`,
-    `- SL: ${formatNumber(sl)}`,
-    `- TP1: ${formatNumber(tp1)}`,
-    `- TP2: ${formatNumber(tp2)}`,
-  ];
-
-  return { text: lines.join("\n") };
+  return payload;
 }

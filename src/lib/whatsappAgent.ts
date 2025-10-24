@@ -27,6 +27,7 @@ export interface SmartReplyDeps {
 export interface SmartReplyInput {
   userId: string;
   text: string;
+  history?: HistoryMessage[];
 }
 
 function asMessage(historyMessage: HistoryMessage): ChatCompletionMessageParam {
@@ -87,9 +88,9 @@ export function createSmartReply(deps: SmartReplyDeps) {
     throw new Error("chat client with create(...) is required");
   }
 
-  return async function smartReply({ userId, text }: SmartReplyInput): Promise<string> {
+  return async function smartReply({ userId, text, history: overrideHistory }: SmartReplyInput): Promise<string> {
     const trimmed = text?.trim() ?? "";
-    const history = await memory.getHistory(userId);
+    const history = overrideHistory && overrideHistory.length ? overrideHistory : await memory.getHistory(userId);
     const messages: ChatCompletionMessageParam[] = [
       { role: "system", content: systemPrompt },
       ...history.map(asMessage),

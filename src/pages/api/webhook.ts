@@ -3,7 +3,9 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 import { markReadAndShowTyping, sendText } from "../../lib/waba";
 import { openai } from "../../lib/openai";
+import type { HistoryMessage } from "../../lib/memory";
 import { memory, fallbackUnavailableMessage } from "../../lib/memory";
+import { fetchHistoryFromSupabase, logSupabaseMessage } from "../../lib/supabase";
 import { createSmartReply } from "../../lib/whatsappAgent";
 import { TOOL_SCHEMAS } from "../../lib/toolSchemas";
 import SYSTEM_PROMPT from "../../lib/systemPrompt";
@@ -101,13 +103,23 @@ function polite(reply: string, userText: string) {
   return reply;
 }
 
-async function handleMessage(message: WebhookMessage) {
+function detectLanguage(text: string) {
+  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
+}
+
+function greetingLine(lang: string) {
+  return lang === "ar"
+    ? "مرحباً، أنا مساعد ليرات. كيف يمكنني مساعدتك؟"
+    : "Hi, I’m Liirat assistant. How can I help you?";
+}
+
+async function handleMessage(message: WebhookMessage, history: HistoryMessage[]) {
   const text = message.text.trim();
   if (!text) {
     return "";
   }
 
-  const reply = await smartReply({ userId: message.from, text });
+  const reply = await smartReply({ userId: message.from, text, history });
   return polite(reply, text);
 }
 
@@ -149,16 +161,43 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.warn("[WEBHOOK] markReadAndShowTyping failed", error);
     }
 
+    const lang = detectLanguage(message.text || "");
+
     try {
-      const reply = await handleMessage(message);
-      const finalReply = reply || fallbackUnavailableMessage(message.text);
+      const { messages: history, lastRecentAt } = await fetchHistoryFromSupabase(message.from, 15);
+      void logSupabaseMessage({
+        waId: message.from,
+        role: "user",
+        content: message.text,
+        lang,
+        messageId: message.id,
+        contactName: message.contactName,
+      });
+      const reply = await handleMessage(message, history);
+      const baseReply = reply || fallbackUnavailableMessage(message.text);
+      const shouldGreet = !lastRecentAt;
+      const greeting = shouldGreet ? greetingLine(lang) : "";
+      const finalReply = [greeting, baseReply].filter(Boolean).join("\n").trim();
+
       if (finalReply) {
         await sendText(message.from, finalReply);
+        void logSupabaseMessage({
+          waId: message.from,
+          role: "assistant",
+          content: finalReply,
+          lang,
+        });
       }
     } catch (error) {
       console.error("[WEBHOOK] smart reply failed", error);
       const fallback = fallbackUnavailableMessage(message.text || "");
       await sendText(message.from, fallback);
+      void logSupabaseMessage({
+        waId: message.from,
+        role: "assistant",
+        content: fallback,
+        lang,
+      });
     }
 
     res.status(200).json({ received: true });

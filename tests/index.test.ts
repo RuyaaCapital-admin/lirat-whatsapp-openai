@@ -38,10 +38,47 @@ class ScriptedChatClient {
 }
 
 const PRICE_TEXT = "Time (UTC): 2024-01-01 10:00 UTC\nSymbol: XAUUSD\nPrice: 2400\nSource: TEST";
-const SIGNAL_TEXT = "- Time: 2024-01-01 10:00 UTC (1hour)\n- Symbol: XAUUSD\n- SIGNAL: BUY\n- Entry: 1\n- SL: 0.5\n- TP1: 1.5\n- TP2: 2.5";
-const TIME_TEXT = "- Time: 2024-01-01 11:00 UTC (1hour)\n- Symbol: XAUUSD\n- SIGNAL: BUY\n- Entry: 1\n- SL: 0.5\n- TP1: 1.5\n- TP2: 2.5";
+const SIGNAL_TEXT = [
+  "- Time: 2024-01-01 10:00 UTC",
+  "- Symbol: XAUUSD",
+  "- SIGNAL: BUY",
+  "- Entry: 1",
+  "- SL: 0.5",
+  "- TP1: 1.5 (R 1.0)",
+  "- TP2: 2.5 (R 2.0)",
+].join("\n");
+const TIME_TEXT = [
+  "- Time: 2024-01-01 11:00 UTC",
+  "- Symbol: XAUUSD",
+  "- SIGNAL: BUY",
+  "- Entry: 1",
+  "- SL: 0.5",
+  "- TP1: 1.5 (R 1.0)",
+  "- TP2: 2.5 (R 2.0)",
+].join("\n");
 
-const signalOutputs = [SIGNAL_TEXT, TIME_TEXT];
+const signalOutputs = [
+  {
+    signal: "BUY",
+    entry: 1,
+    sl: 0.5,
+    tp1: 1.5,
+    tp2: 2.5,
+    timeUTC: "2024-01-01 10:00 UTC",
+    symbol: "XAUUSD",
+    interval: "1hour",
+  },
+  {
+    signal: "BUY",
+    entry: 1,
+    sl: 0.5,
+    tp1: 1.5,
+    tp2: 2.5,
+    timeUTC: "2024-01-01 11:00 UTC",
+    symbol: "XAUUSD",
+    interval: "1hour",
+  },
+];
 const toolCalls: string[] = [];
 
 const toolHandlers = {
@@ -55,7 +92,7 @@ const toolHandlers = {
   },
   async compute_trading_signal() {
     toolCalls.push("compute_trading_signal");
-    return { text: signalOutputs.shift() ?? TIME_TEXT };
+    return signalOutputs.shift() ?? signalOutputs[0];
   },
   async about_liirat_knowledge() {
     return { text: "معلومات ليرات" };

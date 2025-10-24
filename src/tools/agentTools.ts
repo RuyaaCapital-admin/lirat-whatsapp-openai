@@ -5,7 +5,7 @@ import { get_ohlc as fetchOhlc } from "./ohlc";
 import { compute_trading_signal as computeSignal } from "./compute_trading_signal";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
-type ToolText = { text: string };
+type ToolPayload = { text: string } | Record<string, unknown>;
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
@@ -48,7 +48,7 @@ function responseText(response: any) {
   return "";
 }
 
-export async function get_price(symbol: string, timeframe?: string): Promise<ToolText> {
+export async function get_price(symbol: string, timeframe?: string): Promise<ToolPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -58,7 +58,7 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Too
   return { text };
 }
 
-export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<ToolText> {
+export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<ToolPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -68,7 +68,7 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
   return { text: JSON.stringify(data) };
 }
 
-export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolText> {
+export async function compute_trading_signal(symbol: string, timeframe: string): Promise<ToolPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -77,7 +77,7 @@ export async function compute_trading_signal(symbol: string, timeframe: string):
   return await computeSignal(mappedSymbol, tf);
 }
 
-export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolText> {
+export async function about_liirat_knowledge(query: string, lang?: string): Promise<ToolPayload> {
   const vectorStore = process.env.OPENAI_VECTOR_STORE_ID;
   if (!vectorStore) {
     throw new Error("missing_vector_store");
@@ -108,11 +108,8 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
   return { text };
 }
 
-export async function search_web_news(query: string, lang?: string, count = 3): Promise<ToolText> {
-  const language = lang || detectLang(query);
-  const instruction = language === "ar"
-    ? `لخّص أحدث الأخبار المالية. أعط بالضبط ${count} نقاط تبدأ بشرطة. الصيغة: - YYYY-MM-DD — المصدر — العنوان — التأثير (كلمتان إلى ست كلمات).`
-    : `Summarise the latest market-moving news. Return exactly ${count} bullet lines. Format: - YYYY-MM-DD — Source — Title — impact (2-6 words).`;
+export async function search_web_news(query: string, lang?: string, count = 3): Promise<ToolPayload> {
+  const instruction = `Search for the latest market-moving headlines. Return valid JSON with exactly ${count} objects in an array. Each object must have date (YYYY-MM-DD), source, title, impact (2-6 words), and url.`;
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
     input: [
@@ -126,14 +123,31 @@ export async function search_web_news(query: string, lang?: string, count = 3): 
   if (!text) {
     throw new Error("empty_news_response");
   }
-  const lines = text
-    .split(/\n+/)
-    .map((line: string) => line.trim())
-    .filter(Boolean)
-    .slice(0, count)
-    .map((line: string) => (line.startsWith("-") ? line : `- ${line}`));
-  if (lines.length !== count) {
-    throw new Error("insufficient_news");
+  text = text.trim();
+  if (text.startsWith("```")) {
+    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   }
-  return { text: lines.join("\n") };
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error("invalid_news_json");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("news_not_array");
+  }
+  const items = parsed
+    .slice(0, count)
+    .map((item) => ({
+      date: String(item.date ?? "").slice(0, 10),
+      source: String(item.source ?? "").trim(),
+      title: String(item.title ?? "").trim(),
+      impact: String(item.impact ?? "").trim(),
+      url: String(item.url ?? "").trim(),
+    }))
+    .filter((item) => item.date && item.source && item.title && item.impact && item.url);
+  if (items.length !== count) {
+    throw new Error("insufficient_news_items");
+  }
+  return { items };
 }
