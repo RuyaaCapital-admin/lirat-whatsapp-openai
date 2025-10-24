@@ -58,26 +58,8 @@ async function smartReply(userText, meta = {}) {
       }
     }
     
-    // Fallback to responses API if workflow method not available
-    console.log('[WORKFLOW] SDK workflow method not available, trying responses API');
-    const resp = await openai.responses.create({
-      workflow_id: OPENAI_WORKFLOW_ID,
-      input: userText,
-      metadata: { channel: "whatsapp", ...meta }
-    });
-    
-    const text = resp.output_text ?? 
-                (Array.isArray(resp.output) ? 
-                  resp.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
-                  "");
-    
-    if (text) {
-      console.log('[WORKFLOW] Success via responses API, response length:', text.length);
-      return text;
-    }
-    
-    console.warn('[WORKFLOW] No text output received from workflow');
-    return "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
+    console.warn('[WORKFLOW] SDK workflow method not available');
+    return "عذراً، النظام غير متاح حالياً. يرجى المحاولة لاحقاً.";
     
   } catch (err) {
     console.error('[WORKFLOW] Error:', err);
