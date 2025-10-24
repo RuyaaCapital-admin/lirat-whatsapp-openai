@@ -1,17 +1,99 @@
 // src/pages/api/webhook.js
 import { sendText, markReadAndShowTyping } from '../../lib/waba';
 import { openai } from '../../lib/openai';
-import { parseIntent } from '../../tools/symbol';
-import { get_price, get_ohlc, compute_trading_signal, search_web_news } from '../../tools/agentTools';
-import { Agent } from '@openai/agents';
+import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from '../../tools/agentTools';
+
+// --- OpenAI function tool schemas used by Chat Completions ---
+const TOOL_SCHEMAS = [
+  {
+    type: "function",
+    function: {
+      name: "get_price",
+      description: "Return latest price text for a symbol.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          timeframe: { type: "string" }
+        },
+        required: ["symbol"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_ohlc",
+      description: "Retrieve OHLC candles for a symbol/timeframe (used before computing a signal).",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          timeframe: { type: "string", enum: ["1min","5min","15min","30min","1hour","4hour","daily"] },
+          limit: { type: "integer", minimum: 50, maximum: 400, default: 200 }
+        },
+        required: ["symbol","timeframe"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "compute_trading_signal",
+      description: "Compute trading signal from recent OHLC.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbol: { type: "string" },
+          timeframe: { type: "string" },
+          candles: { type: "array" } // optional; executor can ignore if your wrapper fetches internally
+        },
+        required: ["symbol","timeframe"],
+        additionalProperties: true
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_web_news",
+      description: "Fetch top market/economic headlines (3).",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          lang:  { type: "string" },
+          count: { type: "integer", minimum: 1, maximum: 5, default: 3 }
+        },
+        required: ["query"],
+        additionalProperties: false
+      }
+  }
+  },
+  {
+    type: "function",
+    function: {
+      name: "about_liirat_knowledge",
+      description: "Answer company/support questions using internal knowledge base.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" }
+        },
+        required: ["query"],
+        additionalProperties: false
+      }
+    }
+  }
+];
 
 // Environment validation
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_VERSION = process.env.WHATSAPP_VERSION || 'v24.0';
 const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const OPENAI_WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID;
-
 // Debug environment variables
 console.log("[ENV DEBUG] Available env vars:", {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY ? "SET" : "MISSING",
@@ -115,113 +197,82 @@ function formatNewsText(text) {
   return lines.slice(0, 3).join('\n');
 }
 
-// Try Agent Builder workflow first, then fallback to tools + model
-async function smartReply(userText, meta = {}) {
-  try {
-    // Try Agent Builder workflow first if available
-    if (OPENAI_WORKFLOW_ID) {
-      console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
-      
-      // Check if SDK supports workflows
-      console.log('[WORKFLOW DEBUG] OpenAI client properties:', {
-        hasWorkflows: !!openai.workflows,
-        hasRuns: !!openai.workflows?.runs,
-        hasCreate: !!openai.workflows?.runs?.create,
-        hasResponses: !!openai.responses,
-        clientKeys: Object.keys(openai),
-        workflowsKeys: openai.workflows ? Object.keys(openai.workflows) : 'no workflows'
-      });
-      
-      if (!process.env.OPENAI_WORKFLOW_ID) {
-        throw new Error("Missing OPENAI_WORKFLOW_ID");
+// Single path: system prompt + tool loop. No workflow, no parseIntent, no simulation.
+async function smartReply(userText) {
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userText }
+  ];
+
+  while (true) {
+    const out = await openai.chat.completions.create({
+      model: "gpt-4o",
+      temperature: 0,
+      messages,
+      tools: TOOL_SCHEMAS,
+      tool_choice: "auto",
+      max_tokens: 700
+    });
+
+    const msg = out.choices[0].message;
+    const calls = msg.tool_calls || [];
+
+    // Final text from model → return to WhatsApp
+    if (!calls.length) {
+      const final = (msg.content || "").trim();
+      return final || "عذراً، لم أتمكن من معالجة طلبك.";
+    }
+
+    // Keep the tool-call message in history
+    messages.push(msg);
+
+    // Fulfil tool calls with your existing wrappers
+    for (const tc of calls) {
+      const name = tc.function.name;
+      let args;
+      try {
+        args = JSON.parse(tc.function.arguments || "{}");
+      } catch (error) {
+        console.warn('[AGENT] Failed to parse tool args:', error);
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: "invalid_arguments" })
+        });
+        continue;
+      }
+      if (!args || typeof args !== 'object') {
+        args = {};
+      }
+      let result;
+
+      try {
+        if (name === "get_price") {
+          result = await get_price(args.symbol, args.timeframe || "1min");
+        } else if (name === "get_ohlc") {
+          result = await get_ohlc(args.symbol, args.timeframe, args.limit ?? 200);
+        } else if (name === "compute_trading_signal") {
+          // Your wrapper computes internally; candles param is optional here
+          result = await compute_trading_signal(args.symbol, args.timeframe);
+        } else if (name === "search_web_news") {
+          result = await search_web_news(args.query, args.lang, args.count ?? 3);
+        } else if (name === "about_liirat_knowledge") {
+          result = await about_liirat_knowledge(args.query);
+        } else {
+          result = { error: "unknown_tool" };
+        }
+      } catch (e) {
+        result = { error: String(e?.message || e) };
       }
 
-      // Use Chat Completions API (Responses API doesn't exist in current SDK)
-      console.log('[CHAT] Using OpenAI Chat Completions API');
-      
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userText }
-        ],
-        max_tokens: 500
+      // Return the tool’s JSON/text back to the model
+      messages.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: JSON.stringify(result)
       });
-      
-      const text = response.choices[0]?.message?.content?.trim();
-      
-      if (text) {
-        console.log('[CHAT] Success via Chat Completions API, response length:', text.length);
-        return text;
-      }
     }
-  } catch (err) {
-    console.warn('[WORKFLOW] Agent Builder failed, trying fallback:', err?.message);
-  }
-
-  // Fallback: Use our tools directly
-  console.log('[FALLBACK] Using direct tools + model');
-  
-  const intent = parseIntent(userText);
-  console.log('[FALLBACK] Parsed intent:', intent);
-  console.log('[FALLBACK] Debug - userText:', userText);
-  console.log('[FALLBACK] Debug - userText.toLowerCase():', userText.toLowerCase());
-  
-  // Route based on intent priority: signal > news > price
-  if (intent.wantsSignal && intent.symbol) {
-    console.log('[FALLBACK] Signal request detected:', intent.symbol, intent.timeframe, 'route:', intent.route);
-    try {
-      const timeframe = intent.timeframe || '1hour';
-      await get_ohlc(intent.symbol, timeframe);
-      const { text: signalText } = await compute_trading_signal(intent.symbol, timeframe);
-      return formatSignalText(signalText);
-    } catch (error) {
-      console.error('[FALLBACK] Signal tool error:', error);
-    }
-  }
-
-  if (intent.wantsNews) {
-    console.log('[FALLBACK] News request detected');
-    try {
-      const { text } = await search_web_news(userText);
-      const formatted = formatNewsText(text);
-      return formatted || text;
-    } catch (error) {
-      console.error('[FALLBACK] News tool error:', error);
-    }
-  }
-
-  if (intent.wantsPrice && intent.symbol) {
-    console.log('[FALLBACK] Price request detected:', intent.symbol, intent.timeframe, 'route:', intent.route);
-    try {
-      const result = await get_price(intent.symbol, intent.timeframe || '1min');
-      return result.text;
-    } catch (error) {
-      console.error('[FALLBACK] Price tool error:', error);
-    }
-  }
-  
-  // Final fallback: Use model directly (without project to avoid 401)
-  try {
-    console.log('[FALLBACK] Using chat.completions.create with gpt-4o-mini');
-    const fallbackClient = new (await import('openai')).default({
-      apiKey: process.env.OPENAI_API_KEY
-    });
-    const resp = await fallbackClient.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userText }
-      ],
-      max_tokens: 500
-    });
-    
-    const text = resp.choices?.[0]?.message?.content || "";
-    
-    return text || "عذراً، لم أتمكن من معالجة طلبك. يرجى المحاولة مرة أخرى.";
-  } catch (error) {
-    console.error('[FALLBACK] Model error:', error);
-    return "عذراً، حدث خطأ في النظام. يرجى المحاولة مرة أخرى.";
+    // loop again until the model produces final text
   }
 }
 
