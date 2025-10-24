@@ -46,12 +46,10 @@ const FALLBACK_REPLY: Record<LanguageCode, string> = {
   en: "Data unavailable right now. Try: price BTCUSDT.",
 };
 
-const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات), a concise professional assistant. Always write in the user’s language (formal Syrian Arabic if the user writes in Arabic; English otherwise). No greetings or emojis. Use tools instead of guessing. Never mention tools or internal logic.
+const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات), a concise professional assistant. Always respond in the user’s language (formal Syrian Arabic if the user writes in Arabic, English otherwise). No greetings or emojis. Never reveal your identity unless the user explicitly asks; when they do, answer only: AR «مساعد ليرات» / EN “I’m Liirat assistant.” Clarifications such as “متأكد؟” or “شو يعني؟” must be answered with one short line.
 
 Routing:
-- Trading/signal/analysis → normalize symbol/timeframe; ALWAYS run get_ohlc → compute_trading_signal. Output strictly:
-  If NEUTRAL: “- SIGNAL: NEUTRAL”
-  Else seven lines:
+- Trading/signal/analysis → normalize symbol/timeframe, call get_ohlc then compute_trading_signal. If the signal is NEUTRAL respond exactly “- SIGNAL: NEUTRAL”. Otherwise reply with:
   - Time: {last_closed_utc}
   - Symbol: {UNSLASHED_SYMBOL}
   - SIGNAL: {BUY|SELL}
@@ -59,24 +57,21 @@ Routing:
   - SL: {sl}
   - TP1: {tp1} (R 1.0)
   - TP2: {tp2} (R 2.0)
-
-- Price/quote → get_price; return tool text verbatim.
-- Liirat/company/support → about_liirat_knowledge(query); output verbatim.
-- News/economics → search_web_news(query, lang=detected); return exactly 3 lines “YYYY-MM-DD — Source — Title — impact”.
-- Identity ONLY if explicitly asked “who are you?” → AR: «مساعد ليرات», EN: “I’m Liirat assistant.”
-- If user asks “متأكد؟/sure?” after a signal: re-run the trading route and return fresh result (no identity).
-- If ambiguous, ask one short clarifying question (1 line).
+- Price/quote → get_price and return the tool text verbatim.
+- Liirat/company/support → about_liirat_knowledge(query) and return verbatim.
+- News/economics → search_web_news(query, lang=detected) and return exactly three lines formatted “YYYY-MM-DD — Source — Title — impact”.
+- If ambiguous, ask one short clarifying question (one line max).
 
 Normalization:
-- Convert ٠١٢٣٤٥٦٧٨٩ → 0123456789
+- Convert ٠١٢٣٤٥٦٧٨٩ → 0123456789.
 - Map: ذهب/دهب/GOLD→XAUUSD; فضة/SILVER→XAGUSD; نفط/WTI→XTIUSD; برنت→XBRUSD; بيتكوين/BTC→BTCUSDT; إيثيريوم/ETH→ETHUSDT; يورو→EURUSD; ين→USDJPY; فرنك→USDCHF; استرليني→GBPUSD; كندي→USDCAD; أسترالي→AUDUSD; نيوزلندي→NZDUSD.
-- Timeframes: دقيقة→1min, 5 دقائق→5min, 15→15min, 30→30min, ساعة→1hour, 4 ساعات→4hour, يوم→daily.
+- Timeframes: دقيقة→1min, 5 دقائق→5min, 15→15min, 30→30min, ساعة→1hour, 4 ساعات→4hour, يوم→1day.
 
 Rules:
 - Never fabricate data; only report tool results.
-- Never output identity unless explicitly asked.
-- Never output JSON; only the exact lines above.
-- If a tool throws, reply AR: «البيانات غير متاحة حالياً. جرّب: price BTCUSDT.» / EN: “Data unavailable right now. Try: price BTCUSDT.”`;
+- Never output JSON.
+- Do not mention tools or internal logic.
+- If a tool fails, reply: AR «البيانات غير متاحة حالياً. جرّب: price BTCUSDT.» / EN “Data unavailable right now. Try: price BTCUSDT.”`;
 
 const TOOL_SCHEMAS: ChatCompletionTool[] = [
   {
@@ -93,7 +88,7 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
           },
           timeframe: {
             type: "string",
-            description: "e.g. 1min | 5min | 1hour | daily",
+            description: "e.g. 1min | 5min | 1hour | 1day",
           },
         },
         required: ["symbol"],
@@ -112,7 +107,7 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
           symbol: { type: "string", description: "UNSLASHED symbol" },
           timeframe: {
             type: "string",
-            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "daily"],
+            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
           },
           limit: { type: "integer", minimum: 50, maximum: 400, default: 200 },
         },
@@ -130,7 +125,10 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
         type: "object",
         properties: {
           symbol: { type: "string" },
-          timeframe: { type: "string" },
+          timeframe: {
+            type: "string",
+            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
+          },
           candles: {
             type: "array",
             items: {
@@ -145,6 +143,7 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
               required: ["o", "h", "l", "c", "t"],
               additionalProperties: false,
             },
+            minItems: 50,
           },
         },
         required: ["symbol", "timeframe"],
@@ -416,57 +415,74 @@ class ToolExecutionError extends Error {
   }
 }
 
-async function invokeTool(
-  name: string,
-  args: Record<string, unknown>,
-  lang: LanguageCode,
-  userLang: LanguageCode,
-): Promise<string> {
+type ToolCandle = { o: number; h: number; l: number; c: number; t: number };
+
+type OhlcSnapshot = { symbol: string; timeframe: string; candles: ToolCandle[] };
+
+function sanitizeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const cloned: Record<string, unknown> = { ...args };
+  if (Array.isArray(cloned.candles)) {
+    cloned.candles = `len:${cloned.candles.length}`;
+  }
+  return cloned;
+}
+
+function parseCandles(input: unknown): ToolCandle[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  return input
+    .map((item) => ({
+      o: Number((item as any)?.o),
+      h: Number((item as any)?.h),
+      l: Number((item as any)?.l),
+      c: Number((item as any)?.c),
+      t: Number((item as any)?.t),
+    }))
+    .filter(
+      (candle) =>
+        Number.isFinite(candle.o) &&
+        Number.isFinite(candle.h) &&
+        Number.isFinite(candle.l) &&
+        Number.isFinite(candle.c) &&
+        Number.isFinite(candle.t),
+    )
+    .sort((a, b) => a.t - b.t);
+}
+
+function parseOhlcPayload(content: string): OhlcSnapshot | null {
   try {
-    switch (name) {
-      case "get_price": {
-        const symbol = String(args.symbol ?? "").trim();
-        const timeframe = typeof args.timeframe === "string" ? args.timeframe : undefined;
-        return await get_price(symbol, timeframe);
+    const outer = JSON.parse(content);
+    if (!outer || typeof outer.text !== "string") {
+      return null;
+    }
+    const inner = JSON.parse(outer.text);
+    if (
+      inner &&
+      typeof inner.symbol === "string" &&
+      typeof inner.timeframe === "string" &&
+      Array.isArray(inner.candles)
+    ) {
+      const candles = parseCandles(inner.candles) ?? [];
+      if (candles.length) {
+        return { symbol: inner.symbol, timeframe: inner.timeframe, candles };
       }
-      case "get_ohlc": {
-        const symbol = String(args.symbol ?? "").trim();
-        const timeframe = String(args.timeframe ?? "").trim();
-        const limit = typeof args.limit === "number" ? args.limit : undefined;
-        return await get_ohlc(symbol, timeframe, limit);
-      }
-      case "compute_trading_signal": {
-        const symbol = String(args.symbol ?? "").trim();
-        const timeframe = String(args.timeframe ?? "").trim();
-        const candles = Array.isArray(args.candles) ? (args.candles as any[]) : undefined;
-        return await compute_trading_signal(symbol, timeframe, candles as any);
-      }
-      case "search_web_news": {
-        const query = String(args.query ?? "").trim();
-        const count = typeof args.count === "number" ? args.count : 3;
-        const langCode = typeof args.lang === "string" && ["ar", "en"].includes(args.lang)
-          ? (args.lang as LanguageCode)
-          : userLang;
-        return await search_web_news(query, langCode, count);
-      }
-      case "about_liirat_knowledge": {
-        const query = String(args.query ?? "").trim();
-        return await about_liirat_knowledge(query, lang);
-      }
-      default:
-        throw new Error(`unknown_tool:${name}`);
     }
   } catch (error) {
-    console.warn("[TOOL] execution failed", { name, args }, error);
-    throw new ToolExecutionError(name, lang, error);
+    console.warn("[TOOLS] failed to parse OHLC payload", error);
   }
+  return null;
+}
+
+function normaliseSymbolKey(value: string): string {
+  return value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
 async function runChatLoop(
   baseMessages: ChatCompletionMessageParam[],
   lang: LanguageCode,
+  userLang: LanguageCode,
 ): Promise<string> {
   const messages: ChatCompletionMessageParam[] = [...baseMessages];
+  let lastOhlc: OhlcSnapshot | null = null;
   for (let iteration = 0; iteration < 8; iteration += 1) {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
@@ -491,14 +507,68 @@ async function runChatLoop(
         try {
           parsed = rawArgs ? JSON.parse(rawArgs) : {};
         } catch (error) {
-          console.warn("[TOOL] invalid arguments", { name, rawArgs });
+          console.warn("[TOOLS] invalid arguments", { name, rawArgs });
           throw new ToolExecutionError(name, lang, error);
         }
-        const result = await invokeTool(name, parsed, lang, lang);
+        console.info("[TOOLS]", { name, args: sanitizeArgs(parsed) });
+        let content = "";
+        try {
+          switch (name) {
+            case "get_price": {
+              const symbol = String(parsed.symbol ?? "").trim();
+              const timeframe = typeof parsed.timeframe === "string" ? parsed.timeframe : undefined;
+              content = await get_price(symbol, timeframe);
+              break;
+            }
+            case "get_ohlc": {
+              const symbol = String(parsed.symbol ?? "").trim();
+              const timeframe = String(parsed.timeframe ?? "").trim();
+              const limit = typeof parsed.limit === "number" ? parsed.limit : undefined;
+              content = await get_ohlc(symbol, timeframe, limit);
+              lastOhlc = parseOhlcPayload(content);
+              break;
+            }
+            case "compute_trading_signal": {
+              const symbol = String(parsed.symbol ?? "").trim();
+              const timeframe = String(parsed.timeframe ?? "").trim();
+              let candles = parseCandles(parsed.candles);
+              if (
+                (!candles || candles.length < 50) &&
+                lastOhlc &&
+                normaliseSymbolKey(lastOhlc.symbol) === normaliseSymbolKey(symbol) &&
+                lastOhlc.timeframe === timeframe
+              ) {
+                candles = lastOhlc.candles;
+              }
+              content = await compute_trading_signal(symbol, timeframe, candles);
+              break;
+            }
+            case "search_web_news": {
+              const query = String(parsed.query ?? "").trim();
+              const count = typeof parsed.count === "number" ? parsed.count : 3;
+              const requestedLang =
+                typeof parsed.lang === "string" && ["ar", "en"].includes(parsed.lang)
+                  ? (parsed.lang as LanguageCode)
+                  : userLang;
+              content = await search_web_news(query, requestedLang, count);
+              break;
+            }
+            case "about_liirat_knowledge": {
+              const query = String(parsed.query ?? "").trim();
+              content = await about_liirat_knowledge(query, lang);
+              break;
+            }
+            default:
+              throw new Error(`unknown_tool:${name}`);
+          }
+        } catch (error) {
+          console.warn("[TOOLS] execution failed", { name }, error);
+          throw new ToolExecutionError(name, lang, error);
+        }
         messages.push({
           role: "tool",
           tool_call_id: toolCall.id,
-          content: result ?? "",
+          content,
         });
       }
       continue;
@@ -558,69 +628,75 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   res.status(200).json({ received: true });
   processedMessageCache.add(inbound.id);
+  console.info(`[RECV ${inbound.id}]`, {
+    from: inbound.from,
+    preview: inbound.text.slice(0, 160),
+  });
 
   void (async () => {
     const normalisedText = normaliseDigits(inbound.text.trim());
     const lang = detectLanguage(normalisedText);
     const isoTs = toIsoTimestamp(inbound.timestamp);
     try {
-      try {
-        await markReadAndShowTyping(inbound.id);
-      } catch (error) {
-        console.warn("[WEBHOOK] markRead/typing failed", error);
-      }
-
-      await persistMessage({
-        waId: inbound.from,
-        role: "user",
-        text: normalisedText,
-        ts: isoTs,
-        messageId: inbound.id,
+      await markReadAndShowTyping(inbound.id);
+    } catch (error) {
+      console.warn("[WEBHOOK] markRead/typing failed", {
+        error,
+        data: (error as { response?: { data?: unknown } })?.response?.data,
       });
+    }
 
-      const history = await loadRecentMessages(inbound.from, 10, inbound.id);
-      const messages: ChatCompletionMessageParam[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...history,
-        { role: "user", content: normalisedText },
-      ];
+    await persistMessage({
+      waId: inbound.from,
+      role: "user",
+      text: normalisedText,
+      ts: isoTs,
+      messageId: inbound.id,
+    });
 
-      const reply = await runChatLoop(messages, lang);
-      const finalText = reply.trim();
-      if (!finalText) {
+    const history = await loadRecentMessages(inbound.from, 10, inbound.id);
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...history,
+      { role: "user", content: normalisedText },
+    ];
+
+    let finalText = FALLBACK_REPLY[lang];
+    try {
+      const reply = await runChatLoop(messages, lang, lang);
+      const trimmed = reply.trim();
+      if (!trimmed) {
         throw new Error("empty_reply");
       }
+      finalText = trimmed;
+    } catch (error) {
+      console.error("[WEBHOOK] processing failed", error);
+    }
 
+    const assistantMessageId =
+      globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    try {
       await sendText(inbound.from, finalText);
-      await persistMessage({
-        waId: inbound.from,
-        role: "assistant",
-        text: finalText,
-        ts: new Date().toISOString(),
-        messageId: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
-        replyTo: inbound.id,
-      });
-      console.info("[WEBHOOK] reply sent", {
+      console.info("[SEND ok]", {
         to: inbound.from,
         preview: finalText.slice(0, 120),
       });
     } catch (error) {
-      console.error("[WEBHOOK] processing failed", error);
-      const fallback = FALLBACK_REPLY[lang];
-      try {
-        await sendText(inbound.from, fallback);
-        await persistMessage({
-          waId: inbound.from,
-          role: "assistant",
-          text: fallback,
-          ts: new Date().toISOString(),
-          messageId: globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2),
-          replyTo: inbound.id,
-        });
-      } catch (sendError) {
-        console.error("[WEBHOOK] fallback send failed", sendError);
-      }
+      console.error("[SEND fail]", {
+        to: inbound.from,
+        error,
+        data: (error as { response?: { data?: unknown } })?.response?.data,
+      });
     }
+
+    await persistMessage({
+      waId: inbound.from,
+      role: "assistant",
+      text: finalText,
+      ts: new Date().toISOString(),
+      messageId: assistantMessageId,
+      replyTo: inbound.id,
+    });
   })();
 }
 

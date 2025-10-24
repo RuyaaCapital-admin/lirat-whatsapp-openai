@@ -28,23 +28,23 @@ export class OhlcError extends Error {
 }
 
 const TF_TO_MS: Record<TF, number> = {
-  "1m": 60_000,
-  "5m": 5 * 60_000,
-  "15m": 15 * 60_000,
-  "30m": 30 * 60_000,
-  "1h": 60 * 60_000,
-  "4h": 4 * 60 * 60_000,
-  "1d": 24 * 60 * 60_000,
+  "1min": 60_000,
+  "5min": 5 * 60_000,
+  "15min": 15 * 60_000,
+  "30min": 30 * 60_000,
+  "1hour": 60 * 60_000,
+  "4hour": 4 * 60 * 60_000,
+  "1day": 24 * 60 * 60_000,
 };
 
 const FMP_INTERVAL: Record<TF, string> = {
-  "1m": "1min",
-  "5m": "5min",
-  "15m": "15min",
-  "30m": "30min",
-  "1h": "1hour",
-  "4h": "4hour",
-  "1d": "1day",
+  "1min": "1min",
+  "5min": "5min",
+  "15min": "15min",
+  "30min": "30min",
+  "1hour": "1hour",
+  "4hour": "4hour",
+  "1day": "1day",
 };
 
 function isFiniteCandle(value: Candle | null | undefined): value is Candle {
@@ -80,7 +80,13 @@ function mapFcsRow(row: any): Candle | null {
 }
 
 function ensureSorted(candles: Candle[]): Candle[] {
-  return candles.slice().sort((a, b) => a.t - b.t);
+  return candles
+    .slice()
+    .sort((a, b) => a.t - b.t)
+    .map((candle) => ({
+      ...candle,
+      t: Number(candle.t),
+    }));
 }
 
 function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {

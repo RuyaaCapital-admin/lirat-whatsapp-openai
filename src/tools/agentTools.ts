@@ -1,19 +1,10 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
-import {
-  get_ohlc as fetchOhlc,
-  OhlcError,
-  OhlcResult,
-  Candle,
-} from "./ohlc";
-import {
-  buildSignalFromSeries,
-  SignalPayload,
-  formatSignalPayload,
-} from "./compute_trading_signal";
+import { Candle, get_ohlc as loadOhlc } from "./ohlc";
+import { computeSignal, formatSignalPayload } from "./compute_trading_signal";
 import { fetchNews } from "./news";
-import { hardMapSymbol, toTimeframe, TF, TIMEFRAME_FALLBACKS } from "./normalize";
+import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
@@ -46,7 +37,7 @@ function formatPriceOutput(symbol: string, price: number, time: number | string 
   ].join("\n");
 }
 
-function normaliseCandles(candles: Candle[]): Candle[] {
+function normalizeCandles(candles: Candle[]): Candle[] {
   return candles
     .map((candle) => ({
       o: Number(candle.o),
@@ -55,85 +46,14 @@ function normaliseCandles(candles: Candle[]): Candle[] {
       c: Number(candle.c),
       t: Number(candle.t),
     }))
-    .filter(
-      (candle) =>
-        Number.isFinite(candle.o) &&
-        Number.isFinite(candle.h) &&
-        Number.isFinite(candle.l) &&
-        Number.isFinite(candle.c) &&
-        Number.isFinite(candle.t),
+    .filter((candle) =>
+      Number.isFinite(candle.o) &&
+      Number.isFinite(candle.h) &&
+      Number.isFinite(candle.l) &&
+      Number.isFinite(candle.c) &&
+      Number.isFinite(candle.t),
     )
     .sort((a, b) => a.t - b.t);
-}
-
-const TF_TO_MS: Record<TF, number> = {
-  "1m": 60_000,
-  "5m": 5 * 60_000,
-  "15m": 15 * 60_000,
-  "30m": 30 * 60_000,
-  "1h": 60 * 60_000,
-  "4h": 4 * 60 * 60_000,
-  "1d": 24 * 60 * 60_000,
-};
-
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
-  const sorted = normaliseCandles(candles);
-  if (!sorted.length) {
-    throw new Error("missing_candles");
-  }
-  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  const now = Date.now();
-  const candidate = last && now - last.t < tfMs * 0.5 ? prev ?? last : last;
-  if (!candidate) {
-    throw new Error("no_closed_candle");
-  }
-  return candidate;
-}
-
-async function computeWithFallback(symbol: string, requested: TF): Promise<SignalPayload> {
-  const ladder = [requested, ...(TIMEFRAME_FALLBACKS[requested] ?? [])];
-  let lastError: unknown;
-  for (const tf of ladder) {
-    try {
-      const series = await fetchOhlc(symbol, tf, 320);
-      if (tf !== requested) {
-        console.info("[TF] fallback", { symbol, requested, used: tf });
-      }
-      return buildSignalFromSeries(symbol, series.timeframe, series);
-    } catch (error) {
-      lastError = error;
-      if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
-        console.warn("[TF] no data", { symbol, requested, attempted: tf });
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error("signal_unavailable");
-}
-
-async function computeSignalText(
-  symbol: string,
-  timeframe: TF,
-  candles?: Candle[],
-): Promise<string> {
-  if (candles && candles.length > 0) {
-    const sorted = normaliseCandles(candles);
-    const lastClosed = deriveLastClosed(sorted, timeframe);
-    const payload: OhlcResult = {
-      candles: sorted,
-      lastClosed,
-      timeframe,
-      source: "PROVIDED",
-    };
-    const signal = buildSignalFromSeries(symbol, timeframe, payload);
-    return formatSignalPayload(signal);
-  }
-
-  const signal = await computeWithFallback(symbol, timeframe);
-  return formatSignalPayload(signal);
 }
 
 export async function get_price(symbol: string, timeframe?: string): Promise<string> {
@@ -151,20 +71,15 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  try {
-    const data = await fetchOhlc(mappedSymbol, tf, Math.max(50, Math.min(limit, 400)));
-    return JSON.stringify({
-      candles: data.candles,
-      lastClosed: data.lastClosed,
-      timeframe: data.timeframe,
-      source: data.source,
-    });
-  } catch (error) {
-    if (error instanceof OhlcError && error.code === "NO_DATA_FOR_INTERVAL") {
-      return JSON.stringify({ code: error.code, timeframe: tf });
-    }
-    throw error;
-  }
+  const safeLimit = Math.max(50, Math.min(limit, 400));
+  const series = await loadOhlc(mappedSymbol, tf, safeLimit);
+  const candles = normalizeCandles(series.candles);
+  const payload = {
+    symbol: mappedSymbol,
+    timeframe: tf,
+    candles,
+  };
+  return JSON.stringify({ text: JSON.stringify(payload) });
 }
 
 export async function compute_trading_signal(
@@ -177,8 +92,24 @@ export async function compute_trading_signal(
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  const text = await computeSignalText(mappedSymbol, tf, candles);
-  return text;
+  let hydrated = Array.isArray(candles) ? normalizeCandles(candles) : undefined;
+  if (!hydrated || hydrated.length < 50) {
+    const raw = await get_ohlc(mappedSymbol, tf, 200);
+    try {
+      const outer = JSON.parse(raw);
+      if (outer && typeof outer.text === "string") {
+        const inner = JSON.parse(outer.text);
+        if (inner && Array.isArray(inner.candles)) {
+          hydrated = normalizeCandles(inner.candles as Candle[]);
+        }
+      }
+    } catch (error) {
+      console.warn("[TOOLS] failed to hydrate candles", { error });
+      hydrated = undefined;
+    }
+  }
+  const payload = await computeSignal(mappedSymbol, tf, hydrated);
+  return formatSignalPayload(payload);
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<string> {
@@ -214,11 +145,7 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
   } else if (Array.isArray((response as any)?.output)) {
     const pieces = (response as any).output
       .flatMap((item: any) =>
-        Array.isArray(item.content)
-          ? item.content
-          : item.content
-          ? [item.content]
-          : [],
+        Array.isArray(item.content) ? item.content : item.content ? [item.content] : [],
       )
       .map((chunk: any) => (typeof chunk === "string" ? chunk : chunk?.text ?? ""))
       .filter(Boolean);
@@ -246,4 +173,3 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
   });
   return lines.join("\n");
 }
-
