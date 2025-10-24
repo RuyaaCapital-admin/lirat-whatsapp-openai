@@ -28,34 +28,30 @@ const SYSTEM_PROMPT = `أنت مساعد Lirat الذكي. أنت متخصص ف�
 
 أجب بالعربية دائماً.`;
 
-// Try Agent Builder workflow first, then fallback to tools + model
+// Try workflow first, then fallback to tools + model
 async function smartReply(userText, meta = {}) {
   try {
-    // Try Agent Builder workflow first if available
-    if (OPENAI_WORKFLOW_ID) {
-      console.log('[WORKFLOW] Calling Agent Builder workflow with input:', userText);
-      
-      const response = await openai.responses.create({
-        model: "gpt-4o-mini", // Required parameter
-        workflow_id: OPENAI_WORKFLOW_ID, // Agent Builder workflow ID
-        input: userText, // User message
+    // Try workflow first if available
+    if (OPENAI_WORKFLOW_ID && openai.workflows?.runs?.create) {
+      console.log('[WORKFLOW] Using SDK workflow method');
+      const run = await openai.workflows.runs.create({
+        workflow_id: OPENAI_WORKFLOW_ID,
+        input: userText,
         metadata: { channel: "whatsapp", ...meta }
       });
       
-      console.log('[WORKFLOW] Agent Builder response:', JSON.stringify(response, null, 2));
-      
-      const text = response.output_text ?? 
-                  (Array.isArray(response.output) ? 
-                    response.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
+      const text = run.output_text ?? 
+                  (Array.isArray(run.output) ? 
+                    run.output.map(p => p.content?.[0]?.text?.value).filter(Boolean).join("\n") : 
                     "");
       
       if (text) {
-        console.log('[WORKFLOW] Success via Agent Builder, response length:', text.length);
+        console.log('[WORKFLOW] Success via SDK');
         return text;
       }
     }
   } catch (err) {
-    console.warn('[WORKFLOW] Agent Builder failed, trying fallback:', err?.message);
+    console.warn('[WORKFLOW] SDK method failed, trying fallback:', err?.message);
   }
 
   // Fallback: Use our tools directly
@@ -99,7 +95,10 @@ async function smartReply(userText, meta = {}) {
     console.log('[FALLBACK] Using responses.create with gpt-4o-mini');
     const resp = await openai.responses.create({
       model: "gpt-4o-mini",
-      input: userText // Use input format for Responses API
+      input: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ],
     });
     
     const text = resp.output_text ?? 
