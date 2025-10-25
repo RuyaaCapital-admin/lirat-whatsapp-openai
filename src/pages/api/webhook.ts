@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText } from "../../lib/waba";
-import { smartReply } from "../../lib/smartReplyNew";
-import { getOrCreateConversationByTitle, insertMessage } from "../../lib/supabaseLite";
+import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
+import { runWorkflowMessage } from "../../lib/workflowRunner";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
@@ -116,27 +116,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    // Use the new smart reply system
-    const result = await smartReply({
-      phone: inbound.from,
-      text: messageBody,
-      contactName: undefined
+    const workflowId = process.env.OPENAI_WORKFLOW_ID || "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
+    const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
+
+    // Log user message (non-blocking)
+    void logMessageAsync(conversationId, "user", messageBody);
+
+    const replyText = await runWorkflowMessage({
+      sessionId,
+      workflowId,
+      version: 56,
+      userText: messageBody,
     });
 
-    await sendText(inbound.from, result.replyText);
+    await sendText(inbound.from, replyText);
 
-    // Non-blocking logging to Supabase (ignore failures)
-    (async () => {
-      try {
-        const convId = (await getOrCreateConversationByTitle(inbound.from)) || result.conversationId;
-        if (convId) {
-          await insertMessage(convId, "user", messageBody).catch((e) => console.warn("[SUPABASE] log user error", e));
-          await insertMessage(convId, "assistant", result.replyText).catch((e) => console.warn("[SUPABASE] log assistant error", e));
-        }
-      } catch (e) {
-        console.warn("[SUPABASE] background logging failed", e);
-      }
-    })().catch(() => {});
+    // Log assistant message (non-blocking)
+    void logMessageAsync(conversationId, "assistant", replyText);
   } catch (error) {
     console.error("[WEBHOOK] Error:", error);
   }
