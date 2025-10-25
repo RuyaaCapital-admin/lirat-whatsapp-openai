@@ -5,20 +5,19 @@ async function runTradingSignalTests() {
   const fixedNow = Date.UTC(2025, 0, 1, 12, 0, 0);
   const originalNow = Date.now;
 
-  const hour = 60 * 60 * 1000;
-  const candles = [
-    { o: 1990, h: 2005, l: 1985, c: 1998, t: fixedNow - 3 * hour },
-    { o: 1998, h: 2010, l: 1990, c: 2004, t: fixedNow - 2 * hour },
-    { o: 2004, h: 2018, l: 2000, c: 2012, t: fixedNow - hour },
-    { o: 2012, h: 2020, l: 2005, c: 2010, t: fixedNow - 20 * 60 * 1000 },
-  ];
-
   try {
     Date.now = () => fixedNow;
-    const result = await agentTools.compute_trading_signal("XAUUSD", "1hour", candles);
-    const latest = candles[candles.length - 1];
+    const hour = 60 * 60 * 1000;
+    const freshCandles = [
+      { o: 1990, h: 2005, l: 1985, c: 1998, t: fixedNow - 3 * hour },
+      { o: 1998, h: 2010, l: 1990, c: 2004, t: fixedNow - 2 * hour },
+      { o: 2004, h: 2018, l: 2000, c: 2012, t: fixedNow - hour },
+      { o: 2012, h: 2020, l: 2005, c: 2010, t: fixedNow - 20 * 60 * 1000 },
+    ];
+    const result = await agentTools.compute_trading_signal("XAUUSD", "1hour", freshCandles);
+    const latest = freshCandles[freshCandles.length - 1];
     const candidate =
-      latest && fixedNow - latest.t < hour / 2 ? candles[candles.length - 2] ?? latest : latest;
+      latest && fixedNow - latest.t < hour / 2 ? freshCandles[freshCandles.length - 2] ?? latest : latest;
     const candidateIso = new Date(candidate?.t ?? fixedNow).toISOString();
     const expectedLabel = `${candidateIso.slice(0, 10)} ${candidateIso.slice(11, 16)}`;
 
@@ -31,8 +30,15 @@ async function runTradingSignalTests() {
     assert.ok(Number.isFinite(result.tp1));
     assert.ok(Number.isFinite(result.sl));
     assert.ok(Number.isFinite(result.tp2));
-    assert.ok(result.candles_count >= candles.length);
+    assert.ok(result.candles_count >= freshCandles.length);
     assert.ok(Number.isFinite(result.indicators.rsi));
+
+    const oldCandles = freshCandles.map((candle) => ({
+      ...candle,
+      t: candle.t - 10 * hour,
+    }));
+    const staleResult = await agentTools.compute_trading_signal("XAUUSD", "1hour", oldCandles);
+    assert.strictEqual(staleResult.stale, true, "older candles should mark the signal as stale");
   } finally {
     Date.now = originalNow;
   }

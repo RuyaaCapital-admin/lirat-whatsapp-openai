@@ -1,5 +1,5 @@
 import axios, { AxiosError } from "axios";
-import { TF } from "./normalize";
+import { TF, isCrypto } from "./normalize";
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 
@@ -179,25 +179,53 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
   }
 }
 
+type ProviderResult = {
+  fetcher: (symbol: string, timeframe: TF, limit: number) => Promise<OhlcResult>;
+  source: OhlcSource;
+};
+
+function getProviderOrder(symbol: string): ProviderResult[] {
+  const cryptoFirst: ProviderResult[] = [
+    { fetcher: fetchFromFmp, source: "FMP" },
+    { fetcher: fetchFromFcs, source: "FCS" },
+  ];
+  const fxFirst: ProviderResult[] = [
+    { fetcher: fetchFromFcs, source: "FCS" },
+    { fetcher: fetchFromFmp, source: "FMP" },
+  ];
+  return isCrypto(symbol) ? cryptoFirst : fxFirst;
+}
+
 export async function get_ohlc(symbol: string, timeframe: TF, limit = 300): Promise<OhlcResult> {
   const safeLimit = Math.max(50, Math.min(limit, 400));
-  try {
-    return await fetchFromFmp(symbol, timeframe, safeLimit);
-  } catch (error) {
-    if (error instanceof OhlcError) {
-      if (!["HTTP_ERROR", "NO_DATA_FOR_INTERVAL"].includes(error.code)) {
+  const order = getProviderOrder(symbol);
+  let lastError: OhlcError | null = null;
+
+  for (const { fetcher, source } of order) {
+    try {
+      const result = await fetcher(symbol, timeframe, safeLimit);
+      if (Array.isArray(result.candles) && result.candles.length > 0) {
+        return result;
+      }
+      lastError = new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, source);
+    } catch (error) {
+      if (error instanceof OhlcError) {
+        if (error.code === "NO_DATA_FOR_INTERVAL") {
+          lastError = error;
+          continue;
+        }
+        if (error.code === "HTTP_ERROR") {
+          lastError = error;
+          continue;
+        }
         throw error;
       }
-    } else {
       throw error;
     }
   }
-  try {
-    return await fetchFromFcs(symbol, timeframe, safeLimit);
-  } catch (error) {
-    if (error instanceof OhlcError && error.code === "HTTP_ERROR") {
-      throw new OhlcError("HTTP_ERROR", timeframe, "FCS");
-    }
-    throw error;
+
+  if (lastError) {
+    throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, lastError.source);
   }
+  throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe);
 }

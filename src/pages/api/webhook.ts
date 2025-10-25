@@ -135,16 +135,20 @@ function buildPriceReply(result: PriceResult): string {
   });
 }
 
-function formatPriceLike(value: number): string {
+function formatPriceLike(value: number, symbol: string): string {
   if (!Number.isFinite(value)) return "-";
   const abs = Math.abs(value);
-  if (abs >= 1) {
+  const upper = symbol.toUpperCase();
+  if (upper.endsWith("USDT")) {
     return value.toFixed(2);
   }
-  if (abs >= 0.1) {
-    return value.toFixed(3);
+  if (abs >= 100) {
+    return value.toFixed(2);
   }
-  return value.toFixed(4);
+  if (abs >= 10) {
+    return value.toFixed(2);
+  }
+  return value.toFixed(3);
 }
 
 function formatIndicator(value: number, decimals: number): string {
@@ -170,15 +174,15 @@ function buildSignalReply(result: TradingSignalResult): string {
   const symbolLine = `Symbol: ${result.symbol}`;
   const signalLine = `SIGNAL: ${result.decision}`;
   const rsiLabel = formatIndicator(result.indicators.rsi, 1);
-  const ema20Label = formatPriceLike(result.indicators.ema20);
-  const ema50Label = formatPriceLike(result.indicators.ema50);
+  const ema20Label = formatPriceLike(result.indicators.ema20, result.symbol);
+  const ema50Label = formatPriceLike(result.indicators.ema50, result.symbol);
   const macdLabel = formatIndicator(result.indicators.macd, 3);
   if (result.decision === "NEUTRAL") {
     return [
       timeLine,
       symbolLine,
       signalLine,
-      `Reason: Market is not giving a clear long/short signal (RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel})`,
+      `Reason: السوق ما عم يعطي اتجاه واضح حالياً (RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel})`,
     ].join("\n");
   }
 
@@ -187,12 +191,12 @@ function buildSignalReply(result: TradingSignalResult): string {
   const tp1 = Number.isFinite(result.tp1) ? result.tp1 : entry;
   const tp2 = Number.isFinite(result.tp2) ? result.tp2 : entry;
 
-  const entryLine = `Entry: ${formatPriceLike(entry)}`;
-  const slLine = `SL: ${formatPriceLike(sl)}`;
+  const entryLine = `Entry: ${formatPriceLike(entry, result.symbol)}`;
+  const slLine = `SL: ${formatPriceLike(sl, result.symbol)}`;
   const tp1Ratio = formatRiskRatio(entry, tp1, sl);
   const tp2Ratio = formatRiskRatio(entry, tp2, sl);
-  const tp1Line = `TP1: ${formatPriceLike(tp1)}${tp1Ratio ? ` ${tp1Ratio}` : ""}`;
-  const tp2Line = `TP2: ${formatPriceLike(tp2)}${tp2Ratio ? ` ${tp2Ratio}` : ""}`;
+  const tp1Line = `TP1: ${formatPriceLike(tp1, result.symbol)}${tp1Ratio ? ` ${tp1Ratio}` : ""}`;
+  const tp2Line = `TP2: ${formatPriceLike(tp2, result.symbol)}${tp2Ratio ? ` ${tp2Ratio}` : ""}`;
 
   const reasonLine = `Reason: RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel}`;
 
@@ -376,53 +380,57 @@ async function smartToolLoop({
 
   if (plan.intent === "trading_signal") {
     const symbol = normaliseSymbol(plan.symbol ?? trimmed);
-    const timeframe = toTimeframe(plan.timeframe ?? trimmed);
     if (!symbol) {
-      const text = await generateGeneralReply(trimmed, history, language);
-      return { text };
+      const clarification = language === "ar" ? "أي أداة بدك الصفقة عليها؟" : "Which instrument do you want the trade for?";
+      return { text: clarification, skipGreeting: true };
     }
-    try {
-      console.log("[TOOL] invoke get_ohlc", { symbol, timeframe, limit: 200 });
-      const snapshot: OhlcResultPayload = await get_ohlc(symbol, timeframe, 200);
-      const candlesRaw = snapshot.candles;
-      const parsedCandles = Array.isArray(candlesRaw)
-        ? candlesRaw
-        : typeof candlesRaw === "string"
-          ? (() => {
-              try {
-                const parsed = JSON.parse(candlesRaw);
-                return Array.isArray(parsed) ? parsed : [];
-              } catch (error) {
-                console.warn("[TOOL] parse candles error", error);
-                return [] as unknown[];
-              }
-            })()
-          : [];
-      const candles = Array.isArray(parsedCandles) ? parsedCandles : [];
+    const timeframe = toTimeframe(plan.timeframe ?? trimmed);
+
+    const runPipeline = async (tf: string) => {
+      console.log("[TOOL] invoke get_ohlc", { symbol, timeframe: tf, limit: 200 });
+      const snapshot: OhlcResultPayload = await get_ohlc(symbol, tf, 200);
+      const candles = Array.isArray(snapshot.candles) ? snapshot.candles : [];
       if (!candles.length) {
-        return { text: dataUnavailable(language) };
+        return { snapshot, signal: null as TradingSignalResult | null };
       }
-      const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, candles);
+      const signal = await compute_trading_signal(symbol, tf, candles);
+      return { snapshot, signal };
+    };
+
+    try {
+      const primary = await runPipeline(timeframe);
+      if (!primary.signal) {
+        return { text: dataUnavailable(language), skipGreeting: true };
+      }
+
+      let finalSignal = primary.signal;
+
+      if (finalSignal.stale) {
+        const retryTimeframe = "5min";
+        const retry = await runPipeline(retryTimeframe);
+        if (retry.signal) {
+          finalSignal = retry.signal;
+        }
+      }
+
       console.log("[SIGNAL_PIPELINE]", {
-        symbol: signal.symbol,
-        timeframe: signal.timeframe,
-        candles: signal.candles_count,
-        decision: signal.decision,
-        stale: signal.stale,
-        last_closed_utc: signal.last_closed_utc,
+        symbol: finalSignal.symbol,
+        timeframe: finalSignal.timeframe,
+        candles: finalSignal.candles_count,
+        decision: finalSignal.decision,
+        stale: finalSignal.stale,
+        last_closed_utc: finalSignal.last_closed_utc,
       });
-      if (signal.stale) {
-        return { text: dataUnavailable(language) };
+
+      if (finalSignal.stale) {
+        return { text: dataUnavailable(language), skipGreeting: true };
       }
-      const reply = buildSignalReply(signal);
+
+      const reply = buildSignalReply(finalSignal);
       return { text: reply, skipGreeting: true };
     } catch (error) {
-      const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
-      if (code && code.toUpperCase().includes("STALE")) {
-        return { text: dataUnavailable(language) };
-      }
       console.warn("[TOOL] trading signal error", error);
-      return { text: dataUnavailable(language) };
+      return { text: dataUnavailable(language), skipGreeting: true };
     }
   }
 
