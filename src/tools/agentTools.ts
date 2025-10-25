@@ -3,7 +3,7 @@ import { openai } from "../lib/openai";
 import { formatNewsMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
 import { Candle, get_ohlc as loadOhlc } from "./ohlc";
-import { computeSignal } from "./compute_trading_signal";
+import { computeFromCandles } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
@@ -78,11 +78,6 @@ function toUtcIso(input: number | string | null | undefined): string {
   return new Date().toISOString();
 }
 
-function toUtcLabel(input: number | string | null | undefined): string {
-  const iso = toUtcIso(input);
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
-}
-
 function normalizeCandles(candles: Candle[]): Candle[] {
   return candles
     .map((candle) => ({
@@ -146,39 +141,18 @@ export async function compute_trading_signal(
   }
   const tf = toTimeframe(timeframe) as TF;
   let workingCandles = Array.isArray(candles) ? normalizeCandles(candles) : [];
-  let payload: Awaited<ReturnType<typeof computeSignal>> | null = null;
-
+  let source: string | undefined;
   if (!workingCandles.length) {
     const snapshot = await get_ohlc(mappedSymbol, tf, 200);
     workingCandles = normalizeCandles(snapshot.candles);
     if (!workingCandles.length) {
       throw new Error("missing_ohlc");
     }
+    source = snapshot.source;
   }
 
-  payload = await computeSignal(mappedSymbol, tf, workingCandles);
-
-  let finalPayload = payload;
-  let finalCandles = workingCandles;
-
-  if (finalPayload.stale && finalPayload.interval !== "5min") {
-    const fallbackTf: TF = "5min";
-    console.log("[TOOL] invoke get_ohlc", {
-      symbol: mappedSymbol,
-      timeframe: fallbackTf,
-      limit: 200,
-      fallback: true,
-    });
-    const fallbackSnapshot = await get_ohlc(mappedSymbol, fallbackTf, 200);
-    const fallbackCandles = normalizeCandles(fallbackSnapshot.candles);
-    if (fallbackCandles.length) {
-      const fallbackPayload = await computeSignal(mappedSymbol, fallbackTf, fallbackCandles);
-      finalPayload = fallbackPayload;
-      finalCandles = fallbackCandles;
-    }
-  }
-
-  const indicators = finalPayload.indicators;
+  const payload = computeFromCandles(mappedSymbol, tf, workingCandles);
+  const indicators = payload.indicators;
   const roundedIndicators: TradingSignalIndicators = {
     rsi: Number.isFinite(indicators.rsi) ? Number(indicators.rsi.toFixed(2)) : NaN,
     ema20: Number.isFinite(indicators.ema20) ? Number(indicators.ema20.toFixed(4)) : NaN,
@@ -191,19 +165,19 @@ export async function compute_trading_signal(
   };
 
   return {
-    decision: finalPayload.signal,
-    entry: finalPayload.entry,
-    sl: finalPayload.sl,
-    tp1: finalPayload.tp1,
-    tp2: finalPayload.tp2,
-    time: finalPayload.timeUTC,
-    last_closed_utc: toUtcLabel(finalPayload.lastClosed.t),
-    symbol: finalPayload.symbol,
-    timeframe: finalPayload.interval,
-    source: finalPayload.source ?? "FMP",
-    stale: Boolean(finalPayload.stale),
+    decision: payload.decision,
+    entry: payload.entry,
+    sl: payload.sl,
+    tp1: payload.tp1,
+    tp2: payload.tp2,
+    last_closed_utc: payload.last_closed_utc,
+    time: new Date(payload.lastClosed.t).toISOString(),
+    symbol: payload.symbol,
+    timeframe: payload.timeframe,
+    source: source ?? payload.source ?? "FMP",
+    stale: Boolean(payload.stale),
     indicators: roundedIndicators,
-    candles_count: finalCandles.length,
+    candles_count: payload.candles_count,
   };
 }
 

@@ -1,5 +1,5 @@
 import { TF } from "./normalize";
-import { get_ohlc, Candle, OhlcResult, OhlcSource } from "./ohlc";
+import { Candle, get_ohlc } from "./ohlc";
 
 export interface SignalIndicators {
   ema20: number;
@@ -10,19 +10,20 @@ export interface SignalIndicators {
   macdHist: number;
 }
 
-export interface SignalPayload extends Record<string, unknown> {
-  signal: "BUY" | "SELL" | "NEUTRAL";
+export interface SignalPayload {
+  decision: "BUY" | "SELL" | "NEUTRAL";
   entry: number;
   sl: number;
   tp1: number;
   tp2: number;
-  timeUTC: string;
   symbol: string;
-  interval: TF;
-  source: OhlcSource;
-  stale: boolean;
+  timeframe: TF;
+  last_closed_utc: string;
   lastClosed: Candle;
   indicators: SignalIndicators;
+  stale: boolean;
+  source?: string;
+  candles_count: number;
 }
 
 const TF_TO_MS: Record<TF, number> = {
@@ -35,8 +36,24 @@ const TF_TO_MS: Record<TF, number> = {
   "1day": 24 * 60 * 60_000,
 };
 
-function ensureFinite(value: number, fallback: number): number {
-  return Number.isFinite(value) ? value : fallback;
+function ensureSorted(candles: Candle[]): Candle[] {
+  return candles
+    .map((candle) => ({
+      o: Number(candle.o),
+      h: Number(candle.h),
+      l: Number(candle.l),
+      c: Number(candle.c),
+      t: Number(candle.t),
+      v: Number.isFinite(candle.v) ? Number(candle.v) : undefined,
+    }))
+    .filter((candle) =>
+      Number.isFinite(candle.o) &&
+      Number.isFinite(candle.h) &&
+      Number.isFinite(candle.l) &&
+      Number.isFinite(candle.c) &&
+      Number.isFinite(candle.t),
+    )
+    .sort((a, b) => a.t - b.t);
 }
 
 function ema(values: number[], period: number) {
@@ -147,7 +164,13 @@ function toUtcIso(timestamp: number) {
   return new Date(timestamp).toISOString();
 }
 
-function round(value: number) {
+function toUtcLabel(timestamp: number) {
+  const iso = toUtcIso(timestamp);
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+}
+
+function roundPrice(value: number) {
+  if (!Number.isFinite(value)) return NaN;
   const abs = Math.abs(value);
   const decimals = abs >= 1000 ? 2 : abs >= 100 ? 3 : abs >= 1 ? 4 : 6;
   return Number(value.toFixed(decimals));
@@ -157,56 +180,71 @@ function normaliseSymbol(symbol: string) {
   return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
-function ensureSorted(candles: Candle[]): Candle[] {
-  return candles
-    .map((candle) => ({
-      o: Number(candle.o),
-      h: Number(candle.h),
-      l: Number(candle.l),
-      c: Number(candle.c),
-      t: Number(candle.t),
-      v: Number.isFinite(candle.v) ? Number(candle.v) : undefined,
-    }))
-    .filter((candle) =>
-      Number.isFinite(candle.o) &&
-      Number.isFinite(candle.h) &&
-      Number.isFinite(candle.l) &&
-      Number.isFinite(candle.c) &&
-      Number.isFinite(candle.t),
-    )
-    .sort((a, b) => a.t - b.t);
-}
-
 function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
   const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const now = Date.now();
   const sorted = ensureSorted(candles);
   const last = sorted.at(-1) ?? null;
   const prev = sorted.at(-2) ?? null;
   if (!last) {
     throw new Error("INVALID_CANDLES");
   }
-  const candidate = last && now - last.t < tfMs * 0.5 ? prev ?? last : last;
-  if (!candidate) {
-    throw new Error("NO_CLOSED_BAR");
+  const now = Date.now();
+  if (now - last.t < tfMs * 0.5 && prev) {
+    return prev;
   }
-  const values = [candidate.o, candidate.h, candidate.l, candidate.c];
-  if (!values.every((value) => Number.isFinite(value))) {
-    throw new Error("INVALID_CANDLE_VALUES");
-  }
-  return candidate;
+  return last;
 }
 
-export function buildSignalFromSeries(symbol: string, timeframe: TF, series: OhlcResult): SignalPayload {
-  const candles = ensureSorted(series.candles);
-  if (!Array.isArray(candles) || candles.length < 3) {
-    throw new Error("insufficient_ohlc");
+function computeDecision(indicators: SignalIndicators): "BUY" | "SELL" | "NEUTRAL" {
+  const { ema20, ema50, rsi, macd, macdSignal } = indicators;
+  if (ema20 > ema50 && rsi >= 55 && macd > macdSignal) return "BUY";
+  if (ema20 < ema50 && rsi <= 45 && macd < macdSignal) return "SELL";
+  return "NEUTRAL";
+}
+
+function computeTargets(
+  decision: "BUY" | "SELL" | "NEUTRAL",
+  lastClose: number,
+  previousClose: number,
+  atrValue: number,
+) {
+  const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || 1);
+  const risk = Number.isFinite(atrValue) ? atrValue : fallbackRisk;
+  const entry = roundPrice(lastClose);
+  if (decision === "BUY") {
+    return {
+      entry,
+      sl: roundPrice(lastClose - risk),
+      tp1: roundPrice(lastClose + risk),
+      tp2: roundPrice(lastClose + 2 * risk),
+    };
   }
-  const lastClosed = series.lastClosed ?? deriveLastClosed(candles, timeframe);
-  const closes = candles.map((candle) => candle.c);
-  const highs = candles.map((candle) => candle.h);
-  const lows = candles.map((candle) => candle.l);
-  const previous = candles.at(-2);
+  if (decision === "SELL") {
+    return {
+      entry,
+      sl: roundPrice(lastClose + risk),
+      tp1: roundPrice(lastClose - risk),
+      tp2: roundPrice(lastClose - 2 * risk),
+    };
+  }
+  return {
+    entry,
+    sl: entry,
+    tp1: entry,
+    tp2: entry,
+  };
+}
+
+export function computeFromCandles(symbol: string, timeframe: TF, candles: Candle[]): SignalPayload {
+  const sorted = ensureSorted(candles);
+  if (!sorted.length) {
+    throw new Error("missing_candles");
+  }
+  const lastClosed = deriveLastClosed(sorted, timeframe);
+  const closes = sorted.map((candle) => candle.c);
+  const highs = sorted.map((candle) => candle.h);
+  const lows = sorted.map((candle) => candle.l);
+  const previous = sorted.at(-2) ?? sorted.at(-1);
   if (!previous) {
     throw new Error("missing_previous_bar");
   }
@@ -217,73 +255,51 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
   const { macd: macdValue, signal: macdSignal, hist: macdHist } = macd(closes);
   const { value: atrValue } = atr14(highs, lows, closes);
 
-  let decision: SignalPayload["signal"] = "NEUTRAL";
-  if (ema20 > ema50 && rsiValue >= 55 && macdValue > macdSignal) decision = "BUY";
-  if (ema20 < ema50 && rsiValue <= 45 && macdValue < macdSignal) decision = "SELL";
+  const indicators: SignalIndicators = {
+    ema20,
+    ema50,
+    rsi: rsiValue,
+    macd: macdValue,
+    macdSignal,
+    macdHist,
+  };
 
-  const close = lastClosed.c;
-  const fallbackRisk = Math.max(close * 0.0015, Math.abs(close - previous.c) || 1);
-  const risk = ensureFinite(atrValue, fallbackRisk);
-
-  const entry = round(close);
-  const stopLoss = round(
-    decision === "BUY" ? close - risk : decision === "SELL" ? close + risk : close,
-  );
-  const takeProfit1 = round(
-    decision === "BUY" ? close + risk : decision === "SELL" ? close - risk : close,
-  );
-  const takeProfit2 = round(
-    decision === "BUY" ? close + 2 * risk : decision === "SELL" ? close - 2 * risk : close,
-  );
+  const decision = computeDecision(indicators);
+  const { entry, sl, tp1, tp2 } = computeTargets(decision, lastClosed.c, previous.c, atrValue);
 
   const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const stale = typeof series.stale === "boolean" ? series.stale : Date.now() - lastClosed.t > tfMs * 3;
+  const stale = Date.now() - lastClosed.t > tfMs * 3;
 
   return {
-    signal: decision,
+    decision,
     entry,
-    sl: stopLoss,
-    tp1: takeProfit1,
-    tp2: takeProfit2,
-    timeUTC: toUtcIso(lastClosed.t),
+    sl,
+    tp1,
+    tp2,
     symbol: normaliseSymbol(symbol),
-    interval: timeframe,
-    source: series.source,
-    stale,
+    timeframe,
+    last_closed_utc: toUtcLabel(lastClosed.t),
     lastClosed,
-    indicators: {
-      ema20,
-      ema50,
-      rsi: rsiValue,
-      macd: macdValue,
-      macdSignal,
-      macdHist,
-    },
+    indicators,
+    stale,
+    source: "PROVIDED",
+    candles_count: sorted.length,
   };
 }
 
-export async function computeSignal(symbol: string, timeframe: TF, candles?: Candle[]): Promise<SignalPayload> {
-  if (candles && candles.length > 0) {
-    const normalized = ensureSorted(candles);
-    if (!normalized.length) {
-      throw new Error("invalid_candles");
-    }
-    const lastClosed = deriveLastClosed(normalized, timeframe);
-    const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-    const stale = Date.now() - lastClosed.t > tfMs * 3;
-    const data: OhlcResult = {
-      candles: normalized,
-      lastClosed,
-      timeframe,
-      source: "PROVIDED" as OhlcSource,
-      stale,
-    };
-    return buildSignalFromSeries(symbol, timeframe, data);
+export async function computeSignal(
+  symbol: string,
+  timeframe: TF,
+  candles?: Candle[],
+): Promise<SignalPayload> {
+  let working = Array.isArray(candles) ? candles : [];
+  if (!working.length) {
+    const snapshot = await get_ohlc(symbol, timeframe, 200);
+    working = snapshot.candles;
   }
-
-  const fetched = await get_ohlc(symbol, timeframe);
-  if (!fetched.candles.length) {
-    throw new Error("missing_ohlc");
+  const result = computeFromCandles(symbol, timeframe, working);
+  if (!result.source) {
+    result.source = "PROVIDED";
   }
-  return buildSignalFromSeries(symbol, fetched.timeframe, fetched);
+  return result;
 }
