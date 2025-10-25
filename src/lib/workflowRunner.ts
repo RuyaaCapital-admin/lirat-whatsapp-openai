@@ -42,12 +42,19 @@ function serialiseToolResult(result: ToolResult): string {
   try { return JSON.stringify(result); } catch { return String(result); }
 }
 
-export async function runWorkflowMessage({
-  sessionId: string;
-  workflowId: string;
-  version?: number;
-  userText: string;
-}): Promise<string> {
+export async function runWorkflowMessage(
+  {
+    sessionId,
+    workflowId,
+    version,
+    userText,
+  }: {
+    sessionId: string;
+    workflowId: string;
+    version?: number;
+    userText: string;
+  },
+): Promise<string> {
   const wf: any = (openai as any).workflows;
   if (!wf?.runs?.create) {
     throw new Error("workflows_not_supported");
