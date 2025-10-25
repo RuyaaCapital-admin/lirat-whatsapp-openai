@@ -85,23 +85,20 @@ function formatRiskRatio(entry: number, target: number, stop: number): string {
 }
 
 export function formatSignalMsg(input: SignalMessageInput): string {
-  if (input.decision === "NEUTRAL") {
-    return "SIGNAL: NEUTRAL";
-  }
   const label = formatUtcLabel(input.time);
   const entry = formatNumber(input.entry).toFixed(2);
   const sl = formatNumber(input.sl).toFixed(2);
   const tp1 = formatNumber(input.tp1).toFixed(2);
   const tp2 = formatNumber(input.tp2).toFixed(2);
-  const tp1Ratio = formatRiskRatio(Number(input.entry), Number(input.tp1), Number(input.sl));
-  const tp2Ratio = formatRiskRatio(Number(input.entry), Number(input.tp2), Number(input.sl));
+  const tp1Ratio = formatRiskRatio(Number(entry), Number(tp1), Number(sl));
+  const tp2Ratio = formatRiskRatio(Number(entry), Number(tp2), Number(sl));
   const tp1Line = tp1Ratio ? `TP1: ${tp1} ${tp1Ratio}` : `TP1: ${tp1}`;
   const tp2Line = tp2Ratio ? `TP2: ${tp2} ${tp2Ratio}` : `TP2: ${tp2}`;
   return [
     `time (UTC): ${label}`,
     `symbol: ${input.symbol}`,
     `SIGNAL: ${input.decision}`,
-    `entry: ${entry}`,
+    `Entry: ${entry}`,
     `SL: ${sl}`,
     tp1Line,
     tp2Line,

@@ -1,5 +1,6 @@
 // src/tools/signal.ts
 import { TF } from './normalize';
+import type { OhlcSource } from './ohlc';
 import { computeSignal as computeSignalPayload, formatSignalPayload } from './compute_trading_signal';
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
@@ -26,6 +27,8 @@ export type SignalBlock = {
   sl: number;
   tp1: number;
   tp2: number;
+  source: OhlcSource;
+  stale: boolean;
 };
 
 export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock> {
@@ -55,6 +58,8 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
     sl,
     tp1,
     tp2,
+    source: trading_signal.source,
+    stale: Boolean(trading_signal.stale),
   };
 }
 
@@ -68,5 +73,7 @@ export function formatSignalBlock(block: SignalBlock): string {
     timeUTC: block.timeUTC,
     symbol: block.symbol,
     interval: block.interval,
+    source: block.source,
+    stale: block.stale,
   });
 }

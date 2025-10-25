@@ -157,6 +157,8 @@ export function computeSignal(symbol: string, interval: string, candles: Candle[
     sl,
     tp1,
     tp2,
+    source: "PROVIDED",
+    stale: false,
   } satisfies SignalBlock;
 }
 

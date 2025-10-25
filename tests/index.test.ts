@@ -3,6 +3,7 @@ process.env.WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "
 process.env.WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "test-token";
 
 import "./formatters.test";
+import "./ohlc.test";
 
 (async () => {
   try {

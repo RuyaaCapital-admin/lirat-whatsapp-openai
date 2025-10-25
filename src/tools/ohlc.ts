@@ -10,6 +10,7 @@ export interface OhlcResult {
   lastClosed: Candle;
   timeframe: TF;
   source: OhlcSource;
+  stale: boolean;
 }
 
 export class OhlcError extends Error {
@@ -17,7 +18,6 @@ export class OhlcError extends Error {
     public readonly code:
       | "NO_DATA_FOR_INTERVAL"
       | "NO_CLOSED_BAR"
-      | "STALE_DATA"
       | "HTTP_ERROR"
       | "INVALID_CANDLES",
     public readonly timeframe: TF,
@@ -25,6 +25,14 @@ export class OhlcError extends Error {
   ) {
     super(code);
   }
+}
+
+type HttpClient = Pick<typeof axios, "get">;
+
+let httpClient: HttpClient = axios;
+
+export function __setOhlcHttpClient(client?: HttpClient | null) {
+  httpClient = client ?? axios;
 }
 
 const TF_TO_MS: Record<TF, number> = {
@@ -89,7 +97,7 @@ function ensureSorted(candles: Candle[]): Candle[] {
     }));
 }
 
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+function deriveLastClosed(candles: Candle[], timeframe: TF): { lastClosed: Candle; stale: boolean } {
   const sorted = ensureSorted(candles);
   const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
   const now = Date.now();
@@ -102,17 +110,15 @@ function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
   if (!candidate || !isFiniteCandle(candidate)) {
     throw new OhlcError("NO_CLOSED_BAR", timeframe);
   }
-  if (now - candidate.t > tfMs * 6) {
-    throw new OhlcError("STALE_DATA", timeframe);
-  }
-  return candidate;
+  const stale = now - candidate.t > tfMs * 3;
+  return { lastClosed: candidate, stale };
 }
 
 async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
   const interval = FMP_INTERVAL[timeframe];
   const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
   try {
-    const { data } = await axios.get(url, { timeout: 9000 });
+    const { data } = await httpClient.get(url, { timeout: 9000 });
     const candles = (Array.isArray(data) ? data : [])
       .map(mapFmpRow)
       .filter(isFiniteCandle)
@@ -121,8 +127,8 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promi
       throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
     }
     const sorted = ensureSorted(candles);
-    const lastClosed = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FMP" };
+    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FMP", stale };
   } catch (error) {
     if (error instanceof OhlcError) {
       throw error;
@@ -144,7 +150,7 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
     ? `https://fcsapi.com/api-v3/crypto/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`
     : `https://fcsapi.com/api-v3/forex/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`;
   try {
-    const { data } = await axios.get(url, { timeout: 9000 });
+    const { data } = await httpClient.get(url, { timeout: 9000 });
     const rows = (data?.response ?? data?.candles ?? []) as any[];
     const candles = rows
       .slice(-limit)
@@ -154,8 +160,8 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
       throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
     }
     const sorted = ensureSorted(candles);
-    const lastClosed = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FCS" };
+    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FCS", stale };
   } catch (error) {
     if (error instanceof OhlcError) {
       throw error;

@@ -16,10 +16,10 @@ async function testPrice() {
   assert.strictEqual(
     text,
     [
-      "Time (UTC): 2025-10-24 17:44",
-      "Symbol: XAGUSD",
-      "Price: 48.6385",
-      "Source: FCS latest",
+      "time (UTC): 2025-10-24 17:44",
+      "symbol: XAGUSD",
+      "price: 48.64",
+      "source: FCS latest",
     ].join("\n"),
     "price formatter must match spec",
   );
@@ -38,13 +38,13 @@ async function testSignal() {
   assert.strictEqual(
     block,
     [
-      "Time (UTC): 2025-10-24 13:00",
-      "Symbol: XAUUSD",
+      "time (UTC): 2025-10-24 13:00",
+      "symbol: XAUUSD",
       "SIGNAL: SELL",
-      "Entry: 4062.445",
+      "Entry: 4062.45",
       "SL: 4083.34",
-      "TP1: 4041.54",
-      "TP2: 4020.65",
+      "TP1: 4041.54 (R 1.0)",
+      "TP2: 4020.65 (R 2.0)",
     ].join("\n"),
     "signal block must include 7 lines",
   );
@@ -61,13 +61,13 @@ async function testSignal() {
   assert.strictEqual(
     neutral,
     [
-      "Time (UTC): 2025-10-24 13:00",
-      "Symbol: XAUUSD",
+      "time (UTC): 2025-10-24 13:00",
+      "symbol: XAUUSD",
       "SIGNAL: NEUTRAL",
-      "Entry: 0",
-      "SL: 0",
-      "TP1: 0",
-      "TP2: 0",
+      "Entry: 0.00",
+      "SL: 0.00",
+      "TP1: 0.00",
+      "TP2: 0.00",
     ].join("\n"),
     "neutral block should include numeric placeholders",
   );
@@ -80,7 +80,7 @@ async function testNews() {
   ]);
   assert.strictEqual(
     news,
-    "* 2025-10-24 — Reuters — Headline 1\n* 2025-10-23 — CNBC — Headline 2",
+    "2025-10-24 — Reuters — Headline 1\n2025-10-23 — CNBC — Headline 2",
     "news formatter trims to three lines",
   );
 }
