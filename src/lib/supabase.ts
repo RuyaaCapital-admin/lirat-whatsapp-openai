@@ -235,7 +235,7 @@ export async function getRecentContext(
       return [];
     }
     return (data ?? [])
-      .map((row) => ({
+      .map<ConversationContextEntry>((row) => ({
         role: row.role === "assistant" ? "assistant" : "user",
         content: typeof row.content === "string" ? row.content : "",
       }))

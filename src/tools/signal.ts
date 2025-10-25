@@ -1,20 +1,34 @@
 // src/tools/signal.ts
-import { TF } from './normalize';
-import { formatSignalMsg } from '../utils/formatters';
-import { get_ohlc, type OhlcSource } from './ohlc';
-import {
-  compute_trading_signal,
-  type TradingSignalOk,
-  type TradingSignalResult,
-} from './compute_trading_signal';
+import type { LanguageCode, ReasonToken } from "../utils/formatters";
+import { signalFormatter } from "../utils/formatters";
+import { get_ohlc, type Candle, type GetOhlcSuccess } from "./ohlc";
+import { compute_trading_signal, type TradingSignal } from "./compute_trading_signal";
+import { TF } from "./normalize";
 
-export type Candle = {
-  t: number | string;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-};
+export interface SignalBlock {
+  timeUTC: string;
+  symbol: string;
+  interval: TF;
+  lastClosedUTC: string;
+  close: number;
+  prev: number;
+  ema20?: number;
+  ema50?: number;
+  rsi14?: number;
+  macd?: number;
+  macdSignal?: number;
+  macdHist?: number;
+  atr14?: number;
+  signal: TradingSignal["decision"];
+  entry: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  source: GetOhlcSuccess["provider"] | "PROVIDED";
+  stale: boolean;
+  ageMinutes: number;
+  reason: ReasonToken;
+}
 
 function ensureAscending(candles: Candle[]): Candle[] {
   return [...candles].sort((a, b) => Number(a.t) - Number(b.t));
@@ -77,138 +91,87 @@ function atr(highs: number[], lows: number[], closes: number[], period = 14): nu
   return atrValue;
 }
 
-function macd(values: number[]) {
-  const ema12 = ema(values, 12);
-  const ema26 = ema(values, 26);
-  if (ema12 === undefined || ema26 === undefined) {
-    return { macd: undefined, signal: undefined, hist: undefined };
-  }
-  const macdLine = ema12 - ema26;
-  const macdSeries: number[] = [];
-  const k12 = 2 / (12 + 1);
-  const k26 = 2 / (26 + 1);
-  let ema12Iter = values.slice(0, 12).reduce((sum, value) => sum + value, 0) / 12;
-  let ema26Iter = values.slice(0, 26).reduce((sum, value) => sum + value, 0) / 26;
-  macdSeries.push(ema12Iter - ema26Iter);
-  for (let i = 26; i < values.length; i += 1) {
-    const price = values[i];
-    ema12Iter = price * k12 + ema12Iter * (1 - k12);
-    ema26Iter = price * k26 + ema26Iter * (1 - k26);
-    macdSeries.push(ema12Iter - ema26Iter);
-  }
-  const signalLine = ema(macdSeries, 9);
-  const hist = signalLine !== undefined ? macdLine - signalLine : undefined;
-  return { macd: macdLine, signal: signalLine, hist };
-}
-
-export type SignalBlock = {
-  timeUTC: string;
-  symbol: string;
-  interval: TF;
-  lastClosedUTC: string;
-  close: number;
-  prev: number;
-  ema20?: number;
-  ema50?: number;
-  rsi14?: number;
-  macd?: number;
-  macdSignal?: number;
-  macdHist?: number;
-  atr14?: number;
-  signal: 'BUY'|'SELL'|'NEUTRAL';
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
-  source: OhlcSource;
-  stale: boolean;
-  reason?: string;
-};
-
-function resolveTimeISO(payload: TradingSignalOk): string {
-  if (typeof payload.lastISO === 'string' && payload.lastISO.trim()) {
-    return payload.lastISO;
-  }
-  return new Date().toISOString();
-}
-
 function resolveOptionalNumber(value: unknown): number | undefined {
   if (value == null) {
     return undefined;
   }
-  const numeric = typeof value === 'number' ? value : Number(value);
+  const numeric = typeof value === "number" ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : undefined;
 }
 
-function mapCandles(candles: { t: number; o: number; h: number; l: number; c: number }[]): Candle[] {
-  return candles.map((candle) => ({
-    t: candle.t,
-    o: candle.o,
-    h: candle.h,
-    l: candle.l,
-    c: candle.c,
-  }));
-}
-
-function assertOk(result: TradingSignalResult): TradingSignalOk {
-  if (result.status === 'OK') {
-    return result;
-  }
-  throw new Error('No usable signal data');
+function mapLevels(levels: TradingSignal["levels"], key: keyof TradingSignal["levels"]): number | null {
+  const value = levels[key];
+  return Number.isFinite(value) ? (value as number) : null;
 }
 
 export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock> {
-  const ohlc = await get_ohlc(symbol, tf, 60);
-  const trading_signal = assertOk(compute_trading_signal({ ...ohlc, lang: 'en' }));
-  const mapped = ensureAscending(mapCandles(ohlc.candles));
-  const closes = mapped.map((candle) => candle.c);
-  const highs = mapped.map((candle) => candle.h);
-  const lows = mapped.map((candle) => candle.l);
-  const timeUTC = resolveTimeISO(trading_signal);
-  const decision = trading_signal.signal;
-  const entry = trading_signal.entry ?? Number.NaN;
-  const sl = trading_signal.sl ?? entry;
-  const tp1 = trading_signal.tp1 ?? entry;
-  const tp2 = trading_signal.tp2 ?? entry;
-  const ema20 = ema(closes, 20);
-  const ema50 = ema(closes, 50);
-  const rsi14 = rsi(closes, 14);
-  const { macd: macdLine, signal: macdSignal, hist: macdHist } = macd(closes);
-  const atr14 = atr(highs, lows, closes, 14);
+  const ohlc = await get_ohlc(symbol, tf, 120);
+  if (!ohlc.ok) {
+    throw new Error("NO_DATA");
+  }
+
+  const candles = ensureAscending(ohlc.candles);
+  if (!candles.length) {
+    throw new Error("NO_CANDLES");
+  }
+
+  const closes = candles.map((candle) => candle.c);
+  const highs = candles.map((candle) => candle.h);
+  const lows = candles.map((candle) => candle.l);
+  const ema20Value = ema(closes, 20);
+  const ema50Value = ema(closes, 50);
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const macdLine = ema12 !== undefined && ema26 !== undefined ? ema12 - ema26 : undefined;
+  const signal = compute_trading_signal({
+    symbol: ohlc.symbol,
+    timeframe: ohlc.timeframe,
+    candles,
+    lastISO: ohlc.lastISO,
+    ageMinutes: ohlc.ageMinutes,
+    stale: ohlc.stale,
+  });
+
   return {
-    timeUTC,
-    symbol: trading_signal.symbol || symbol,
+    timeUTC: signal.timeUTC,
+    symbol: signal.symbol,
     interval: tf,
-    lastClosedUTC: timeUTC,
+    lastClosedUTC: signal.timeUTC,
     close: closes.at(-1) ?? Number.NaN,
     prev: closes.at(-2) ?? closes.at(-1) ?? Number.NaN,
-    ema20: resolveOptionalNumber(ema20),
-    ema50: resolveOptionalNumber(ema50),
-    rsi14: resolveOptionalNumber(rsi14),
+    ema20: resolveOptionalNumber(ema20Value),
+    ema50: resolveOptionalNumber(ema50Value),
+    rsi14: resolveOptionalNumber(rsi(closes, 14)),
     macd: resolveOptionalNumber(macdLine),
-    macdSignal: resolveOptionalNumber(macdSignal),
-    macdHist: resolveOptionalNumber(macdHist),
-    atr14: resolveOptionalNumber(atr14),
-    signal: decision,
-    entry,
-    sl,
-    tp1,
-    tp2,
-    source: (trading_signal.provider as OhlcSource) ?? 'PROVIDED',
-    stale: Boolean(trading_signal.isDelayed),
-    reason: trading_signal.reason,
-  };
+    macdSignal: undefined,
+    macdHist: undefined,
+    atr14: resolveOptionalNumber(atr(highs, lows, closes, 14)),
+    signal: signal.decision,
+    entry: mapLevels(signal.levels, "entry"),
+    sl: mapLevels(signal.levels, "sl"),
+    tp1: mapLevels(signal.levels, "tp1"),
+    tp2: mapLevels(signal.levels, "tp2"),
+    source: ohlc.provider,
+    stale: signal.stale,
+    ageMinutes: signal.ageMinutes,
+    reason: signal.reason,
+  } satisfies SignalBlock;
 }
 
-export function formatSignalBlock(block: SignalBlock): string {
-  return formatSignalMsg({
-    decision: block.signal,
-    entry: block.entry,
-    sl: block.sl,
-    tp1: block.tp1,
-    tp2: block.tp2,
-    time: block.timeUTC,
-    symbol: block.symbol,
-    reason: block.reason,
-  });
+export function formatSignalBlock(block: SignalBlock, lang: LanguageCode = "en"): string {
+  return signalFormatter(
+    {
+      symbol: block.symbol,
+      timeframe: block.interval,
+      timeUTC: block.timeUTC,
+      decision: block.signal,
+      reason: block.reason,
+      levels: { entry: block.entry, sl: block.sl, tp1: block.tp1, tp2: block.tp2 },
+      stale: block.stale,
+      ageMinutes: block.ageMinutes,
+    },
+    lang,
+  );
 }
+
+export type { Candle } from "./ohlc";

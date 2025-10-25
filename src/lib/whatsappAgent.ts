@@ -4,7 +4,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionCreateParams,
 } from "openai/resources/chat/completions";
-import type { OhlcResult } from "../tools/ohlc";
+import type { GetOhlcSuccess } from "../tools/ohlc";
 import type { ConversationMemoryAdapter, HistoryMessage } from "./memory";
 import { fallbackUnavailableMessage } from "./memory";
 
@@ -38,20 +38,19 @@ function asMessage(historyMessage: HistoryMessage): ChatCompletionMessageParam {
   };
 }
 
-function isOhlcResult(result: unknown): result is OhlcResult {
+function isOhlcResult(result: unknown): result is GetOhlcSuccess {
   if (!result || typeof result !== "object") {
     return false;
   }
-  const candidate = result as Partial<OhlcResult>;
+  const candidate = result as Partial<GetOhlcSuccess>;
   return (
+    candidate.ok === true &&
     typeof candidate.symbol === "string" &&
     typeof candidate.timeframe === "string" &&
     Array.isArray(candidate.candles) &&
-    typeof candidate.lastCandleUnix === "number" &&
-    typeof candidate.lastCandleISO === "string" &&
-    typeof candidate.ageSeconds === "number" &&
-    typeof candidate.isStale === "boolean" &&
-    typeof candidate.tooOld === "boolean" &&
+    typeof candidate.lastISO === "string" &&
+    typeof candidate.ageMinutes === "number" &&
+    typeof candidate.stale === "boolean" &&
     typeof candidate.provider === "string"
   );
 }
@@ -117,7 +116,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
     ];
 
     // Track last OHLC result for automatic candle injection
-    let lastOhlcResult: OhlcResult | null = null;
+    let lastOhlcResult: GetOhlcSuccess | null = null;
 
     while (true) {
       const completion = await chat.create({
