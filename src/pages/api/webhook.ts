@@ -24,34 +24,29 @@ import {
   type OhlcSnapshot,
   type ToolCandle,
 } from "../../utils/webhookHelpers";
-
-type Role = "user" | "assistant";
-
-type StoredMessageRow = {
-  role?: string | null;
-  text?: string | null;
-  body?: string | null;
-  content?: string | null;
-  message_id?: string | null;
-  ts?: string | null;
-  created_at?: string | null;
-};
-
-type WebhookMessage = {
-  id: string;
-  from: string;
-  text: string;
-  timestamp?: number;
-};
+import {
+  greetingResponse,
+  isGreetingOnly,
+  sanitizeAssistantReply,
+} from "../../utils/replySanitizer";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY || null;
+  process.env.SUPABASE_SERVICE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.SUPABASE_ANON_KEY ||
+  null;
+const TENANT_ID = process.env.TENANT_ID ?? "liirat";
 
-const FALLBACK_REPLY: Record<LanguageCode, string> = {
-  ar: "البيانات غير متاحة حالياً. جرّب: price BTCUSDT.",
-  en: "Data unavailable right now. Try: price BTCUSDT.",
+const DATA_UNAVAILABLE: Record<LanguageCode, string> = {
+  ar: "البيانات غير متاحة حالياً.",
+  en: "Data is not available right now.",
+};
+
+const CLARIFY_FALLBACK: Record<LanguageCode, string> = {
+  ar: "عذراً، لم أفهم. وضّح طلبك من فضلك.",
+  en: "Sorry, I didn’t fully understand. Can you clarify?",
 };
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات), a concise professional assistant. Always respond in the user’s language (formal Syrian Arabic if the user writes in Arabic, English otherwise). No greetings or emojis. Never reveal your identity unless the user explicitly asks; when they do, answer only: AR «مساعد ليرات» / EN “I’m Liirat assistant.” Clarifications such as “متأكد؟” or “شو يعني؟” must be answered with one short line.
@@ -79,7 +74,7 @@ Rules:
 - Never fabricate data; only report tool results.
 - Never output JSON.
 - Do not mention tools or internal logic.
-- If a tool fails, reply: AR «البيانات غير متاحة حالياً. جرّب: price BTCUSDT.» / EN “Data unavailable right now. Try: price BTCUSDT.”`;
+- If a tool fails, reply: AR «البيانات غير متاحة حالياً.» / EN “Data is not available right now.”`;
 
 const TOOL_SCHEMAS: ChatCompletionTool[] = [
   {
@@ -192,14 +187,13 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
 ] as ChatCompletionTool[];
 
 let supabaseClient: SupabaseClient | null = null;
-let supabaseDisabled = false;
 const processedMessageCache = new Set<string>();
 
 function getSupabaseClient(): SupabaseClient | null {
-  if (supabaseDisabled) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
     return null;
   }
-  if (!supabaseClient && SUPABASE_URL && SUPABASE_KEY) {
+  if (!supabaseClient) {
     supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
@@ -207,167 +201,141 @@ function getSupabaseClient(): SupabaseClient | null {
   return supabaseClient;
 }
 
-function disableSupabase(reason: string, error: unknown) {
-  if (!supabaseDisabled) {
-    supabaseDisabled = true;
-    supabaseClient = null;
-    console.warn("[SUPABASE] disabled", { reason, error });
-  }
-}
-
-function isMissingTableError(error: unknown): boolean {
-  const code = (error as { code?: unknown })?.code;
-  return typeof code === "string" && code === "PGRST205";
-}
-
-function parseTimestamp(row: StoredMessageRow): number | null {
-  const candidates = [row.ts, row.created_at];
-  for (const value of candidates) {
-    if (typeof value === "string" && value) {
-      const parsed = Date.parse(value);
-      if (!Number.isNaN(parsed)) {
-        return parsed;
-      }
-    }
-  }
-  return null;
-}
-
-function coerceRole(row: StoredMessageRow): Role | null {
-  const raw = (row.role ?? "").toString().toLowerCase();
-  if (["user", "in", "incoming", "inbound"].includes(raw)) return "user";
-  if (["assistant", "out", "outgoing", "outbound", "bot"].includes(raw)) return "assistant";
-  return null;
-}
-
-function extractBody(row: StoredMessageRow): string {
-  const candidates = [row.text, row.body, row.content];
-  for (const value of candidates) {
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return "";
-}
-
-async function persistMessage(params: {
-  waId: string;
-  role: Role;
-  text: string;
-  ts: string;
-  messageId: string;
-  replyTo?: string | null;
-}) {
+async function ensureConversation(
+  waNumber: string,
+  contactName?: string,
+): Promise<string | null> {
   const client = getSupabaseClient();
-  if (!client) return;
-  const payload: Record<string, unknown> = {
-    wa_id: params.waId,
-    role: params.role,
-    text: params.text,
-    body: params.text,
-    content: params.text,
-    ts: params.ts,
-    message_id: params.messageId,
-  };
-  if (params.replyTo) {
-    payload.reply_to_wamid = params.replyTo;
-  }
-  try {
-    const { error } = await client.from("messages").insert(payload);
-    if (error) {
-      if (isMissingTableError(error)) {
-        disableSupabase("missing_table", error);
-        return;
-      }
-      console.warn("[SUPABASE] persist failed", error);
-    }
-  } catch (error) {
-    if (isMissingTableError(error)) {
-      disableSupabase("missing_table_exception", error);
-      return;
-    }
-    console.warn("[SUPABASE] persist exception", error);
-  }
-}
+  if (!client) return null;
 
-async function messageExists(messageId: string): Promise<boolean> {
-  if (!messageId) return false;
-  const client = getSupabaseClient();
-  if (!client) {
-    return processedMessageCache.has(messageId);
-  }
   try {
     const { data, error } = await client
-      .from("messages")
+      .from("conversations")
       .select("id")
-      .eq("message_id", messageId)
+      .eq("user_id", waNumber)
+      .eq("tenant_id", TENANT_ID)
       .limit(1)
       .maybeSingle();
     if (error && error.code !== "PGRST116") {
-      if (isMissingTableError(error)) {
-        disableSupabase("missing_table", error);
-        return processedMessageCache.has(messageId);
-      }
-      console.warn("[SUPABASE] duplicate check failed", error);
-      return false;
+      throw error;
     }
-    return Boolean(data);
+    if (data?.id) {
+      return data.id as string;
+    }
   } catch (error) {
-    if (isMissingTableError(error)) {
-      disableSupabase("missing_table_exception", error);
-      return processedMessageCache.has(messageId);
+    console.warn("[SUPABASE] ensureConversation lookup failed", error);
+    return null;
+  }
+
+  try {
+    const title = (contactName ?? "").trim() || waNumber;
+    const { data, error } = await client
+      .from("conversations")
+      .insert({
+        user_id: waNumber,
+        tenant_id: TENANT_ID,
+        title,
+      })
+      .select("id")
+      .single();
+    if (error) {
+      throw error;
     }
-    console.warn("[SUPABASE] duplicate check exception", error);
-    return false;
+    return (data as { id?: string } | null)?.id ?? null;
+  } catch (error) {
+    console.warn("[SUPABASE] ensureConversation insert failed", error);
+    return null;
   }
 }
 
+async function logMessage(
+  conversationId: string,
+  waNumber: string,
+  role: "user" | "assistant",
+  content: string,
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  try {
+    const payload = {
+      conversation_id: conversationId,
+      user_id: role === "user" ? waNumber : "assistant",
+      role,
+      content,
+    };
+    const { error } = await client.from("messages").insert(payload);
+    if (error) {
+      throw error;
+    }
+  } catch (error) {
+    console.warn("[SUPABASE] logMessage failed", error);
+  }
+}
+
+async function saveTurnToSupabase(
+  incoming: WebhookMessage,
+  assistantReplyText: string,
+): Promise<void> {
+  const conversationId = await ensureConversation(incoming.from, incoming.contactName);
+  if (!conversationId) {
+    return;
+  }
+  await logMessage(conversationId, incoming.from, "user", incoming.text);
+  await logMessage(conversationId, incoming.from, "assistant", assistantReplyText);
+}
+
+type WebhookMessage = {
+  id: string;
+  from: string;
+  text: string;
+  contactName?: string;
+  timestamp?: number;
+};
+
 async function loadRecentMessages(
-  waId: string,
+  waNumber: string,
   limit = 10,
-  excludeMessageId?: string,
 ): Promise<ChatCompletionMessageParam[]> {
   const client = getSupabaseClient();
-  if (!client || !waId) {
+  if (!client) {
     return [];
   }
   try {
-    const { data, error } = await client
-      .from("messages")
-      .select("role,text,body,content,message_id,ts,created_at")
-      .eq("wa_id", waId)
-      .order("ts", { ascending: false, nullsFirst: false })
+    const { data: convRows, error: convError } = await client
+      .from("conversations")
+      .select("id")
+      .eq("tenant_id", TENANT_ID)
+      .eq("user_id", waNumber)
       .order("created_at", { ascending: false, nullsFirst: false })
-      .limit(limit * 3);
-    if (error) {
-      if (isMissingTableError(error)) {
-        disableSupabase("missing_table", error);
-        return [];
-      }
-      console.warn("[SUPABASE] load history failed", error);
+      .limit(1);
+    if (convError) {
+      throw convError;
+    }
+    const conversationId = Array.isArray(convRows) && convRows[0]?.id ? convRows[0].id : null;
+    if (!conversationId) {
       return [];
     }
-    const rows = Array.isArray(data) ? (data as StoredMessageRow[]) : [];
-    const prepared = rows
-      .filter((row) => row.message_id !== excludeMessageId)
+    const { data: messageRows, error: messagesError } = await client
+      .from("messages")
+      .select("role,content,created_at")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true, nullsFirst: false })
+      .limit(limit);
+    if (messagesError) {
+      throw messagesError;
+    }
+    return (Array.isArray(messageRows) ? messageRows : [])
       .map((row) => {
-        const role = coerceRole(row);
-        const text = extractBody(row);
-        const ts = parseTimestamp(row) ?? 0;
-        if (!role || !text) return null;
-        return { role, text, ts };
+        const role = row?.role === "assistant" ? "assistant" : row?.role === "user" ? "user" : null;
+        const content = typeof row?.content === "string" ? row.content.trim() : "";
+        if (!role || !content) {
+          return null;
+        }
+        return { role, content } as ChatCompletionMessageParam;
       })
-      .filter((value): value is { role: Role; text: string; ts: number } => Boolean(value));
-    prepared.sort((a, b) => a.ts - b.ts);
-    return prepared
-      .slice(-limit)
-      .map((item): ChatCompletionMessageParam => ({ role: item.role, content: item.text }));
+      .filter((item): item is ChatCompletionMessageParam => Boolean(item));
   } catch (error) {
-    if (isMissingTableError(error)) {
-      disableSupabase("missing_table_exception", error);
-      return [];
-    }
-    console.warn("[SUPABASE] load history exception", error);
+    console.warn("[SUPABASE] loadRecentMessages failed", error);
     return [];
   }
 }
@@ -386,10 +354,16 @@ function extractMessage(payload: any): WebhookMessage | null {
       return null;
     }
     const timestamp = typeof message.timestamp === "string" ? Number(message.timestamp) : undefined;
+    let contactName: string | undefined;
+    const contact = Array.isArray(value?.contacts) ? value.contacts[0] : undefined;
+    if (contact?.profile?.name && typeof contact.profile.name === "string") {
+      contactName = contact.profile.name;
+    }
     return {
       id: message.id,
       from: message.from,
       text: message.text.body,
+      contactName,
       timestamp: Number.isFinite(timestamp) ? Number(timestamp) : undefined,
     };
   } catch (error) {
@@ -436,7 +410,7 @@ async function runChatLoop(
     });
     const choice = completion.choices[0];
     if (!choice) {
-      throw new Error("no_completion_choice");
+      break;
     }
     const message = choice.message;
     if (message?.tool_calls?.length) {
@@ -474,14 +448,26 @@ async function runChatLoop(
             case "compute_trading_signal": {
               const symbol = String(parsed.symbol ?? "").trim();
               const timeframe = String(parsed.timeframe ?? "").trim();
-              let candles = parseCandles(parsed.candles);
+              let candles: ToolCandle[] | undefined = parseCandles(parsed.candles);
+              const normalisedSymbol = normaliseSymbolKey(symbol);
               if (
                 (!candles || candles.length < 50) &&
                 lastOhlc &&
-                normaliseSymbolKey(lastOhlc.symbol) === normaliseSymbolKey(symbol) &&
+                normaliseSymbolKey(lastOhlc.symbol) === normalisedSymbol &&
                 lastOhlc.timeframe === timeframe
               ) {
                 candles = lastOhlc.candles;
+              }
+              if (!candles || candles.length < 50) {
+                const freshOhlc = await get_ohlc(symbol, timeframe, 200);
+                const parsedSnapshot = parseOhlcPayload(freshOhlc);
+                if (parsedSnapshot) {
+                  lastOhlc = parsedSnapshot;
+                  candles = parsedSnapshot.candles;
+                }
+              }
+              if (!candles || candles.length < 50) {
+                throw new ToolExecutionError(name, lang, new Error("missing_candles"));
               }
               content = await compute_trading_signal(symbol, timeframe, candles);
               break;
@@ -501,11 +487,15 @@ async function runChatLoop(
               content = await about_liirat_knowledge(query, lang);
               break;
             }
-            default:
+            default: {
               throw new Error(`unknown_tool:${name}`);
+            }
           }
         } catch (error) {
           console.warn("[TOOLS] execution failed", { name }, error);
+          if (error instanceof ToolExecutionError) {
+            throw error;
+          }
           throw new ToolExecutionError(name, lang, error);
         }
         messages.push({
@@ -521,18 +511,10 @@ async function runChatLoop(
       return content;
     }
     if (choice.finish_reason === "stop") {
-      return content ?? "";
+      break;
     }
   }
-  throw new Error("tool_loop_exceeded");
-}
-
-function toIsoTimestamp(timestamp?: number): string {
-  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
-    const ms = timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000;
-    return new Date(ms).toISOString();
-  }
-  return new Date().toISOString();
+  return "";
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -564,7 +546,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return;
   }
 
-  if (await messageExists(inbound.id)) {
+  if (processedMessageCache.has(inbound.id)) {
     res.status(200).json({ received: true });
     return;
   }
@@ -579,7 +561,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   void (async () => {
     const normalisedText = normaliseDigits(inbound.text.trim());
     const lang = detectLanguage(normalisedText);
-    const isoTs = toIsoTimestamp(inbound.timestamp);
+
     try {
       await markReadAndShowTyping(inbound.id);
     } catch (error) {
@@ -589,35 +571,34 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       });
     }
 
-    await persistMessage({
-      waId: inbound.from,
-      role: "user",
-      text: normalisedText,
-      ts: isoTs,
-      messageId: inbound.id,
-    });
+    const greetingOnly = isGreetingOnly(normalisedText, lang);
 
-    const history = await loadRecentMessages(inbound.from, 10, inbound.id);
-    const messages: ChatCompletionMessageParam[] = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...history,
-      { role: "user", content: normalisedText },
-    ];
-
-    let finalText = FALLBACK_REPLY[lang];
-    try {
-      const reply = await runChatLoop(messages, lang, lang);
-      const trimmed = reply.trim();
-      if (!trimmed) {
-        throw new Error("empty_reply");
+    let finalText = greetingOnly ? greetingResponse(lang) : CLARIFY_FALLBACK[lang];
+    if (!greetingOnly) {
+      try {
+        const history = await loadRecentMessages(inbound.from, 10);
+        const messages: ChatCompletionMessageParam[] = [
+          { role: "system", content: SYSTEM_PROMPT },
+          ...history,
+          { role: "user", content: normalisedText },
+        ];
+        const reply = await runChatLoop(messages, lang, lang);
+        const sanitized = sanitizeAssistantReply(reply, lang);
+        if (sanitized) {
+          finalText = sanitized;
+        }
+      } catch (error) {
+        if (error instanceof ToolExecutionError) {
+          finalText = DATA_UNAVAILABLE[lang];
+        } else {
+          console.error("[WEBHOOK] processing failed", error);
+          finalText = CLARIFY_FALLBACK[lang];
+        }
       }
-      finalText = trimmed;
-    } catch (error) {
-      console.error("[WEBHOOK] processing failed", error);
     }
 
-    const assistantMessageId =
-      globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    finalText = sanitizeAssistantReply(finalText, lang) || CLARIFY_FALLBACK[lang];
+
     try {
       await sendText(inbound.from, finalText);
       console.info("[SEND ok]", {
@@ -630,16 +611,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         error,
         data: (error as { response?: { data?: unknown } })?.response?.data,
       });
+      return;
     }
 
-    await persistMessage({
-      waId: inbound.from,
-      role: "assistant",
-      text: finalText,
-      ts: new Date().toISOString(),
-      messageId: assistantMessageId,
-      replyTo: inbound.id,
-    });
+    try {
+      await saveTurnToSupabase(inbound, finalText);
+    } catch (error) {
+      console.warn("[SUPABASE] disabled", error);
+    }
   })();
 }
-
