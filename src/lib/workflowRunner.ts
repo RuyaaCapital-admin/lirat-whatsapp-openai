@@ -16,6 +16,94 @@ import {
 
 export type ToolResult = any;
 
+function detectLanguage(text: string): "ar" | "en" {
+  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
+}
+
+function formatPriceFromJson(obj: any, lang: "ar" | "en"): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  if (!obj.timeUtc || !obj.symbol || typeof obj.price !== "number") return null;
+  const time = String(obj.timeUtc);
+  const symbol = String(obj.symbol);
+  const price = Number(obj.price);
+  if (lang === "ar") {
+    return [`الوقت (UTC): ${time}`, `الرمز: ${symbol}`, `السعر: ${price}`].join("\n");
+  }
+  return [`time (UTC): ${time}`, `symbol: ${symbol}`, `price: ${price}`].join("\n");
+}
+
+const REASON_MAP = {
+  ar: {
+    bullish_pressure: "ضغط شراء فوق المتوسطات",
+    bearish_pressure: "ضغط بيع تحت المتوسطات",
+    no_clear_bias: "السوق بدون اتجاه واضح حالياً",
+  },
+  en: {
+    bullish_pressure: "Buy pressure above short-term averages",
+    bearish_pressure: "Bearish momentum below resistance",
+    no_clear_bias: "No clear directional bias right now",
+  },
+} as const;
+
+function formatSignalFromJson(obj: any, lang: "ar" | "en"): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  const hasFields = obj.timeUtc && obj.symbol && obj.timeframe && obj.signal;
+  if (!hasFields) return null;
+  const time = String(obj.timeUtc);
+  const symbol = String(obj.symbol);
+  const timeframe = String(obj.timeframe);
+  const decision = String(obj.signal);
+  const reasonKey = String(obj.reason || "no_clear_bias") as keyof typeof REASON_MAP.en;
+  const reasonText = (REASON_MAP as any)[lang]?.[reasonKey] || REASON_MAP.en.no_clear_bias;
+  const entry = obj.entry;
+  const sl = obj.sl;
+  const tp1 = obj.tp1;
+  const tp2 = obj.tp2;
+
+  const lines: string[] = [];
+  lines.push(lang === "ar" ? `الوقت (UTC): ${time}` : `time (UTC): ${time}`);
+  lines.push(lang === "ar" ? `الرمز: ${symbol}` : `symbol: ${symbol}`);
+  lines.push(lang === "ar" ? `الإطار الزمني: ${timeframe}` : `timeframe: ${timeframe}`);
+  lines.push(`SIGNAL: ${decision}`);
+  lines.push((lang === "ar" ? "السبب" : "Reason") + ": " + reasonText);
+  if (String(decision).toUpperCase() !== "NEUTRAL") {
+    lines.push(`Entry: ${entry ?? "-"}`);
+    lines.push(`SL: ${sl ?? "-"}`);
+    lines.push(`TP1: ${tp1 ?? "-"}`);
+    lines.push(`TP2: ${tp2 ?? "-"}`);
+  } else {
+    lines.push(`Entry: -`);
+    lines.push(`SL: -`);
+    lines.push(`TP1: -`);
+    lines.push(`TP2: -`);
+  }
+  return lines.join("\n");
+}
+
+function coerceTextIfJson(raw: string, userText: string): string {
+  const text = (raw || "").trim();
+  if (!text) return text;
+  const first = text[0];
+  if (first !== "{" && first !== "[") return text;
+  try {
+    const parsed = JSON.parse(text);
+    const lang = detectLanguage(userText);
+    if (Array.isArray(parsed)) {
+      // Join any array of strings
+      const maybe = parsed.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("\n");
+      if (maybe.trim()) return maybe.trim();
+      return text;
+    }
+    const price = formatPriceFromJson(parsed, lang);
+    if (price) return price;
+    const signal = formatSignalFromJson(parsed, lang);
+    if (signal) return signal;
+    return text;
+  } catch {
+    return text;
+  }
+}
+
 const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolResult>> = {
   async get_price(args) {
     const symbol = String(args.symbol || "").trim();
@@ -174,7 +262,7 @@ export async function runWorkflowMessage(
         }
       };
       if (Array.isArray(messages)) messages.forEach(collect); else collect(messages);
-      return finalText.trim();
+      return coerceTextIfJson(finalText, userText);
     }
 
     // Poll next state
