@@ -24,8 +24,10 @@ export interface OhlcResult {
   candles: Candle[];
   lastCandleUnix: number;
   lastCandleISO: string;
+  lastTimeISO: string;
+  lastCandleUTCMinute: number;
   ageSeconds: number;
-  ageMinutes?: number;
+  ageMinutes: number;
   isStale: boolean;
   tooOld: boolean;
   provider: OhlcSource;
@@ -195,10 +197,22 @@ type ProviderResult = {
 };
 
 function getProviderOrder(symbol: string): ProviderResult[] {
+  const results: ProviderResult[] = [];
+  const add = (fetcher: ProviderResult["fetcher"]) => {
+    if (!results.some((entry) => entry.fetcher === fetcher)) {
+      results.push({ fetcher });
+    }
+  };
+
   if (isCrypto(symbol)) {
-    return [{ fetcher: fetchFromFmp }];
+    add(fetchFromFmp);
+    add(fetchFromFcs);
+  } else {
+    add(fetchFromFcs);
+    add(fetchFromFmp);
   }
-  return [{ fetcher: fetchFromFcs }, { fetcher: fetchFromFmp }];
+
+  return results;
 }
 
 export interface GetOhlcOptions {
@@ -207,13 +221,13 @@ export interface GetOhlcOptions {
 }
 
 const STALE_THRESHOLDS_MIN: Record<TF, number> = {
-  "1min": 10,
-  "5min": 10,
-  "15min": 30,
-  "30min": 30,
-  "1hour": 30,
-  "4hour": 30,
-  "1day": 180,
+  "1min": 3,
+  "5min": 15,
+  "15min": 60,
+  "30min": 90,
+  "1hour": 120,
+  "4hour": 360,
+  "1day": 1440,
 };
 
 function resolveNowMs(candidate?: number): number {
@@ -239,7 +253,7 @@ function selectCandidate(candidates: OhlcResult[]): OhlcResult | null {
   if (!candidates.length) {
     return null;
   }
-  const sorted = [...candidates].sort((a, b) => (a.ageMinutes ?? 0) - (b.ageMinutes ?? 0));
+  const sorted = [...candidates].sort((a, b) => a.ageMinutes - b.ageMinutes);
   return sorted[0] ?? null;
 }
 
@@ -258,9 +272,11 @@ function buildResult(
   const lastSec = Math.floor(last.t);
   const lastMs = lastSec * 1000;
   const { ageSeconds, ageMinutes } = computeAge(nowMs, lastMs);
-  const isStale = isStaleFor(timeframe, ageMinutes);
+  const roundedAgeMinutes = Math.max(0, ageMinutes);
+  const isStale = isStaleFor(timeframe, roundedAgeMinutes);
   const tooOld = ageMinutes > 60 * 24 * 14; // 14 days
   const lastIso = new Date(lastMs).toISOString();
+  const lastUtcMinute = Math.floor(lastMs / 60_000) * 60_000;
 
   console.log(
     `[OHLC] provider=${sourceResult.source} symbol=${symbol} rawSymbol=${sourceResult.rawSymbol} tf=${timeframe} bars=${sorted.length} lastTs=${lastSec} lastIso=${lastIso} age=${ageSeconds}s stale=${isStale}`,
@@ -272,8 +288,10 @@ function buildResult(
     candles: sorted,
     lastCandleUnix: lastSec,
     lastCandleISO: lastIso,
+    lastTimeISO: lastIso,
+    lastCandleUTCMinute: lastUtcMinute,
     ageSeconds,
-    ageMinutes,
+    ageMinutes: roundedAgeMinutes,
     isStale,
     tooOld,
     provider: sourceResult.source,
