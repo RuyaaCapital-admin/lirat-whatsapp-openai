@@ -2,14 +2,9 @@
 import { decideUserIntent, type Intent, type ConversationState } from "./intentParser";
 import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from "../tools/agentTools";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
-import { priceFormatter, signalFormatter, newsFormatter, type LanguageCode } from "../utils/formatters";
-import { 
-  createOrGetConversation, 
-  updateConversationMetadata, 
-  logMessage, 
-  getRecentContext,
-  type ConversationLookupResult 
-} from "./supabase";
+import { type LanguageCode } from "../utils/formatters";
+import generateReply from "./generateReply";
+import { getOrCreateConversationByTitle, fetchRecentContext } from "./supabaseLite";
 
 export interface SmartReplyInput {
   phone: string;
@@ -32,57 +27,97 @@ function normalizeText(text: string): string {
 }
 
 async function loadConversationState(phone: string): Promise<ConversationState & { conversationId: string | null }> {
-  const conversation = await createOrGetConversation(phone);
-  if (!conversation) {
+  try {
+    const conversationId = await getOrCreateConversationByTitle(phone);
     return {
-      conversationId: null,
+      conversationId: conversationId ?? null,
       lastSymbol: null,
-      lastTimeframe: null
+      lastTimeframe: null,
     };
+  } catch {
+    return { conversationId: null, lastSymbol: null, lastTimeframe: null };
   }
-  
-  return {
-    conversationId: conversation.conversation_id,
-    lastSymbol: conversation.last_symbol,
-    lastTimeframe: conversation.last_tf
-  };
 }
 
 async function handleSignalIntent(
-  symbol: string, 
-  timeframe: string, 
+  symbol: string,
+  timeframe: string,
   language: LanguageCode,
-  conversationId: string | null
-): Promise<{ reply: string; updates: { last_symbol: string; last_tf: string } }> {
+  conversationId: string | null,
+  lastUserMessage: string
+): Promise<{ reply: string; tool: Record<string, unknown> } | { reply: string; tool: null }> {
   try {
     const ohlc = await get_ohlc(symbol, timeframe, 200);
-    
-    if (!ohlc.ok) {
-      const reply = language === "ar" 
-        ? "ما عندي بيانات حديثة لهالإطار الزمني. جرّب فريم أعلى (5min أو 1hour)."
-        : "No recent data for that timeframe. Try 5min or 1hour.";
-      return { reply, updates: { last_symbol: symbol, last_tf: timeframe } };
+    let tool_result: Record<string, unknown> | null = null;
+    let tool_meta: Record<string, unknown> | null = null;
+    if (ohlc.ok) {
+      const signal = await compute_trading_signal({ ...ohlc, lang: language });
+      const reasonText = language === "ar"
+        ? (signal.reason === "bullish_pressure"
+            ? "ضغط شراء فوق المتوسطات"
+            : signal.reason === "bearish_pressure"
+              ? "ضغط بيع تحت المتوسطات"
+              : "مافي اتجاه واضح")
+        : (signal.reason === "bullish_pressure"
+            ? "Buy pressure above averages"
+            : signal.reason === "bearish_pressure"
+              ? "Bearish pressure below averages"
+              : "No clear bias");
+      const lastLabel = signal.timeUTC;
+      const staleMinutes = Math.max(0, Math.round(signal.ageMinutes));
+      const tooStale = (() => {
+        const tf = String(signal.timeframe);
+        if (tf === "1min" || tf === "5min" || tf === "15min") return staleMinutes > 10;
+        if (tf === "1hour") return staleMinutes > 30;
+        if (tf === "4hour") return staleMinutes > 180;
+        return staleMinutes > 1440;
+      })();
+      const decided = (!ohlc.ok || tooStale) ? "STALE" : signal.decision;
+      tool_result = {
+        type: "signal",
+        symbol: signal.symbol,
+        timeframe: signal.timeframe,
+        decided,
+        entry: signal.levels.entry,
+        sl: signal.levels.sl,
+        tp1: signal.levels.tp1,
+        tp2: signal.levels.tp2,
+        reason_short: decided === "STALE" ? (language === "ar" ? "البيانات متأخرة، ما فيني أعطي توصية مباشرة" : "Data is delayed; no direct trade") : reasonText,
+        last_candle_time_utc: lastLabel,
+        stale_minutes: staleMinutes,
+        too_stale: tooStale,
+      };
+      tool_meta = {
+        symbol: signal.symbol,
+        timeframe: signal.timeframe,
+        time: lastLabel,
+        staleMinutes,
+      };
+    } else {
+      tool_result = { type: "signal", error: "NO_DATA", symbol, timeframe };
+      tool_meta = { symbol, timeframe };
     }
 
-    const signal = await compute_trading_signal({ ...ohlc, lang: language });
-    const reply = signalFormatter({
-      symbol: signal.symbol,
-      timeframe: signal.timeframe,
-      timeUTC: signal.timeUTC,
-      decision: signal.decision,
-      reason: signal.reason,
-      levels: signal.levels,
-      stale: signal.stale,
-      ageMinutes: signal.ageMinutes
-    }, language);
+    const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
+    const reply = await generateReply({
+      language,
+      lastUserMessage,
+      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
+      toolResult: tool_result,
+      toolMeta: tool_meta ?? undefined,
+    });
 
-    return { reply, updates: { last_symbol: symbol, last_tf: timeframe } };
+    return { reply, tool: tool_result };
   } catch (error) {
     console.error("[SIGNAL] Error:", error);
-    const reply = language === "ar" 
-      ? "ما في إشارة جاهزة حالياً."
-      : "No actionable signal right now.";
-    return { reply, updates: { last_symbol: symbol, last_tf: timeframe } };
+    const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
+    const reply = await generateReply({
+      language,
+      lastUserMessage,
+      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
+      toolResult: { type: "signal", error: "ERROR" },
+    });
+    return { reply, tool: null };
   }
 }
 
@@ -90,23 +125,37 @@ async function handlePriceIntent(
   symbol: string,
   timeframe: string,
   language: LanguageCode,
-  conversationId: string | null
-): Promise<{ reply: string; updates: { last_symbol: string; last_tf: string } }> {
+  conversationId: string | null,
+  lastUserMessage: string
+): Promise<{ reply: string; tool: Record<string, unknown> } | { reply: string; tool: null }> {
   try {
     const price = await get_price(symbol, timeframe);
-    const reply = priceFormatter({
+    const tool_result = {
+      type: "price",
       symbol: price.symbol,
       price: price.price,
-      ts_utc: price.ts_utc
-    }, language);
-
-    return { reply, updates: { last_symbol: symbol, last_tf: timeframe } };
+      ts_utc: price.ts_utc,
+    } as const;
+    const tool_meta = { symbol: price.symbol, timeframe };
+    const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
+    const reply = await generateReply({
+      language,
+      lastUserMessage,
+      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
+      toolResult: tool_result as any,
+      toolMeta: tool_meta,
+    });
+    return { reply, tool: tool_result as any };
   } catch (error) {
     console.error("[PRICE] Error:", error);
-    const reply = language === "ar" 
-      ? "البيانات غير متاحة حالياً. جرّب لاحقاً."
-      : "Data not available right now. Try later.";
-    return { reply, updates: { last_symbol: symbol, last_tf: timeframe } };
+    const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
+    const reply = await generateReply({
+      language,
+      lastUserMessage,
+      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
+      toolResult: { type: "price", error: "ERROR" },
+    });
+    return { reply, tool: null };
   }
 }
 
@@ -121,7 +170,7 @@ async function handleMemoryQuestion(
   }
 
   try {
-    const messages = await getRecentContext(conversationId, 4);
+    const messages = await fetchRecentContext(conversationId, 4);
     if (messages.length === 0) {
       return language === "ar" 
         ? "ما في محادثة سابقة."
@@ -160,21 +209,6 @@ async function handleAboutLiirat(
   }
 }
 
-async function handleNewsIntent(
-  query: string,
-  language: LanguageCode
-): Promise<string> {
-  try {
-    const news = await search_web_news(query, language, 3);
-    return newsFormatter(news.rows, language);
-  } catch (error) {
-    console.error("[NEWS] Error:", error);
-    return language === "ar" 
-      ? "لا يوجد أخبار متاحة الآن."
-      : "No news available right now.";
-  }
-}
-
 function handleChatIntent(text: string, language: LanguageCode): string {
   const normalizedText = text.toLowerCase();
   
@@ -210,8 +244,20 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
   const normalizedText = normalizeText(text);
   const language = detectLanguage(normalizedText);
   
-  // Load conversation state
-  const state = await loadConversationState(phone);
+  // Ensure conversation and load state-lite
+  let conversationId: string | null = null;
+  try {
+    conversationId = await getOrCreateConversationByTitle(phone);
+  } catch (e) {
+    console.warn("[SUPABASE] conv ensure failed (ignored)", e);
+  }
+  const state = await (async () => {
+    try {
+      return await loadConversationState(phone);
+    } catch {
+      return { conversationId, lastSymbol: null, lastTimeframe: null };
+    }
+  })();
   
   // Parse intent
   const intent = decideUserIntent(normalizedText, {
@@ -220,81 +266,100 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
   });
   
   let reply = "";
-  let updates: { last_symbol?: string; last_tf?: string } = {};
   
   try {
     switch (intent.kind) {
       case "signal": {
-        const result = await handleSignalIntent(intent.symbol, intent.timeframe, language, state.conversationId);
+        const result = await handleSignalIntent(intent.symbol, intent.timeframe, language, conversationId, normalizedText);
         reply = result.reply;
-        updates = result.updates;
         break;
       }
       
       case "price": {
-        const result = await handlePriceIntent(intent.symbol, intent.timeframe, language, state.conversationId);
+        const result = await handlePriceIntent(intent.symbol, intent.timeframe, language, conversationId, normalizedText);
         reply = result.reply;
-        updates = result.updates;
         break;
       }
       
       case "memory_question": {
-        reply = await handleMemoryQuestion(state.conversationId, language);
+        const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
+        reply = await generateReply({
+          language,
+          lastUserMessage: normalizedText,
+          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+          toolResult: { type: "memory_question" },
+        });
         break;
       }
       
       case "about_liirat": {
-        reply = await handleAboutLiirat(normalizedText, language);
+        try {
+          const text = await handleAboutLiirat(normalizedText, language);
+          const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
+          reply = await generateReply({
+            language,
+            lastUserMessage: normalizedText,
+            conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+            toolResult: { type: "liirat_info", text },
+          });
+        } catch {
+          reply = language === "ar" ? "البيانات غير متاحة حالياً." : "Data not available right now.";
+        }
         break;
       }
       
       case "chat": {
-        reply = handleChatIntent(normalizedText, language);
+        const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
+        reply = await generateReply({
+          language,
+          lastUserMessage: normalizedText,
+          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+          toolResult: null,
+        });
         break;
       }
       
       case "clarify_symbol": {
-        reply = language === "ar" 
-          ? "حدّد الأداة (ذهب، فضة، يورو، بيتكوين...)."
-          : "Which instrument (gold, silver, euro, bitcoin...)?";
+        const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
+        reply = await generateReply({
+          language,
+          lastUserMessage: normalizedText,
+          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+          toolResult: { type: "clarify", missing: "symbol" },
+        });
         break;
       }
       
       case "clarify_timeframe": {
-        reply = language === "ar" 
-          ? "حدّد الإطار الزمني (5min، 1hour، يومي...)."
-          : "Which timeframe (5min, 1hour, daily...)?";
+        const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
+        reply = await generateReply({
+          language,
+          lastUserMessage: normalizedText,
+          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+          toolResult: { type: "clarify", missing: "timeframe", symbol: intent.symbol },
+        });
         break;
       }
       
       case "unsupported": {
-        reply = language === "ar" 
-          ? "ما وصلتني بيانات كافية، وضّح طلبك أكثر لو سمحت."
-          : "I don't have enough data, please clarify what you need.";
+        const context = conversationId ? await fetchRecentContext(conversationId, 4) : [];
+        reply = await generateReply({
+          language,
+          lastUserMessage: normalizedText,
+          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
+          toolResult: null,
+        });
         break;
       }
     }
   } catch (error) {
     console.error("[SMART_REPLY] Error:", error);
-    reply = language === "ar" 
-      ? "البيانات غير متاحة حالياً. جرّب لاحقاً."
-      : "Data not available right now. Try later.";
-  }
-  
-  // Log messages to database
-  if (state.conversationId) {
-    await logMessage(state.conversationId, "user", text);
-    await logMessage(state.conversationId, "assistant", reply);
-    
-    // Update conversation metadata if we have updates
-    if (Object.keys(updates).length > 0) {
-      await updateConversationMetadata(state.conversationId, updates);
-    }
+    reply = language === "ar" ? "البيانات غير متاحة حالياً." : "Data not available right now.";
   }
   
   return {
     replyText: reply,
     language,
-    conversationId: state.conversationId
+    conversationId
   };
 }

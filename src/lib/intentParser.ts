@@ -91,12 +91,12 @@ export function decideUserIntent(
   // Handle price intent
   if (hasPriceIntent) {
     if (!finalSymbol) {
-      return { kind: "clarify_symbol", missing: "symbol", timeframe: "1min" };
+      return { kind: "clarify_symbol", missing: "symbol", timeframe: "5min" };
     }
     return { 
       kind: "price", 
       symbol: finalSymbol, 
-      timeframe: finalTimeframe || "1min" 
+      timeframe: finalTimeframe || "5min" 
     };
   }
 
