@@ -1,7 +1,17 @@
 // src/lib/workflowRunner.ts
 import { openai } from "./openai";
 import { TOOL_SCHEMAS } from "./toolSchemas";
-import { get_price, get_ohlc, compute_trading_signal, type TradingSignal } from "../tools/agentTools";
+import { SYSTEM_PROMPT } from "./systemPrompt";
+import { memory } from "./memory";
+import { createSmartReply } from "./whatsappAgent";
+import {
+  get_price,
+  get_ohlc,
+  compute_trading_signal,
+  type TradingSignal,
+  search_web_news,
+  about_liirat_knowledge,
+} from "../tools/agentTools";
 
 export type ToolResult = any;
 
@@ -35,6 +45,18 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
       stale: Boolean(signal.stale),
     };
   },
+  async search_web_news(args) {
+    const query = String(args.query || "").trim();
+    const lang = String(args.lang || "en");
+    const count = Number.isFinite(args.count) ? Number(args.count) : 3;
+    return await search_web_news(query, lang, count);
+  },
+  async about_liirat_knowledge(args) {
+    const query = String(args.query || "").trim();
+    const lang = typeof args.lang === "string" ? args.lang : undefined;
+    const answer = await about_liirat_knowledge(query, lang);
+    return { answer };
+  },
 };
 
 function serialiseToolResult(result: ToolResult): string {
@@ -57,7 +79,20 @@ export async function runWorkflowMessage(
 ): Promise<string> {
   const wf: any = (openai as any).workflows;
   if (!wf?.runs?.create) {
-    throw new Error("workflows_not_supported");
+    // Fallback to Chat Completions tool-call loop with persistent memory keyed by sessionId
+    const smartReply = createSmartReply({
+      chat: {
+        create: (params) => openai.chat.completions.create(params),
+      },
+      toolSchemas: TOOL_SCHEMAS,
+      toolHandlers,
+      systemPrompt: SYSTEM_PROMPT,
+      memory,
+      model: "gpt-4o",
+      temperature: 0,
+      maxTokens: 700,
+    });
+    return await smartReply({ userId: sessionId, text: userText });
   }
 
   // Send user message into the workflow session
