@@ -32,6 +32,13 @@ async function runOhlcTests() {
     const timestamps = fresh.candles.map((candle: any) => candle.t);
     assert.deepStrictEqual(timestamps, [...timestamps].sort((a, b) => a - b), "candles should be sorted");
 
+    const recent = makeCandle(0.1, 3);
+    axiosInstance.get = async () => ({ data: [recent] });
+    const single = await ohlcModule.get_ohlc("XAUUSD", "1hour", 50);
+    assert.strictEqual(single.candles.length, 1, "single candle response should be allowed");
+    assert.strictEqual(single.lastClosed.t, new Date(recent.date).getTime());
+    assert.strictEqual(single.stale, false, "recent single candle should not be stale");
+
     axiosInstance.get = async () => ({
       data: [makeCandle(10, 1), makeCandle(9, 1.5), makeCandle(8, 2)],
     });

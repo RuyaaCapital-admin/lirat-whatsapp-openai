@@ -209,12 +209,14 @@ export async function computeSignal(symbol: string, timeframe: TF, candles?: Can
       throw new Error("invalid_candles");
     }
     const lastClosed = deriveLastClosed(normalized, timeframe);
+    const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
+    const stale = Date.now() - lastClosed.t > tfMs * 3;
     const data: OhlcResult = {
       candles: normalized,
       lastClosed,
       timeframe,
       source: "PROVIDED" as OhlcSource,
-      stale: false,
+      stale,
     };
     return buildSignalFromSeries(symbol, timeframe, data);
   }

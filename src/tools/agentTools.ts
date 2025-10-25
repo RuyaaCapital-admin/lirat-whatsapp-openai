@@ -30,6 +30,7 @@ export interface TradingSignalResult {
   tp1: number;
   tp2: number;
   time: string;
+  last_closed_utc: string;
   symbol: string;
   timeframe: TF;
   source: string;
@@ -128,12 +129,27 @@ export async function compute_trading_signal(
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  let hydrated = Array.isArray(candles) ? normalizeCandles(candles) : undefined;
-  if (!hydrated || hydrated.length < 50) {
-    const snapshot = await get_ohlc(mappedSymbol, tf, 200);
-    hydrated = snapshot.candles;
+  const providedCandles = Array.isArray(candles) ? normalizeCandles(candles) : [];
+  let payload: Awaited<ReturnType<typeof computeSignal>> | null = null;
+  if (providedCandles.length >= 3) {
+    try {
+      payload = await computeSignal(mappedSymbol, tf, providedCandles);
+    } catch (error) {
+      console.warn("[SIGNAL_PIPELINE] computeSignal fallback", {
+        symbol: mappedSymbol,
+        timeframe: tf,
+        reason: (error as Error)?.message ?? String(error),
+      });
+      payload = null;
+    }
   }
-  const payload = await computeSignal(mappedSymbol, tf, hydrated);
+  if (!payload) {
+    const snapshot = await get_ohlc(mappedSymbol, tf, 200);
+    if (!snapshot.candles.length) {
+      throw new Error("missing_ohlc");
+    }
+    payload = await computeSignal(mappedSymbol, tf, snapshot.candles);
+  }
   return {
     decision: payload.signal,
     entry: payload.entry,
@@ -141,6 +157,7 @@ export async function compute_trading_signal(
     tp1: payload.tp1,
     tp2: payload.tp2,
     time: payload.timeUTC,
+    last_closed_utc: payload.timeUTC,
     symbol: payload.symbol,
     timeframe: payload.interval,
     source: payload.source ?? "FMP",

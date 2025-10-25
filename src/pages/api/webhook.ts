@@ -142,7 +142,7 @@ function buildSignalReply(result: TradingSignalResult): string {
     sl: result.sl,
     tp1: result.tp1,
     tp2: result.tp2,
-    time: result.time,
+    time: result.last_closed_utc || result.time,
     symbol: result.symbol,
   });
 }
@@ -321,14 +321,34 @@ async function smartToolLoop({
       return generateGeneralReply(trimmed, history, language);
     }
     try {
+      console.log("[TOOL] invoke get_ohlc", { symbol, timeframe, limit: 200 });
       const snapshot: OhlcResultPayload = await get_ohlc(symbol, timeframe, 200);
-      if (snapshot.stale) {
+      const candlesRaw = snapshot.candles;
+      const parsedCandles = Array.isArray(candlesRaw)
+        ? candlesRaw
+        : typeof candlesRaw === "string"
+          ? (() => {
+              try {
+                const parsed = JSON.parse(candlesRaw);
+                return Array.isArray(parsed) ? parsed : [];
+              } catch (error) {
+                console.warn("[TOOL] parse candles error", error);
+                return [] as unknown[];
+              }
+            })()
+          : [];
+      const candles = Array.isArray(parsedCandles) ? parsedCandles : [];
+      if (!candles.length) {
         return dataUnavailable(language);
       }
-      const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, snapshot.candles);
-      if (signal.stale) {
-        return dataUnavailable(language);
-      }
+      const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, candles);
+      console.log("[SIGNAL_PIPELINE]", {
+        symbol,
+        timeframe,
+        candles: candles.length,
+        decision: signal.decision,
+        stale: signal.stale,
+      });
       return buildSignalReply(signal);
     } catch (error) {
       const code = typeof (error as any)?.code === "string" ? (error as any).code : "";

@@ -4,6 +4,7 @@ process.env.WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN || "test-token";
 
 import "./formatters.test";
 import "./ohlc.test";
+import "./trading-signal.test";
 
 (async () => {
   try {
