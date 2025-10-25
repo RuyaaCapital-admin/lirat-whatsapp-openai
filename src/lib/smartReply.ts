@@ -387,7 +387,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const price = await tools.get_price(symbol, timeframe);
                 console.log("[TOOL] get_price -> ok", { symbol: price.symbol });
                 const formatted = priceFormatter(
-                  { symbol: price.symbol, price: price.price, timeISO: price.timeISO },
+                  { symbol: price.symbol, price: price.price, ts_utc: price.ts_utc },
                   language,
                 );
                 messages.push({ role: "tool", tool_call_id: call.id, content: formatted });

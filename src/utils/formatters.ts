@@ -52,15 +52,15 @@ function formatPriceValue(value: number): string {
 export interface PriceFormatterInput {
   symbol: string;
   price: number;
-  timeISO: string;
+  ts_utc: string;
 }
 
 export function priceFormatter(input: PriceFormatterInput, lang: LanguageCode): string {
   assert(input.symbol, "symbol required");
-  const label = formatUtcLabel(input.timeISO);
+  const label = formatUtcLabel(input.ts_utc);
   const price = formatPriceValue(input.price);
   if (lang === "ar") {
-    return [`الوقت (UTC): ${label}`, `الرمز: ${input.symbol}`, `السعر: ${price}`].join("\n");
+    return [`time (UTC): ${label}`, `symbol: ${input.symbol}`, `price: ${price}`].join("\n");
   }
   return [`time (UTC): ${label}`, `symbol: ${input.symbol}`, `price: ${price}`].join("\n");
 }
@@ -103,40 +103,33 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
   const reasonText = REASON_MAP[lang][input.reason] ?? REASON_MAP.en.no_clear_bias;
   const staleSuffix = input.stale
     ? lang === "ar"
-      ? " (إشارة قديمة، للمراجعة فقط)"
-      : " (stale review only)"
+      ? " (قديمة، راجع بنفسك)"
+      : " (stale, verify manually)"
     : "";
-  const lines: string[] = [];
-  if (input.stale) {
-    lines.push(
-      lang === "ar"
-        ? `تنبيه: البيانات متأخرة بحوالي ${age} دقيقة`
-        : `Warning: data is delayed by ~${age} minutes`,
-    );
+  
+  if (input.decision === "NEUTRAL") {
+    const freshStale = input.stale ? (lang === "ar" ? "stale" : "stale") : (lang === "ar" ? "fresh" : "fresh");
+    return [
+      `time (UTC): ${input.timeUTC}`,
+      `symbol: ${input.symbol}`,
+      `SIGNAL: NEUTRAL`,
+      `Reason: ${reasonText}`,
+      `Data age: ${age}m ${freshStale}`
+    ].join("\n");
   }
-  if (lang === "ar") {
-    lines.push(`الوقت (UTC): ${input.timeUTC}`);
-    lines.push(`الرمز: ${input.symbol}`);
-    lines.push(`الإطار الزمني: ${input.timeframe}`);
-    lines.push(`الإشارة: ${input.decision}`);
-    lines.push(`السبب: ${reasonText}${staleSuffix}`);
-    lines.push("مناطق الدخول/الإدارة:");
-    lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
-    lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
-    lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
-    lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
-    return lines.join("\n");
-  }
-  lines.push(`time (UTC): ${input.timeUTC}`);
-  lines.push(`symbol: ${input.symbol}`);
-  lines.push(`timeframe: ${input.timeframe}`);
-  lines.push(`SIGNAL: ${input.decision}`);
-  lines.push(`Reason: ${reasonText}${staleSuffix}`);
-  lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
-  lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
-  lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
-  lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
-  return lines.join("\n");
+  
+  const freshStale = input.stale ? (lang === "ar" ? "stale" : "stale") : (lang === "ar" ? "fresh" : "fresh");
+  return [
+    `time (UTC): ${input.timeUTC}`,
+    `symbol: ${input.symbol}`,
+    `SIGNAL: ${input.decision}`,
+    `Reason: ${reasonText}${staleSuffix}`,
+    `Data age: ${age}m ${freshStale}`,
+    `Entry: ${formatLevel(input.levels.entry, input.symbol)}`,
+    `SL: ${formatLevel(input.levels.sl, input.symbol)}`,
+    `TP1: ${formatLevel(input.levels.tp1, input.symbol)}`,
+    `TP2: ${formatLevel(input.levels.tp2, input.symbol)}`
+  ].join("\n");
 }
 
 export interface NewsItem {
