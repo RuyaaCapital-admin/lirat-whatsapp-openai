@@ -56,7 +56,10 @@ export async function fetchRecentContext(conversationId: string, limit = 10): Pr
       .limit(limit);
     if (error) return [];
     return (data || [])
-      .map((r: any) => ({ role: r.role === "assistant" ? "assistant" : "user", content: String(r.content ?? "") }))
+      .map<ConversationEntry>((r: any) => ({
+        role: (r.role === "assistant" ? "assistant" : "user") as ConversationRole,
+        content: String(r.content ?? ""),
+      }))
       .filter((r) => r.content.trim().length > 0);
   } catch (e) {
     console.warn("[SUPABASE] fetch context failed", e);
