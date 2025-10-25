@@ -106,7 +106,10 @@ function deriveLastClosed(candles: Candle[], timeframe: TF): { lastClosed: Candl
   if (!last || !isFiniteCandle(last)) {
     throw new OhlcError("INVALID_CANDLES", timeframe);
   }
-  const candidate = now - last.t < tfMs * 0.5 ? prev : last;
+  let candidate = last;
+  if (now - last.t < tfMs * 0.5) {
+    candidate = prev ?? last;
+  }
   if (!candidate || !isFiniteCandle(candidate)) {
     throw new OhlcError("NO_CLOSED_BAR", timeframe);
   }
