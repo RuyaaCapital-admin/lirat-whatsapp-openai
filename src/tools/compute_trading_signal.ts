@@ -1,4 +1,4 @@
-import { TF } from "./normalize";
+import { TF, timeframeToLabel } from "./normalize";
 import { get_ohlc, Candle, OhlcResult, OhlcSource } from "./ohlc";
 
 export interface SignalPayload extends Record<string, unknown> {
@@ -222,11 +222,12 @@ export async function computeSignal(symbol: string, timeframe: TF, candles?: Can
 }
 
 export function formatSignalPayload(signal: SignalPayload): string {
+  const intervalLabel = timeframeToLabel(signal.interval);
   if (signal.signal === "NEUTRAL") {
-    return "- SIGNAL: NEUTRAL";
+    return `- SIGNAL: NEUTRAL — Time: ${signal.timeUTC} (${intervalLabel}) — Symbol: ${signal.symbol}`;
   }
   return [
-    `- Time: ${signal.timeUTC}`,
+    `- Time: ${signal.timeUTC} (${intervalLabel})`,
     `- Symbol: ${signal.symbol}`,
     `- SIGNAL: ${signal.signal}`,
     `- Entry: ${signal.entry}`,

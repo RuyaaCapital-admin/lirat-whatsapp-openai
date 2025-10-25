@@ -80,12 +80,42 @@ export async function runWebhookHandlerTests() {
     await testHappyPath();
     await testSmartReplyFailure();
     await testEmptyTextStillCallsAssistant();
+    await testInteractiveButton();
     console.log("webhook handler tests passed");
   } finally {
     process.env.WHATSAPP_PHONE_NUMBER_ID = originalEnv.WHATSAPP_PHONE_NUMBER_ID;
     process.env.WHATSAPP_TOKEN = originalEnv.WHATSAPP_TOKEN;
     process.env.WHATSAPP_VERSION = originalEnv.WHATSAPP_VERSION;
   }
+}
+
+function makeInteractivePayload(title: string, id = "wamid-int", from = "97155"): any {
+  return {
+    entry: [
+      {
+        id: "entry-1",
+        changes: [
+          {
+            value: {
+              contacts: [{ profile: { name: "User" }, wa_id: from }],
+              messages: [
+                {
+                  id,
+                  from,
+                  timestamp: `${Math.floor(Date.now() / 1000)}`,
+                  type: "interactive",
+                  interactive: {
+                    type: "button_reply",
+                    button_reply: { id: "btn-1", title },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 async function testHappyPath() {
@@ -196,6 +226,31 @@ async function testEmptyTextStillCallsAssistant() {
   await handler(req, res as NextApiResponse);
 
   assert.strictEqual(calls, 1, "smartReply should be called even when text is empty");
+}
+
+async function testInteractiveButton() {
+  if (!createWebhookHandlerRef) throw new Error("handler factory not initialised");
+  let capturedText: string | null = null;
+  const handler = createWebhookHandlerRef({
+    smartReply: async ({ text }): Promise<SmartReplyOutput> => {
+      capturedText = text;
+      return { replyText: "ok", language: "ar", conversationId: "conv-int" };
+    },
+    markReadAndShowTyping: async () => {},
+    sendText: async () => {},
+    getOrCreateConversation: async () => "conv-int",
+    saveMessage: async () => {},
+  });
+
+  const req = {
+    method: "POST",
+    body: makeInteractivePayload("زر الموافقة"),
+  } as NextApiRequest;
+  const res = createRes();
+
+  await handler(req, res as NextApiResponse);
+
+  assert.strictEqual(capturedText, "زر الموافقة");
 }
 
 function pickLanguage(text: string | undefined): LanguageCode {

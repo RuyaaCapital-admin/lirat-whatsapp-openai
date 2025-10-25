@@ -31,12 +31,15 @@ async function testBuySignal() {
   const { compute_trading_signal } = await toolsPromise;
   const candles = buildTrendCandles("buy");
   const text = await compute_trading_signal("XAUUSD", "1hour", candles);
-  if (text.trim() === "- SIGNAL: NEUTRAL") {
-    assert.strictEqual(text.trim(), "- SIGNAL: NEUTRAL");
+  if (text.startsWith("- SIGNAL: NEUTRAL")) {
+    assert.ok(/- SIGNAL: NEUTRAL — Time:/.test(text), "neutral format should include time block");
+    assert.ok(text.includes("Symbol: XAUUSD"), "neutral format should include symbol");
   } else {
     const lines = text.split("\n");
     assert.ok(text.includes("- Symbol: XAUUSD"), "symbol should be normalized");
     assert.strictEqual(lines.length, 7, "non-neutral signals should have 7 lines");
+    assert.ok(lines[0].includes("Time:"), "time line missing");
+    assert.ok(lines[0].includes("("), "time line should include interval");
     assert.ok(lines[2].includes("SIGNAL:"), "signal line missing");
   }
 }
@@ -83,7 +86,10 @@ async function testNeutralFormatting() {
     symbol: "BTCUSDT",
     interval: "1hour",
   });
-  assert.strictEqual(neutral, "- SIGNAL: NEUTRAL");
+  assert.strictEqual(
+    neutral,
+    "- SIGNAL: NEUTRAL — Time: 2024-01-01 00:00 UTC (1hour) — Symbol: BTCUSDT",
+  );
 }
 
 async function testBuyFormatting() {
@@ -101,7 +107,7 @@ async function testBuyFormatting() {
   const lines = text.split("\n");
   assert.strictEqual(lines.length, 7, "formatted BUY payload should have 7 lines");
   assert.deepStrictEqual(lines, [
-    "- Time: 2024-01-01 00:00 UTC",
+    "- Time: 2024-01-01 00:00 UTC (1hour)",
     "- Symbol: XAUUSD",
     "- SIGNAL: BUY",
     "- Entry: 10",
