@@ -18,12 +18,12 @@ import {
   detectLanguage,
   normaliseDigits,
   normaliseSymbolKey,
-  parseCandles,
   parseOhlcPayload,
   type LanguageCode,
   type ToolCandle,
 } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
+import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
 
@@ -33,8 +33,8 @@ General conduct:
 - Keep answers short and factual.
 - Use the conversation history to answer follow-ups ("شو يعني؟", "متأكد؟", "اي ساعة بتوقيت دبي؟") in context.
 - Only mention your identity if the user explicitly asks who/what you are. Answer exactly "مساعد ليرات" in Arabic or "I'm Liirat assistant." in English.
-- If a tool call fails or you truly can't answer, reply with one brief helpful sentence (in the correct language), not "Out of scope." and not "data unavailable" automatically. Example Arabic fallback: "ما وصلتني بيانات كافية، وضّح طلبك أكثر لو سمحت." Example English fallback: "I don't have enough data yet — can you clarify what you need?"
-- For trading signals: ALWAYS call get_ohlc first, then compute_trading_signal with those candles. Format the reply exactly in the 7-line structure described. Never invent prices.
+- If a tool call fails or you truly can't answer, reply with one brief helpful sentence (in the correct language), not "Out of scope." and not "data unavailable" automatically. Example Arabic fallback: "ما وصلتني بيانات كافية، وضّح طلبك أكثر لو سمحت." Example English fallback: "I don't have enough data, please clarify what you need."
+- For trading signals: ALWAYS call get_ohlc first, then compute_trading_signal with those candles. If the outcome is NEUTRAL reply exactly "- SIGNAL: NEUTRAL — Time: {timeUTC} ({interval}) — Symbol: {symbol}". Otherwise reply with the 7-line block (Time with interval, Symbol, SIGNAL, Entry, SL, TP1 with R 1.0, TP2 with R 2.0). Never invent prices.
 - For price questions: call get_price and return ONLY that price text, no greeting.
 - For economic news / market news: call search_web_news(query, lang, count=3). Return 3 bullet lines: "YYYY-MM-DD — Source — Title — impact".
 - For Liirat company / platform / support questions: call about_liirat_knowledge(query, lang) and return that text directly.
@@ -148,12 +148,17 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
 
 const FALLBACK_NEED_DATA: Record<LanguageCode, string> = {
   ar: "ما وصلتني بيانات كافية، وضّح طلبك أكثر لو سمحت.",
-  en: "I don't have enough data yet — can you clarify what you need?",
+  en: "I don't have enough data, please clarify what you need.",
 };
 
 const FALLBACK_EMPTY: Record<LanguageCode, string> = {
   ar: "ما الرسالة؟",
   en: "How can I help?",
+};
+
+const GREETING: Record<LanguageCode, string> = {
+  ar: "أنا مساعد ليرات، كيف فيني ساعدك؟",
+  en: "I'm Liirat assistant. How can I help you?",
 };
 
 export interface SmartReplyDeps {
@@ -216,6 +221,21 @@ function sanitiseArgs(args: Record<string, unknown>) {
   return clone;
 }
 
+function applyGreeting(text: string, shouldGreet: boolean, language: LanguageCode): string {
+  const base = typeof text === "string" ? text.trim() : "";
+  if (!shouldGreet) {
+    return base || text || "";
+  }
+  const greeting = GREETING[language] ?? GREETING.en;
+  if (!base) {
+    return greeting;
+  }
+  if (base.startsWith(greeting)) {
+    return base;
+  }
+  return `${greeting}\n${base}`;
+}
+
 interface ToolContext {
   lastCandlesBySymbolTimeframe: Record<string, ToolCandle[]>;
 }
@@ -241,16 +261,32 @@ export function createSmartReply(deps: SmartReplyDeps) {
     const normalisedText = normaliseDigits(text ?? "").trim();
     const language = detectLanguage(normalisedText);
 
-    const history = await supabase.loadHistory(phone, 10);
+    const history = await supabase.loadHistory(phone, 20);
+    const isNewConversation = !history.conversationId || history.messages.length === 0;
+    let conversationId: string | null = history.conversationId ?? null;
 
+    const ensureConversation = async () => {
+      if (conversationId) {
+        return conversationId;
+      }
+      conversationId = await supabase.ensureConversation(phone, contactName);
+      return conversationId;
+    };
+
+    const userMessageContent = normalisedText || " ";
     const baseMessages: ChatCompletionMessageParam[] = [
       { role: "system", content: SYSTEM_PROMPT },
       ...history.messages.map((msg) => ({ role: msg.role, content: msg.content })),
-      { role: "user", content: normalisedText || " " },
+      { role: "user", content: userMessageContent },
     ];
 
     const toolContext: ToolContext = { lastCandlesBySymbolTimeframe: {} };
     const messages = [...baseMessages];
+
+    const respondWithFallback = async (fallback: string, greet: boolean) => {
+      const ensured = await ensureConversation();
+      return { replyText: applyGreeting(fallback, greet, language), language, conversationId: ensured };
+    };
 
     try {
       for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -295,17 +331,17 @@ export function createSmartReply(deps: SmartReplyDeps) {
             console.log("[TOOL]", toolName, sanitiseArgs(parsed));
 
             try {
-              let content = "";
               if (toolName === "get_price") {
                 const symbol = String(parsed.symbol ?? "").trim();
                 const timeframe = typeof parsed.timeframe === "string" ? parsed.timeframe : undefined;
-                content = await tools.get_price(symbol, timeframe);
+                const content = await tools.get_price(symbol, timeframe);
                 console.log("[TOOL] get_price -> ok");
+                messages.push({ role: "tool", tool_call_id: call.id, content });
               } else if (toolName === "get_ohlc") {
-                const symbol = String(parsed.symbol ?? "").trim();
-                const timeframe = String(parsed.timeframe ?? "").trim();
-                const limit = typeof parsed.limit === "number" ? parsed.limit : undefined;
-                content = await tools.get_ohlc(symbol, timeframe, limit);
+                const symbol = String(parsed.symbol ?? normalisedText).trim();
+                const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
+                const limit = typeof parsed.limit === "number" ? parsed.limit : 200;
+                const content = await tools.get_ohlc(symbol, timeframeInput, limit);
                 const snapshot = parseOhlcPayload(content);
                 if (snapshot) {
                   const key = keyFor(snapshot.symbol, snapshot.timeframe);
@@ -316,70 +352,57 @@ export function createSmartReply(deps: SmartReplyDeps) {
                     candles: snapshot.candles.length,
                   });
                 } else {
-                  console.log("[TOOL] get_ohlc -> ok", { symbol, timeframe, candles: 0 });
+                  console.log("[TOOL] get_ohlc -> ok", { symbol, timeframe: timeframeInput, candles: 0 });
                 }
+                messages.push({ role: "tool", tool_call_id: call.id, content });
               } else if (toolName === "compute_trading_signal") {
-                const symbol = String(parsed.symbol ?? "").trim();
-                const timeframe = String(parsed.timeframe ?? "").trim();
-                let candles = parseCandles((parsed as any).candles) ?? [];
-                if (!candles.length) {
-                  const cached = toolContext.lastCandlesBySymbolTimeframe[keyFor(symbol, timeframe)];
-                  if (cached?.length) {
-                    candles = cached;
-                  }
+                const symbolInput = String(parsed.symbol ?? normalisedText).trim();
+                const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
+                const resolvedSymbol = hardMapSymbol(symbolInput);
+                if (!resolvedSymbol) {
+                  throw new Error("invalid_symbol");
                 }
-                if (!candles.length) {
-                  const fallbackOhlc = await tools.get_ohlc(symbol, timeframe, 200);
-                  const parsedSnapshot = parseOhlcPayload(fallbackOhlc);
-                  if (parsedSnapshot) {
-                    candles = parsedSnapshot.candles;
-                    toolContext.lastCandlesBySymbolTimeframe[keyFor(parsedSnapshot.symbol, parsedSnapshot.timeframe)] =
-                      parsedSnapshot.candles;
-                  }
+                const resolvedTimeframe = toTimeframe(timeframeInput);
+                const ohlcRaw = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
+                const snapshot = parseOhlcPayload(ohlcRaw);
+                if (!snapshot) {
+                  throw new Error("missing_ohlc");
                 }
-                if (!candles.length) {
-                  throw new Error("missing_candles");
+                const key = keyFor(snapshot.symbol, snapshot.timeframe);
+                toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
+                const signalText = await tools.compute_trading_signal(snapshot.symbol, snapshot.timeframe, snapshot.candles);
+                const trimmed = signalText.trim();
+                if (!trimmed) {
+                  throw new Error("empty_signal");
                 }
-                content = await tools.compute_trading_signal(symbol, timeframe, candles);
-                const decisionMatch = content.match(/SIGNAL:\s*(BUY|SELL|NEUTRAL)/i);
                 console.log("[TOOL] compute_trading_signal -> ok", {
-                  symbol,
-                  timeframe,
-                  decision: decisionMatch ? decisionMatch[1].toUpperCase() : "unknown",
+                  symbol: snapshot.symbol,
+                  timeframe: snapshot.timeframe,
                 });
+                const ensured = await ensureConversation();
+                const replyText = applyGreeting(trimmed, isNewConversation, language);
+                return { replyText, language, conversationId: ensured };
               } else if (toolName === "search_web_news") {
-                const query = String(parsed.query ?? "").trim();
-                const count = typeof parsed.count === "number" ? parsed.count : 3;
-                const requestedLang =
-                  typeof parsed.lang === "string" && (parsed.lang === "ar" || parsed.lang === "en")
-                    ? (parsed.lang as LanguageCode)
-                    : language;
-                content = await tools.search_web_news(query, requestedLang, count);
-                console.log("[TOOL] search_web_news -> ok", {
-                  query,
-                  count,
-                  lang: requestedLang,
-                });
+                const query = String(parsed.query ?? normalisedText).trim();
+                const contentRaw = await tools.search_web_news(query, language === "ar" ? "ar" : "en", 3);
+                const lines = contentRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+                if (lines.length < 3) {
+                  throw new Error("insufficient_news");
+                }
+                const content = lines.slice(0, 3).join("\n");
+                console.log("[TOOL] search_web_news -> ok", { query, lang: language === "ar" ? "ar" : "en" });
+                messages.push({ role: "tool", tool_call_id: call.id, content });
               } else if (toolName === "about_liirat_knowledge") {
-                const query = String(parsed.query ?? "").trim();
-                content = await tools.about_liirat_knowledge(query, language);
+                const query = String(parsed.query ?? normalisedText).trim();
+                const content = await tools.about_liirat_knowledge(query, language);
                 console.log("[TOOL] about_liirat_knowledge -> ok");
+                messages.push({ role: "tool", tool_call_id: call.id, content });
               } else {
                 throw new Error(`unknown_tool:${toolName}`);
               }
-
-              messages.push({
-                role: "tool",
-                tool_call_id: call.id,
-                content,
-              });
             } catch (error) {
               console.error("[TOOL] execution failed", { toolName, error });
-              messages.push({
-                role: "tool",
-                tool_call_id: call.id,
-                content: JSON.stringify({ error: "tool_execution_failed" }),
-              });
+              return respondWithFallback(FALLBACK_NEED_DATA[language], false);
             }
           }
 
@@ -388,9 +411,9 @@ export function createSmartReply(deps: SmartReplyDeps) {
 
         const content = readMessageContent(message).trim();
         if (content) {
-          const conversationId =
-            history.conversationId ?? (await supabase.ensureConversation(phone, contactName));
-          return { replyText: content, language, conversationId };
+          const ensured = await ensureConversation();
+          const replyText = applyGreeting(content, isNewConversation, language);
+          return { replyText, language, conversationId: ensured };
         }
 
         if (choice?.finish_reason === "stop") {
@@ -401,9 +424,9 @@ export function createSmartReply(deps: SmartReplyDeps) {
       console.error("[SMART_REPLY] loop error", error);
     }
 
-    const conversationId = history.conversationId ?? (await supabase.ensureConversation(phone, contactName));
     const fallback = normalisedText ? FALLBACK_NEED_DATA[language] : FALLBACK_EMPTY[language];
-    return { replyText: fallback, language, conversationId };
+    const greet = isNewConversation && fallback !== FALLBACK_NEED_DATA[language];
+    return respondWithFallback(fallback, greet);
   };
 }
 
