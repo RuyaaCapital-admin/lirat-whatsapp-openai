@@ -18,6 +18,7 @@ import {
 import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
+import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../utils/formatters";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
 
@@ -332,7 +333,13 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const timeframe = typeof parsed.timeframe === "string" ? parsed.timeframe : undefined;
                 const price = await tools.get_price(symbol, timeframe);
                 console.log("[TOOL] get_price -> ok", { symbol: price.symbol });
-                messages.push({ role: "tool", tool_call_id: call.id, content: price.formatted });
+                const formatted = formatPriceMsg({
+                  symbol: price.symbol,
+                  price: price.price,
+                  timeUTC: price.timeUTC,
+                  source: price.source,
+                });
+                messages.push({ role: "tool", tool_call_id: call.id, content: formatted });
               } else if (toolName === "get_ohlc") {
                 const symbol = String(parsed.symbol ?? normalisedText).trim();
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
@@ -371,7 +378,15 @@ export function createSmartReply(deps: SmartReplyDeps) {
                   toolContext.lastCandlesBySymbolTimeframe[key] = candles;
                 }
                 const signal = await tools.compute_trading_signal(resolvedSymbol, resolvedTimeframe, candles);
-                const trimmed = signal.formatted.trim();
+                const trimmed = formatSignalMsg({
+                  decision: signal.decision,
+                  entry: signal.entry,
+                  sl: signal.sl,
+                  tp1: signal.tp1,
+                  tp2: signal.tp2,
+                  time: signal.time,
+                  symbol: signal.symbol,
+                }).trim();
                 if (!trimmed) {
                   throw new Error("empty_signal");
                 }
@@ -385,7 +400,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
               } else if (toolName === "search_web_news") {
                 const query = String(parsed.query ?? normalisedText).trim();
                 const news = await tools.search_web_news(query, language === "ar" ? "ar" : "en", 3);
-                const formatted = news.formatted.trim();
+                const formatted = formatNewsMsg(news.rows).trim();
                 if (!formatted) {
                   throw new Error("insufficient_news");
                 }

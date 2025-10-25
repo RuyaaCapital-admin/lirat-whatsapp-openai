@@ -46,17 +46,21 @@ function formatNumber(value: number | null | undefined): number {
   return numeric;
 }
 
+function formatPriceValue(value: number): string {
+  return formatNumber(value).toFixed(2);
+}
+
 export function formatPriceMsg({ symbol, price, timeUTC, source }: PriceMessageInput): string {
   assert(symbol && typeof symbol === "string", "symbol required");
   assert(Number.isFinite(price), "price must be finite");
   const label = formatUtcLabel(timeUTC);
-  const rounded = formatNumber(price);
-  const sourceLabel = typeof source === "string" && source.trim() ? source.trim() : "FCS latest";
+  const rounded = formatPriceValue(price);
+  const sourceLabel = typeof source === "string" && source.trim() ? source.trim() : "FCS";
   return [
-    `Time (UTC): ${label}`,
-    `Symbol: ${symbol}`,
-    `Price: ${rounded}`,
-    `Source: ${sourceLabel}`,
+    `time (UTC): ${label}`,
+    `symbol: ${symbol}`,
+    `price: ${rounded}`,
+    `source: ${sourceLabel}`,
   ].join("\n");
 }
 
@@ -70,20 +74,37 @@ export interface SignalMessageInput {
   symbol: string;
 }
 
+function formatRiskRatio(entry: number, target: number, stop: number): string {
+  const risk = Math.abs(entry - stop);
+  const reward = Math.abs(entry - target);
+  if (!Number.isFinite(risk) || risk === 0 || !Number.isFinite(reward)) {
+    return "";
+  }
+  const ratio = reward / risk;
+  return `(R ${ratio.toFixed(1)})`;
+}
+
 export function formatSignalMsg(input: SignalMessageInput): string {
+  if (input.decision === "NEUTRAL") {
+    return "SIGNAL: NEUTRAL";
+  }
   const label = formatUtcLabel(input.time);
-  const entry = formatNumber(input.entry);
-  const sl = formatNumber(input.sl);
-  const tp1 = formatNumber(input.tp1);
-  const tp2 = formatNumber(input.tp2);
+  const entry = formatNumber(input.entry).toFixed(2);
+  const sl = formatNumber(input.sl).toFixed(2);
+  const tp1 = formatNumber(input.tp1).toFixed(2);
+  const tp2 = formatNumber(input.tp2).toFixed(2);
+  const tp1Ratio = formatRiskRatio(Number(input.entry), Number(input.tp1), Number(input.sl));
+  const tp2Ratio = formatRiskRatio(Number(input.entry), Number(input.tp2), Number(input.sl));
+  const tp1Line = tp1Ratio ? `TP1: ${tp1} ${tp1Ratio}` : `TP1: ${tp1}`;
+  const tp2Line = tp2Ratio ? `TP2: ${tp2} ${tp2Ratio}` : `TP2: ${tp2}`;
   return [
-    `Time (UTC): ${label}`,
-    `Symbol: ${input.symbol}`,
+    `time (UTC): ${label}`,
+    `symbol: ${input.symbol}`,
     `SIGNAL: ${input.decision}`,
-    `Entry: ${entry}`,
+    `entry: ${entry}`,
     `SL: ${sl}`,
-    `TP1: ${tp1}`,
-    `TP2: ${tp2}`,
+    tp1Line,
+    tp2Line,
   ].join("\n");
 }
 
@@ -93,14 +114,17 @@ export interface NewsRow {
   title: string;
 }
 
-export function formatNewsMsg(rows: NewsRow[], bulletPrefix = "* "): string {
+export function formatNewsMsg(rows: NewsRow[]): string {
   return rows
     .filter((row) => row && row.title && row.source)
     .slice(0, 3)
     .map((row) => {
       const dateLabel = formatUtcLabel(row.date);
       const datePart = dateLabel.slice(0, 10);
-      return `${bulletPrefix}${datePart} — ${row.source} — ${row.title}`;
+      const impact = typeof (row as any).impact === "string" && (row as any).impact.trim()
+        ? ` — ${(row as any).impact.trim()}`
+        : "";
+      return `${datePart} — ${row.source} — ${row.title}${impact}`;
     })
     .join("\n");
 }

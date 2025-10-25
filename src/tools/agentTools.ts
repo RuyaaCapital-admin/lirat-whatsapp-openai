@@ -1,6 +1,6 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
-import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../utils/formatters";
+import { formatNewsMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
 import { Candle, get_ohlc as loadOhlc } from "./ohlc";
 import { computeSignal } from "./compute_trading_signal";
@@ -12,7 +12,6 @@ export interface PriceResult {
   price: number;
   timeUTC: string;
   source: string;
-  formatted: string;
 }
 
 export interface OhlcResultPayload {
@@ -31,7 +30,7 @@ export interface TradingSignalResult {
   time: string;
   symbol: string;
   interval: TF;
-  formatted: string;
+  stale: boolean;
 }
 
 export interface NewsRow {
@@ -91,9 +90,8 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   void timeframe;
   const price = await getCurrentPrice(mappedSymbol);
   const timeUTC = toUtcIso(price.time ?? null);
-  const source = price.source ?? "FCS latest";
-  const formatted = formatPriceMsg({ symbol: mappedSymbol, price: price.price, timeUTC, source });
-  return { symbol: mappedSymbol, price: price.price, timeUTC, source, formatted };
+  const source = price.source ?? "FCS";
+  return { symbol: mappedSymbol, price: price.price, timeUTC, source };
 }
 
 export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<OhlcResultPayload> {
@@ -126,15 +124,6 @@ export async function compute_trading_signal(
     hydrated = snapshot.candles;
   }
   const payload = await computeSignal(mappedSymbol, tf, hydrated);
-  const formatted = formatSignalMsg({
-    decision: payload.signal,
-    entry: payload.entry,
-    sl: payload.sl,
-    tp1: payload.tp1,
-    tp2: payload.tp2,
-    time: payload.timeUTC,
-    symbol: payload.symbol,
-  });
   return {
     decision: payload.signal,
     entry: payload.entry,
@@ -144,7 +133,7 @@ export async function compute_trading_signal(
     time: payload.timeUTC,
     symbol: payload.symbol,
     interval: payload.interval,
-    formatted,
+    stale: false,
   };
 }
 
@@ -210,6 +199,6 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
     source: item.source ?? "",
     title: item.title ?? "",
   }));
-  const formatted = formatNewsMsg(rows, "* ");
+  const formatted = formatNewsMsg(rows);
   return { rows, formatted };
 }
