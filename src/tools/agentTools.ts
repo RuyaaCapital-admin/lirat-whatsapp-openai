@@ -23,18 +23,29 @@ export interface OhlcResultPayload {
   stale: boolean;
 }
 
+export interface TradingSignalIndicators {
+  rsi: number;
+  ema20: number;
+  ema50: number;
+  macd: number;
+  macdSignal: number;
+  macdHist: number;
+}
+
 export interface TradingSignalResult {
   decision: "BUY" | "SELL" | "NEUTRAL";
   entry: number;
   sl: number;
   tp1: number;
   tp2: number;
-  time: string;
   last_closed_utc: string;
   symbol: string;
   timeframe: TF;
   source: string;
   stale: boolean;
+  time: string;
+  indicators: TradingSignalIndicators;
+  candles_count: number;
 }
 
 export interface NewsRow {
@@ -65,6 +76,11 @@ function toUtcIso(input: number | string | null | undefined): string {
     }
   }
   return new Date().toISOString();
+}
+
+function toUtcLabel(input: number | string | null | undefined): string {
+  const iso = toUtcIso(input);
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
 function normalizeCandles(candles: Candle[]): Candle[] {
@@ -129,39 +145,65 @@ export async function compute_trading_signal(
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  const providedCandles = Array.isArray(candles) ? normalizeCandles(candles) : [];
+  let workingCandles = Array.isArray(candles) ? normalizeCandles(candles) : [];
   let payload: Awaited<ReturnType<typeof computeSignal>> | null = null;
-  if (providedCandles.length >= 3) {
-    try {
-      payload = await computeSignal(mappedSymbol, tf, providedCandles);
-    } catch (error) {
-      console.warn("[SIGNAL_PIPELINE] computeSignal fallback", {
-        symbol: mappedSymbol,
-        timeframe: tf,
-        reason: (error as Error)?.message ?? String(error),
-      });
-      payload = null;
-    }
-  }
-  if (!payload) {
+
+  if (!workingCandles.length) {
     const snapshot = await get_ohlc(mappedSymbol, tf, 200);
-    if (!snapshot.candles.length) {
+    workingCandles = normalizeCandles(snapshot.candles);
+    if (!workingCandles.length) {
       throw new Error("missing_ohlc");
     }
-    payload = await computeSignal(mappedSymbol, tf, snapshot.candles);
   }
+
+  payload = await computeSignal(mappedSymbol, tf, workingCandles);
+
+  let finalPayload = payload;
+  let finalCandles = workingCandles;
+
+  if (finalPayload.stale && finalPayload.interval !== "5min") {
+    const fallbackTf: TF = "5min";
+    console.log("[TOOL] invoke get_ohlc", {
+      symbol: mappedSymbol,
+      timeframe: fallbackTf,
+      limit: 200,
+      fallback: true,
+    });
+    const fallbackSnapshot = await get_ohlc(mappedSymbol, fallbackTf, 200);
+    const fallbackCandles = normalizeCandles(fallbackSnapshot.candles);
+    if (fallbackCandles.length) {
+      const fallbackPayload = await computeSignal(mappedSymbol, fallbackTf, fallbackCandles);
+      finalPayload = fallbackPayload;
+      finalCandles = fallbackCandles;
+    }
+  }
+
+  const indicators = finalPayload.indicators;
+  const roundedIndicators: TradingSignalIndicators = {
+    rsi: Number.isFinite(indicators.rsi) ? Number(indicators.rsi.toFixed(2)) : NaN,
+    ema20: Number.isFinite(indicators.ema20) ? Number(indicators.ema20.toFixed(4)) : NaN,
+    ema50: Number.isFinite(indicators.ema50) ? Number(indicators.ema50.toFixed(4)) : NaN,
+    macd: Number.isFinite(indicators.macd) ? Number(indicators.macd.toFixed(4)) : NaN,
+    macdSignal: Number.isFinite(indicators.macdSignal)
+      ? Number(indicators.macdSignal.toFixed(4))
+      : NaN,
+    macdHist: Number.isFinite(indicators.macdHist) ? Number(indicators.macdHist.toFixed(4)) : NaN,
+  };
+
   return {
-    decision: payload.signal,
-    entry: payload.entry,
-    sl: payload.sl,
-    tp1: payload.tp1,
-    tp2: payload.tp2,
-    time: payload.timeUTC,
-    last_closed_utc: payload.timeUTC,
-    symbol: payload.symbol,
-    timeframe: payload.interval,
-    source: payload.source ?? "FMP",
-    stale: Boolean(payload.stale),
+    decision: finalPayload.signal,
+    entry: finalPayload.entry,
+    sl: finalPayload.sl,
+    tp1: finalPayload.tp1,
+    tp2: finalPayload.tp2,
+    time: finalPayload.timeUTC,
+    last_closed_utc: toUtcLabel(finalPayload.lastClosed.t),
+    symbol: finalPayload.symbol,
+    timeframe: finalPayload.interval,
+    source: finalPayload.source ?? "FMP",
+    stale: Boolean(finalPayload.stale),
+    indicators: roundedIndicators,
+    candles_count: finalCandles.length,
   };
 }
 

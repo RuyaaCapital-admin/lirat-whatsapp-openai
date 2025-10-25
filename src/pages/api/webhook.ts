@@ -22,7 +22,7 @@ import {
   type OhlcResultPayload,
 } from "../../tools/agentTools";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
-import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../../utils/formatters";
+import { formatNewsMsg, formatPriceMsg } from "../../utils/formatters";
 import { hardMapSymbol, toTimeframe } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
@@ -135,16 +135,68 @@ function buildPriceReply(result: PriceResult): string {
   });
 }
 
+function formatPriceLike(value: number): string {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value);
+  if (abs >= 1) {
+    return value.toFixed(2);
+  }
+  if (abs >= 0.1) {
+    return value.toFixed(3);
+  }
+  return value.toFixed(4);
+}
+
+function formatIndicator(value: number, decimals: number): string {
+  if (!Number.isFinite(value)) return "-";
+  return value.toFixed(decimals);
+}
+
+function formatRiskRatio(entry: number, target: number, stop: number): string {
+  const risk = Math.abs(entry - stop);
+  if (!Number.isFinite(risk) || risk === 0) {
+    return "";
+  }
+  const reward = Math.abs(target - entry);
+  if (!Number.isFinite(reward) || reward === 0) {
+    return "";
+  }
+  const ratio = reward / risk;
+  return `(R ${ratio.toFixed(1)})`;
+}
+
 function buildSignalReply(result: TradingSignalResult): string {
-  return formatSignalMsg({
-    decision: result.decision,
-    entry: result.entry,
-    sl: result.sl,
-    tp1: result.tp1,
-    tp2: result.tp2,
-    time: result.last_closed_utc || result.time,
-    symbol: result.symbol,
-  });
+  const timeLine = `Time (UTC): ${result.last_closed_utc} (${result.timeframe})`;
+  const symbolLine = `Symbol: ${result.symbol}`;
+  const signalLine = `SIGNAL: ${result.decision}`;
+  const rsiLabel = formatIndicator(result.indicators.rsi, 1);
+  const ema20Label = formatPriceLike(result.indicators.ema20);
+  const ema50Label = formatPriceLike(result.indicators.ema50);
+  const macdLabel = formatIndicator(result.indicators.macd, 3);
+  if (result.decision === "NEUTRAL") {
+    return [
+      timeLine,
+      symbolLine,
+      signalLine,
+      `Reason: Market is not giving a clear long/short signal (RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel})`,
+    ].join("\n");
+  }
+
+  const entry = Number.isFinite(result.entry) ? result.entry : NaN;
+  const sl = Number.isFinite(result.sl) ? result.sl : entry;
+  const tp1 = Number.isFinite(result.tp1) ? result.tp1 : entry;
+  const tp2 = Number.isFinite(result.tp2) ? result.tp2 : entry;
+
+  const entryLine = `Entry: ${formatPriceLike(entry)}`;
+  const slLine = `SL: ${formatPriceLike(sl)}`;
+  const tp1Ratio = formatRiskRatio(entry, tp1, sl);
+  const tp2Ratio = formatRiskRatio(entry, tp2, sl);
+  const tp1Line = `TP1: ${formatPriceLike(tp1)}${tp1Ratio ? ` ${tp1Ratio}` : ""}`;
+  const tp2Line = `TP2: ${formatPriceLike(tp2)}${tp2Ratio ? ` ${tp2Ratio}` : ""}`;
+
+  const reasonLine = `Reason: RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel}`;
+
+  return [timeLine, symbolLine, signalLine, entryLine, slLine, tp1Line, tp2Line, reasonLine].join("\n");
 }
 
 function buildNewsReply(rows: { date: string; source: string; title: string; impact?: string }[]): string {
@@ -248,6 +300,11 @@ interface SmartToolArgs {
   identityQuestion: boolean;
 }
 
+interface SmartToolResult {
+  text: string;
+  skipGreeting?: boolean;
+}
+
 function normaliseSymbol(symbol: string | null | undefined): string | null {
   if (!symbol) return null;
   const mapped = hardMapSymbol(symbol);
@@ -259,18 +316,19 @@ async function smartToolLoop({
   language,
   history,
   identityQuestion,
-}: SmartToolArgs): Promise<string> {
+}: SmartToolArgs): Promise<SmartToolResult> {
   const trimmed = userText.trim();
   if (!trimmed) {
-    return FALLBACK_EMPTY[language];
+    return { text: FALLBACK_EMPTY[language] };
   }
 
   if (identityQuestion) {
     try {
-      return await about_liirat_knowledge(trimmed, language);
+      const text = await about_liirat_knowledge(trimmed, language);
+      return { text };
     } catch (error) {
       console.warn("[TOOL] about_liirat_knowledge error", error);
-      return language === "ar" ? "مساعد ليرات" : "Liirat assistant.";
+      return { text: language === "ar" ? "مساعد ليرات" : "Liirat assistant." };
     }
   }
 
@@ -278,24 +336,26 @@ async function smartToolLoop({
 
   if (plan.intent === "liirat_info") {
     try {
-      return await about_liirat_knowledge(trimmed, language);
+      const text = await about_liirat_knowledge(trimmed, language);
+      return { text };
     } catch (error) {
       console.warn("[TOOL] about_liirat_knowledge error", error);
-      return dataUnavailable(language);
+      return { text: dataUnavailable(language) };
     }
   }
 
   if (plan.intent === "price") {
     const symbol = normaliseSymbol(plan.symbol ?? trimmed);
     if (!symbol) {
-      return generateGeneralReply(trimmed, history, language);
+      const text = await generateGeneralReply(trimmed, history, language);
+      return { text };
     }
     try {
       const result = await get_price(symbol);
-      return buildPriceReply(result);
+      return { text: buildPriceReply(result) };
     } catch (error) {
       console.warn("[TOOL] get_price error", error);
-      return dataUnavailable(language);
+      return { text: dataUnavailable(language) };
     }
   }
 
@@ -305,12 +365,12 @@ async function smartToolLoop({
     try {
       const result = await search_web_news(query, wantsArabic ? "ar" : "en", 3);
       if (!result.rows.length) {
-        return dataUnavailable(language);
+        return { text: dataUnavailable(language) };
       }
-      return buildNewsReply(result.rows);
+      return { text: buildNewsReply(result.rows) };
     } catch (error) {
       console.warn("[TOOL] search_web_news error", error);
-      return dataUnavailable(language);
+      return { text: dataUnavailable(language) };
     }
   }
 
@@ -318,7 +378,8 @@ async function smartToolLoop({
     const symbol = normaliseSymbol(plan.symbol ?? trimmed);
     const timeframe = toTimeframe(plan.timeframe ?? trimmed);
     if (!symbol) {
-      return generateGeneralReply(trimmed, history, language);
+      const text = await generateGeneralReply(trimmed, history, language);
+      return { text };
     }
     try {
       console.log("[TOOL] invoke get_ohlc", { symbol, timeframe, limit: 200 });
@@ -339,28 +400,34 @@ async function smartToolLoop({
           : [];
       const candles = Array.isArray(parsedCandles) ? parsedCandles : [];
       if (!candles.length) {
-        return dataUnavailable(language);
+        return { text: dataUnavailable(language) };
       }
       const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, candles);
       console.log("[SIGNAL_PIPELINE]", {
-        symbol,
-        timeframe,
-        candles: candles.length,
+        symbol: signal.symbol,
+        timeframe: signal.timeframe,
+        candles: signal.candles_count,
         decision: signal.decision,
         stale: signal.stale,
+        last_closed_utc: signal.last_closed_utc,
       });
-      return buildSignalReply(signal);
+      if (signal.stale) {
+        return { text: dataUnavailable(language) };
+      }
+      const reply = buildSignalReply(signal);
+      return { text: reply, skipGreeting: true };
     } catch (error) {
       const code = typeof (error as any)?.code === "string" ? (error as any).code : "";
       if (code && code.toUpperCase().includes("STALE")) {
-        return dataUnavailable(language);
+        return { text: dataUnavailable(language) };
       }
       console.warn("[TOOL] trading signal error", error);
-      return dataUnavailable(language);
+      return { text: dataUnavailable(language) };
     }
   }
 
-  return generateGeneralReply(trimmed, history, language);
+  const text = await generateGeneralReply(trimmed, history, language);
+  return { text };
 }
 
 function removeLatestUserDuplicate(
@@ -499,14 +566,18 @@ export function createWebhookHandler(deps: WebhookDeps) {
     }
 
     const runSmartToolLoop = deps.smartToolLoop ?? smartToolLoop;
-    const assistantReply = await runSmartToolLoop({
+    const assistantOutcome = await runSmartToolLoop({
       userText: normalisedText || messageBody,
       language,
       history: trimmedHistory,
       identityQuestion,
     });
 
-    const shouldGreet = existingCount === 0 && !identityQuestion && !hasSeenUser(inbound.from);
+    const assistantReply = assistantOutcome.text;
+    const skipGreeting = Boolean(assistantOutcome.skipGreeting);
+
+    const shouldGreet =
+      !skipGreeting && existingCount === 0 && !identityQuestion && !hasSeenUser(inbound.from);
     const replyWithIntro = prependGreeting(assistantReply, preferredLang, shouldGreet);
     const finalReply = replyWithIntro.trim() ? replyWithIntro : dataUnavailable(preferredLang);
 

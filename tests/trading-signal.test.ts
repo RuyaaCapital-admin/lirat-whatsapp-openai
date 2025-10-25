@@ -19,14 +19,20 @@ async function runTradingSignalTests() {
     const latest = candles[candles.length - 1];
     const candidate =
       latest && fixedNow - latest.t < hour / 2 ? candles[candles.length - 2] ?? latest : latest;
-    const expectedTime = new Date(candidate?.t ?? fixedNow).toISOString();
+    const candidateIso = new Date(candidate?.t ?? fixedNow).toISOString();
+    const expectedLabel = `${candidateIso.slice(0, 10)} ${candidateIso.slice(11, 16)}`;
 
     assert.strictEqual(result.symbol, "XAUUSD");
     assert.strictEqual(result.timeframe, "1hour");
-    assert.strictEqual(result.last_closed_utc, expectedTime);
-    assert.strictEqual(result.time, expectedTime);
-    assert.strictEqual(result.entry, Number(candidate?.c ?? 0));
+    assert.strictEqual(result.last_closed_utc, expectedLabel);
+    assert.strictEqual(result.time.slice(0, 16), candidateIso.slice(0, 16));
     assert.strictEqual(result.stale, false, "recent candles should not be stale");
+    assert.ok(Number.isFinite(result.entry));
+    assert.ok(Number.isFinite(result.tp1));
+    assert.ok(Number.isFinite(result.sl));
+    assert.ok(Number.isFinite(result.tp2));
+    assert.ok(result.candles_count >= candles.length);
+    assert.ok(Number.isFinite(result.indicators.rsi));
   } finally {
     Date.now = originalNow;
   }

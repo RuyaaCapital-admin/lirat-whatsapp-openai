@@ -72,7 +72,9 @@ async function runCase({
     getRecentContext: async () => [],
     getConversationMessageCount: async () => (isNew ? 0 : 2),
     smartToolLoop: async ({ identityQuestion, language }) =>
-      identityQuestion ? (language === "ar" ? "مساعد ليرات" : "Liirat assistant.") : assistantReply,
+      identityQuestion
+        ? { text: language === "ar" ? "مساعد ليرات" : "Liirat assistant." }
+        : { text: assistantReply },
   });
   const req = {
     method: "POST",
