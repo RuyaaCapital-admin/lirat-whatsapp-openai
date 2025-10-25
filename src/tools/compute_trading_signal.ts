@@ -1,37 +1,36 @@
-import { TF, TF_SECONDS } from "./normalize";
-import { Candle, get_ohlc } from "./ohlc";
+import { TF } from "./normalize";
+import { Candle, OhlcResult } from "./ohlc";
 
-export interface SignalIndicators {
-  ema20: number;
-  ema50: number;
-  rsi: number;
-  macd: number;
-  macdSignal: number;
-  macdHist: number;
-}
+type SignalDirection = "BUY" | "SELL" | "NEUTRAL";
 
-export interface TradingSignalResult {
-  decision: "BUY" | "SELL" | "NEUTRAL";
-  entry?: number;
-  sl?: number;
-  tp1?: number;
-  tp2?: number;
-  time: string;
+type Lang = "ar" | "en";
+
+export interface TradingSignalOk {
+  status: "OK";
+  lang: Lang;
   symbol: string;
   timeframe: TF;
+  signal: SignalDirection;
+  entry: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
   reason: string;
-  stale: boolean;
-  indicators: SignalIndicators;
-  candles_count: number;
-  lastClosedTs: number;
-  lastClosed: Candle;
+  lastISO: string;
+  ageSeconds: number;
+  isDelayed: boolean;
+  provider: string;
 }
 
-const MAX_CANDLES = 200;
-
-function toMillis(timestamp: number): number {
-  return timestamp >= 10_000_000_000 ? timestamp : timestamp * 1000;
+export interface TradingSignalUnusable {
+  status: "UNUSABLE";
+  lang: Lang;
+  error: "NO_DATA";
 }
+
+export type TradingSignalResult = TradingSignalOk | TradingSignalUnusable;
+
+const MIN_CANDLES = 30;
 
 function ensureSorted(candles: Candle[]): Candle[] {
   return candles
@@ -43,50 +42,28 @@ function ensureSorted(candles: Candle[]): Candle[] {
       t: Number(candle.t),
       v: Number.isFinite(candle.v) ? Number(candle.v) : undefined,
     }))
-    .filter((candle) =>
-      Number.isFinite(candle.o) &&
-      Number.isFinite(candle.h) &&
-      Number.isFinite(candle.l) &&
-      Number.isFinite(candle.c) &&
-      Number.isFinite(candle.t),
+    .filter(
+      (candle) =>
+        Number.isFinite(candle.o) &&
+        Number.isFinite(candle.h) &&
+        Number.isFinite(candle.l) &&
+        Number.isFinite(candle.c) &&
+        Number.isFinite(candle.t),
     )
-    .sort((a, b) => a.t - b.t)
-    .slice(-MAX_CANDLES);
+    .sort((a, b) => a.t - b.t);
 }
 
 function ema(values: number[], period: number) {
   if (!values.length) return NaN;
   const effectivePeriod = Math.max(1, Math.min(period, values.length));
-  const weight = 2 / (effectivePeriod + 1);
+  const alpha = 2 / (effectivePeriod + 1);
   let current = values
     .slice(0, effectivePeriod)
     .reduce((acc, value) => acc + value, 0) / effectivePeriod;
   for (let i = effectivePeriod; i < values.length; i += 1) {
-    current = values[i] * weight + current * (1 - weight);
+    current = values[i] * alpha + current * (1 - alpha);
   }
   return current;
-}
-
-function emaSeries(values: number[], period: number) {
-  if (!values.length) return [];
-  const effectivePeriod = Math.max(1, Math.min(period, values.length));
-  const weight = 2 / (effectivePeriod + 1);
-  const series: number[] = [];
-  let current = values
-    .slice(0, effectivePeriod)
-    .reduce((acc, value) => acc + value, 0) / effectivePeriod;
-  for (let i = 0; i < values.length; i += 1) {
-    if (i < effectivePeriod) {
-      const windowSize = i + 1;
-      const avg = values.slice(0, windowSize).reduce((acc, value) => acc + value, 0) / windowSize;
-      series.push(avg);
-      current = avg;
-    } else {
-      current = values[i] * weight + current * (1 - weight);
-      series.push(current);
-    }
-  }
-  return series;
 }
 
 function rsi(values: number[], period = 14) {
@@ -115,28 +92,7 @@ function rsi(values: number[], period = 14) {
   return result;
 }
 
-function macd(values: number[]) {
-  if (!values.length) {
-    return { macd: NaN, signal: NaN, hist: NaN };
-  }
-  const fastSeries = emaSeries(values, 12);
-  const slowSeries = emaSeries(values, 26);
-  const length = Math.min(fastSeries.length, slowSeries.length);
-  const macdSeries: number[] = [];
-  for (let i = 0; i < length; i += 1) {
-    macdSeries.push(fastSeries[i] - slowSeries[i]);
-  }
-  if (!macdSeries.length) {
-    return { macd: NaN, signal: NaN, hist: NaN };
-  }
-  const macdValue = macdSeries[macdSeries.length - 1];
-  const signalSeries = emaSeries(macdSeries, 9);
-  const macdSignal = signalSeries.at(-1) ?? NaN;
-  const macdHist = macdValue - macdSignal;
-  return { macd: macdValue, signal: macdSignal, hist: macdHist };
-}
-
-function atr14(highs: number[], lows: number[], closes: number[]) {
+function atr(highs: number[], lows: number[], closes: number[], period = 14) {
   const tr: number[] = [];
   for (let i = 1; i < highs.length; i += 1) {
     tr.push(
@@ -147,15 +103,13 @@ function atr14(highs: number[], lows: number[], closes: number[]) {
       ),
     );
   }
-  if (!tr.length) {
-    return { value: NaN };
+  if (!tr.length) return NaN;
+  const window = Math.min(period, tr.length);
+  let avg = tr.slice(0, window).reduce((acc, value) => acc + value, 0) / window;
+  for (let i = window; i < tr.length; i += 1) {
+    avg = (avg * (window - 1) + tr[i]) / window;
   }
-  const period = Math.min(14, tr.length);
-  let avg = tr.slice(0, period).reduce((acc, value) => acc + value, 0) / period;
-  for (let i = period; i < tr.length; i += 1) {
-    avg = (avg * (period - 1) + tr[i]) / period;
-  }
-  return { value: avg };
+  return avg;
 }
 
 function roundPrice(value: number) {
@@ -165,171 +119,133 @@ function roundPrice(value: number) {
   return Number(value.toFixed(decimals));
 }
 
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
-  const intervalMs = (TF_SECONDS[timeframe] ?? 300) * 1000;
-  const sorted = ensureSorted(candles);
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  if (!last) {
-    throw new Error("INVALID_CANDLES");
+function buildReason(signal: SignalDirection, lang: Lang): string {
+  if (lang === "ar") {
+    if (signal === "BUY") return "الاتجاه العام صاعد والمؤشرات تدعم الشراء.";
+    if (signal === "SELL") return "الاتجاه العام هابط والمؤشرات تدعم البيع.";
+    return "السوق بدون اتجاه واضح حالياً.";
   }
-  const now = Date.now();
-  const lastMs = toMillis(last.t);
-  if (now - lastMs < intervalMs * 0.5 && prev) {
-    return prev;
-  }
-  return last;
-}
-
-function computeDecision(indicators: SignalIndicators): "BUY" | "SELL" | "NEUTRAL" {
-  const { ema20, ema50, rsi, macd, macdSignal } = indicators;
-  if (ema20 > ema50 && rsi >= 55 && macd > macdSignal) return "BUY";
-  if (ema20 < ema50 && rsi <= 45 && macd < macdSignal) return "SELL";
-  return "NEUTRAL";
+  if (signal === "BUY") return "Trend is up and indicators support buying.";
+  if (signal === "SELL") return "Trend is down and indicators support selling.";
+  return "Momentum is mixed; no clear setup right now.";
 }
 
 function computeTargets(
-  decision: "BUY" | "SELL" | "NEUTRAL",
+  signal: SignalDirection,
   lastClose: number,
   previousClose: number,
   atrValue: number,
-) {
-  const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || 1);
-  const risk = Number.isFinite(atrValue) ? atrValue : fallbackRisk;
+): { entry: number | null; sl: number | null; tp1: number | null; tp2: number | null } {
+  if (signal === "NEUTRAL") {
+    return { entry: null, sl: null, tp1: null, tp2: null };
+  }
+  const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || lastClose * 0.0008);
+  const risk = Number.isFinite(atrValue) && atrValue > 0 ? atrValue : fallbackRisk;
   const entry = roundPrice(lastClose);
-  if (decision === "BUY") {
+  const riskRounded = roundPrice(risk);
+  if (!Number.isFinite(entry) || !Number.isFinite(riskRounded)) {
+    return { entry: null, sl: null, tp1: null, tp2: null };
+  }
+  if (signal === "BUY") {
+    const sl = roundPrice(entry - riskRounded);
     return {
       entry,
-      sl: roundPrice(lastClose - risk),
-      tp1: roundPrice(lastClose + risk),
-      tp2: roundPrice(lastClose + 2 * risk),
+      sl,
+      tp1: roundPrice(entry + riskRounded),
+      tp2: roundPrice(entry + 2 * riskRounded),
     };
   }
-  if (decision === "SELL") {
-    return {
-      entry,
-      sl: roundPrice(lastClose + risk),
-      tp1: roundPrice(lastClose - risk),
-      tp2: roundPrice(lastClose - 2 * risk),
-    };
-  }
-  return { entry: NaN, sl: NaN, tp1: NaN, tp2: NaN };
+  const sl = roundPrice(entry + riskRounded);
+  return {
+    entry,
+    sl,
+    tp1: roundPrice(entry - riskRounded),
+    tp2: roundPrice(entry - 2 * riskRounded),
+  };
 }
 
-function toUtcLabel(timestamp: number) {
-  const date = new Date(toMillis(timestamp));
-  const iso = date.toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+function deriveSignal(
+  fastEma: number,
+  slowEma: number,
+  momentum: number,
+  rsiValue: number,
+): SignalDirection {
+  if (!Number.isFinite(fastEma) || !Number.isFinite(slowEma) || !Number.isFinite(rsiValue)) {
+    return "NEUTRAL";
+  }
+  const trendUp = fastEma > slowEma;
+  const trendDown = fastEma < slowEma;
+  const momentumUp = momentum >= 0;
+  const momentumDown = momentum <= 0;
+  if (trendUp && momentumUp && rsiValue < 70) {
+    return "BUY";
+  }
+  if (trendDown && momentumDown && rsiValue > 30) {
+    return "SELL";
+  }
+  return "NEUTRAL";
 }
 
-function buildReason(decision: "BUY" | "SELL" | "NEUTRAL", indicators: SignalIndicators): string {
-  if (decision === "NEUTRAL") {
-    return "No clear momentum / structure.";
-  }
-  const parts: string[] = [];
-  if (decision === "BUY") {
-    if (indicators.ema20 > indicators.ema50) parts.push("EMA cross up");
-    if (indicators.rsi <= 35) parts.push("RSI oversold");
-    else if (indicators.rsi >= 55) parts.push("RSI momentum");
-    if (indicators.macd > indicators.macdSignal) parts.push("MACD bullish");
-  } else {
-    if (indicators.ema20 < indicators.ema50) parts.push("EMA cross down");
-    if (indicators.rsi >= 65) parts.push("RSI overbought");
-    else if (indicators.rsi <= 45) parts.push("RSI momentum");
-    if (indicators.macd < indicators.macdSignal) parts.push("MACD bearish");
-  }
-  const unique = Array.from(new Set(parts));
-  return unique.length ? unique.join(" + ") : "Momentum bias";
+interface TradingSignalInput extends OhlcResult {
+  lang?: Lang;
 }
 
-function normaliseSymbol(symbol: string) {
-  return symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-}
-
-export function computeFromCandles(symbol: string, timeframe: TF, candles: Candle[]): TradingSignalResult {
-  const sorted = ensureSorted(candles);
-  if (!sorted.length) {
-    throw new Error("missing_candles");
+export function compute_trading_signal(input: TradingSignalInput): TradingSignalResult {
+  const lang: Lang = input.lang === "ar" ? "ar" : "en";
+  const sorted = ensureSorted(input.candles);
+  if (sorted.length < MIN_CANDLES || input.tooOld) {
+    return { status: "UNUSABLE", lang, error: "NO_DATA" };
   }
-  const lastClosed = deriveLastClosed(sorted, timeframe);
+
   const closes = sorted.map((candle) => candle.c);
   const highs = sorted.map((candle) => candle.h);
   const lows = sorted.map((candle) => candle.l);
-  const previous = sorted.at(-2) ?? sorted.at(-1);
-  if (!previous) {
-    throw new Error("missing_previous_bar");
-  }
+  const last = sorted.at(-1)!;
+  const previous = sorted.at(-2) ?? last;
+  const lastClose = last.c;
+  const previousClose = previous.c;
+  const lookback = Math.max(0, sorted.length - 6);
+  const momentum = lastClose - sorted[lookback].c;
 
-  const ema20 = ema(closes, 20);
-  const ema50 = ema(closes, 50);
+  const fastEma = ema(closes, 20);
+  const slowEma = ema(closes, 50);
   const rsiValue = rsi(closes, 14);
-  const { macd: macdValue, signal: macdSignal, hist: macdHist } = macd(closes);
-  const { value: atrValue } = atr14(highs, lows, closes);
+  const atrValue = atr(highs, lows, closes, 14);
+  const signal = deriveSignal(fastEma, slowEma, momentum, rsiValue);
+  const targets = computeTargets(signal, lastClose, previousClose, atrValue);
+  const reason = buildReason(signal, lang);
 
-  const indicators: SignalIndicators = {
-    ema20,
-    ema50,
-    rsi: rsiValue,
-    macd: macdValue,
-    macdSignal,
-    macdHist,
-  };
-
-  const decision = computeDecision(indicators);
-  const targets = computeTargets(decision, lastClosed.c, previous.c, atrValue);
-
-  const intervalMs = (TF_SECONDS[timeframe] ?? 300) * 1000;
-  const lastClosedTs = Number(lastClosed.t);
-  const stale = Date.now() - toMillis(lastClosedTs) > intervalMs * 3;
-  const time = toUtcLabel(lastClosedTs);
-  const reason = buildReason(decision, indicators);
-
-  const payload: TradingSignalResult = {
-    decision,
-    time,
-    symbol: normaliseSymbol(symbol),
-    timeframe,
+  const result: TradingSignalOk = {
+    status: "OK",
+    lang,
+    symbol: input.symbol,
+    timeframe: input.timeframe,
+    signal,
+    entry: targets.entry,
+    sl: targets.sl,
+    tp1: targets.tp1,
+    tp2: targets.tp2,
     reason,
-    stale,
-    indicators,
-    candles_count: sorted.length,
-    lastClosedTs,
-    lastClosed,
+    lastISO: input.lastCandleISO,
+    ageSeconds: input.ageSeconds,
+    isDelayed: input.isStale,
+    provider: input.provider,
   };
 
-  if (decision !== "NEUTRAL") {
-    payload.entry = targets.entry;
-    payload.sl = targets.sl;
-    payload.tp1 = targets.tp1;
-    payload.tp2 = targets.tp2;
+  if (signal === "NEUTRAL") {
+    result.entry = null;
+    result.sl = null;
+    result.tp1 = null;
+    result.tp2 = null;
   }
 
-  const logEntry = payload.entry ?? "";
-  const logSl = payload.sl ?? "";
-  const logTp1 = payload.tp1 ?? "";
-  const logTp2 = payload.tp2 ?? "";
+  const logEntry = Number.isFinite(result.entry ?? NaN) ? result.entry : "";
+  const logSl = Number.isFinite(result.sl ?? NaN) ? result.sl : "";
+  const logTp1 = Number.isFinite(result.tp1 ?? NaN) ? result.tp1 : "";
+  const logTp2 = Number.isFinite(result.tp2 ?? NaN) ? result.tp2 : "";
   console.log(
-    `[SIGNAL] symbol=${payload.symbol} tf=${timeframe} decision=${decision} reason="${reason}" entry=${logEntry} sl=${logSl} tp1=${logTp1} tp2=${logTp2}`,
+    `[SIGNAL] symbol=${result.symbol} tf=${result.timeframe} signal=${result.signal} reason="${result.reason}" entry=${logEntry} sl=${logSl} tp1=${logTp1} tp2=${logTp2} delayed=${result.isDelayed}`,
   );
 
-  return payload;
-}
-
-export function compute_trading_signal(symbol: string, timeframe: TF, candles: Candle[]): TradingSignalResult {
-  if (!Array.isArray(candles) || !candles.length) {
-    throw new Error("missing_candles");
-  }
-  return computeFromCandles(symbol, timeframe, candles);
-}
-
-export async function computeSignal(
-  symbol: string,
-  timeframe: TF,
-  candles?: Candle[],
-): Promise<TradingSignalResult> {
-  let working = Array.isArray(candles) ? candles : [];
-  if (!working.length) {
-    working = await get_ohlc(symbol, timeframe, MAX_CANDLES);
-  }
-  return computeFromCandles(symbol, timeframe, working);
+  return result;
 }

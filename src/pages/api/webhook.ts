@@ -21,7 +21,7 @@ import {
   type TradingSignalResult,
 } from "../../tools/agentTools";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
-import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../../utils/formatters";
+import { formatNewsMsg, formatPriceMsg, formatUtcLabel } from "../../utils/formatters";
 import { hardMapSymbol, toTimeframe } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
@@ -37,9 +37,9 @@ const FALLBACK_UNAVAILABLE = {
   en: "Data unavailable right now. Try later.",
 } as const;
 
-const GREETING = {
-  ar: "مرحباً، أنا مساعد ليرات. كيف فيني ساعدك؟",
-  en: "Hi, I'm Liirat assistant. How can I help you?",
+const SIGNAL_UNUSABLE = {
+  ar: "ما عندي بيانات كافية لهالتايم فريم حالياً. جرّب فريم أعلى (5min أو 1hour).",
+  en: "Not enough recent data for that timeframe. Try 5min or 1hour.",
 } as const;
 
 const processedMessageCache = new Set<string>();
@@ -117,12 +117,12 @@ function isIdentityQuestion(text: string): boolean {
   return candidates.some((phrase) => normalised.includes(phrase));
 }
 
-function makeGreeting(language: LanguageCode): string {
-  return GREETING[language] ?? GREETING.en;
-}
-
 function dataUnavailable(language: LanguageCode): string {
   return FALLBACK_UNAVAILABLE[language] ?? FALLBACK_UNAVAILABLE.en;
+}
+
+function signalUnavailable(language: LanguageCode): string {
+  return SIGNAL_UNUSABLE[language] ?? SIGNAL_UNUSABLE.en;
 }
 
 function buildPriceReply(result: PriceResult): string {
@@ -150,35 +150,42 @@ function formatPriceLike(value: number, symbol: string): string {
   return value.toFixed(3);
 }
 
-function formatIndicator(value: number, decimals: number): string {
-  if (!Number.isFinite(value)) return "-";
-  return value.toFixed(decimals);
+type TradingSignalOk = Extract<TradingSignalResult, { status: "OK" }>;
+
+function formatSignalPrice(value: number | null | undefined, symbol: string): string {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+  return formatPriceLike(value, symbol);
 }
 
-function formatRiskRatio(entry: number, target: number, stop: number): string {
-  const risk = Math.abs(entry - stop);
-  if (!Number.isFinite(risk) || risk === 0) {
-    return "";
-  }
-  const reward = Math.abs(target - entry);
-  if (!Number.isFinite(reward) || reward === 0) {
-    return "";
-  }
-  const ratio = reward / risk;
-  return `(R ${ratio.toFixed(1)})`;
+function formatDataAge(ageSeconds: number, delayed: boolean): string {
+  const minutes = Math.max(0, Math.floor(ageSeconds / 60));
+  return `${minutes}m (${delayed ? "delayed" : "live"})`;
 }
 
-function buildSignalReply(result: TradingSignalResult): string {
-  return formatSignalMsg({
-    decision: result.decision,
-    entry: result.entry,
-    sl: result.sl,
-    tp1: result.tp1,
-    tp2: result.tp2,
-    time: result.time || result.last_closed_utc,
-    symbol: result.symbol,
-    reason: result.reason,
-  });
+function formatSignalBlock(result: TradingSignalOk): string {
+  const timeLabel = formatUtcLabel(result.lastISO);
+  const lines: string[] = [
+    `time (UTC): ${timeLabel}`,
+    `symbol: ${result.symbol}`,
+    `SIGNAL: ${result.signal}`,
+  ];
+
+  if (result.signal !== "NEUTRAL") {
+    lines.push(`Entry: ${formatSignalPrice(result.entry, result.symbol)}`);
+    lines.push(`SL: ${formatSignalPrice(result.sl, result.symbol)}`);
+    lines.push(`TP1: ${formatSignalPrice(result.tp1, result.symbol)}`);
+    lines.push(`TP2: ${formatSignalPrice(result.tp2, result.symbol)}`);
+  }
+
+  const reason = typeof result.reason === "string" && result.reason.trim() ? result.reason.trim() : "";
+  if (reason) {
+    lines.push(`Reason: ${reason}`);
+  }
+  lines.push(`Data age: ${formatDataAge(result.ageSeconds, result.isDelayed)}`);
+
+  return lines.join("\n");
 }
 
 function buildNewsReply(rows: { date: string; source: string; title: string; impact?: string }[]): string {
@@ -366,55 +373,30 @@ async function smartToolLoop({
       return { text: clarification, skipGreeting: true };
     }
     const timeframe = toTimeframe(plan.timeframe ?? trimmed);
-
-    const runPipeline = async (tf: string) => {
-      console.log("[TOOL] invoke get_ohlc", { symbol, timeframe: tf, limit: 200 });
-      const candles = await get_ohlc(symbol, tf, 200);
-      if (!Array.isArray(candles) || candles.length === 0) {
-        return { candles: [] as typeof candles, signal: null as TradingSignalResult | null };
-      }
-      const signal = await compute_trading_signal(symbol, tf, candles);
-      return { candles, signal };
-    };
-
     try {
-      const primary = await runPipeline(timeframe);
-      if (!primary.signal) {
-        return { text: dataUnavailable(language), skipGreeting: true };
-      }
-
-      let finalSignal = primary.signal;
-      let finalCandles = primary.candles;
-
-      if (finalSignal.stale) {
-        const retry = await runPipeline("5min");
-        if (retry.signal && !retry.signal.stale) {
-          finalSignal = retry.signal;
-          finalCandles = retry.candles;
-        } else if (retry.signal) {
-          finalSignal = retry.signal;
-          finalCandles = retry.candles;
-        } else if (retry.candles.length === 0) {
-          return { text: dataUnavailable(language), skipGreeting: true };
-        }
+      console.log("[TOOL] invoke get_ohlc", { symbol, timeframe, limit: 60 });
+      const ohlc = await get_ohlc(symbol, timeframe, 60);
+      const signal = await compute_trading_signal({ ...ohlc, lang: language });
+      if (signal.status !== "OK") {
+        return { text: signalUnavailable(language), skipGreeting: true };
       }
 
       console.log("[SIGNAL_PIPELINE]", {
-        symbol: finalSignal.symbol,
-        timeframe: finalSignal.timeframe,
-        candles: finalCandles.length,
-        decision: finalSignal.decision,
-        stale: finalSignal.stale,
-        last_closed_utc: finalSignal.last_closed_utc,
+        symbol: signal.symbol,
+        timeframe: signal.timeframe,
+        candles: ohlc.candles.length,
+        decision: signal.signal,
+        delayed: signal.isDelayed,
+        last_iso: signal.lastISO,
       });
 
-      if (finalSignal.stale) {
-        return { text: dataUnavailable(language), skipGreeting: true };
-      }
-
-      const reply = buildSignalReply(finalSignal);
+      const reply = formatSignalBlock(signal);
       return { text: reply, skipGreeting: true };
     } catch (error) {
+      const code = (error as any)?.code;
+      if (code === "NO_DATA") {
+        return { text: signalUnavailable(language), skipGreeting: true };
+      }
       console.warn("[TOOL] trading signal error", error);
       return { text: dataUnavailable(language), skipGreeting: true };
     }
@@ -439,11 +421,8 @@ function removeLatestUserDuplicate(
   return history;
 }
 
-function prependGreeting(reply: string, language: LanguageCode, shouldGreet: boolean): string {
-  if (!shouldGreet) return reply;
-  const greeting = makeGreeting(language);
-  if (!reply) return greeting;
-  return `${greeting}\n${reply}`;
+function prependGreeting(reply: string): string {
+  return reply;
 }
 
 function hasSeenUser(phone: string): boolean {
@@ -572,7 +551,7 @@ export function createWebhookHandler(deps: WebhookDeps) {
 
     const shouldGreet =
       !skipGreeting && existingCount === 0 && !identityQuestion && !hasSeenUser(inbound.from);
-    const replyWithIntro = prependGreeting(assistantReply, preferredLang, shouldGreet);
+    const replyWithIntro = prependGreeting(assistantReply);
     const finalReply = replyWithIntro.trim() ? replyWithIntro : dataUnavailable(preferredLang);
 
     console.log("[WEBHOOK] sending reply", {

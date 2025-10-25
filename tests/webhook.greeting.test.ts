@@ -113,8 +113,7 @@ async function testFirstContactGreeting() {
     from: "97156",
     id: "seed-2",
   });
-  assert.ok(body.startsWith("مرحباً، أنا مساعد ليرات"));
-  assert.ok(body.includes("\nشكراً"));
+  assert.strictEqual(body.trim(), "شكراً لتواصلك");
 }
 
 export async function runWebhookGreetingTests() {

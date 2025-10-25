@@ -28,9 +28,9 @@ export const TOOL_SCHEMAS = [
           symbol: { type: "string" },
           timeframe: {
             type: "string",
-            enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
           },
-          limit: { type: "integer", minimum: 50, maximum: 400 }
+          limit: { type: "integer", minimum: 30, maximum: 60, default: 60 }
         },
         required: ["symbol", "timeframe"],
         additionalProperties: false
@@ -45,28 +45,52 @@ export const TOOL_SCHEMAS = [
       parameters: {
         type: "object",
         properties: {
-          symbol: { type: "string" },
-          timeframe: {
-            type: "string",
-            enum: ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
-          },
-          candles: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                o: {"type": "number"},
-                h: {"type": "number"},
-                l: {"type": "number"},
-                c: {"type": "number"},
-                t: {"type": "integer"}
+          ohlc: {
+            type: "object",
+            properties: {
+              symbol: { type: "string" },
+              timeframe: {
+                type: "string",
+                enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
               },
-              required: ["o", "h", "l", "c", "t"],
-              additionalProperties: false
-            }
-          }
+              candles: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    o: { type: "number" },
+                    h: { type: "number" },
+                    l: { type: "number" },
+                    c: { type: "number" },
+                    t: { type: "integer" },
+                  },
+                  required: ["o", "h", "l", "c", "t"],
+                  additionalProperties: false,
+                },
+              },
+              lastCandleUnix: { type: "integer" },
+              lastCandleISO: { type: "string" },
+              ageSeconds: { type: "number" },
+              isStale: { type: "boolean" },
+              tooOld: { type: "boolean" },
+              provider: { type: "string" },
+            },
+            required: [
+              "symbol",
+              "timeframe",
+              "candles",
+              "lastCandleUnix",
+              "lastCandleISO",
+              "ageSeconds",
+              "isStale",
+              "tooOld",
+              "provider",
+            ],
+            additionalProperties: false,
+          },
+          lang: { type: "string", enum: ["ar", "en"] },
         },
-        required: ["symbol", "timeframe"],
+        required: ["ohlc"],
         additionalProperties: false
       }
     }

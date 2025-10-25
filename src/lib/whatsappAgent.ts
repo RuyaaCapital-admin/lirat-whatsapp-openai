@@ -4,6 +4,7 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionCreateParams,
 } from "openai/resources/chat/completions";
+import type { OhlcResult } from "../tools/ohlc";
 import type { ConversationMemoryAdapter, HistoryMessage } from "./memory";
 import { fallbackUnavailableMessage } from "./memory";
 
@@ -35,6 +36,24 @@ function asMessage(historyMessage: HistoryMessage): ChatCompletionMessageParam {
     role: historyMessage.role,
     content: historyMessage.content,
   };
+}
+
+function isOhlcResult(result: unknown): result is OhlcResult {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  const candidate = result as Partial<OhlcResult>;
+  return (
+    typeof candidate.symbol === "string" &&
+    typeof candidate.timeframe === "string" &&
+    Array.isArray(candidate.candles) &&
+    typeof candidate.lastCandleUnix === "number" &&
+    typeof candidate.lastCandleISO === "string" &&
+    typeof candidate.ageSeconds === "number" &&
+    typeof candidate.isStale === "boolean" &&
+    typeof candidate.tooOld === "boolean" &&
+    typeof candidate.provider === "string"
+  );
 }
 
 function serialiseToolResult(result: ToolResult): string {
@@ -98,7 +117,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
     ];
 
     // Track last OHLC result for automatic candle injection
-    let lastOhlcResult: { candles: any[], symbol: string, timeframe: string } | null = null;
+    let lastOhlcResult: OhlcResult | null = null;
 
     while (true) {
       const completion = await chat.create({
@@ -151,26 +170,27 @@ export function createSmartReply(deps: SmartReplyDeps) {
           }
 
           // Special handling for compute_trading_signal to inject candles from last get_ohlc
-          if (name === "compute_trading_signal" && !args.candles && lastOhlcResult) {
-            const symbol = String(args.symbol ?? "").trim();
-            const timeframe = String(args.timeframe ?? "").trim();
-            if (lastOhlcResult.symbol === symbol && lastOhlcResult.timeframe === timeframe) {
-              args.candles = lastOhlcResult.candles;
-              console.info(`[CANDLE_INJECTION] Auto-injecting candles for ${symbol} ${timeframe}`);
+          if (name === "compute_trading_signal" && !args.ohlc && lastOhlcResult) {
+            const symbol = String((args.ohlc as any)?.symbol ?? args.symbol ?? "").trim();
+            const timeframe = String((args.ohlc as any)?.timeframe ?? args.timeframe ?? "").trim();
+            if (
+              symbol &&
+              timeframe &&
+              lastOhlcResult.symbol === symbol &&
+              lastOhlcResult.timeframe === timeframe
+            ) {
+              args.ohlc = lastOhlcResult;
+              console.info(`[CANDLE_INJECTION] Auto-injecting OHLC for ${symbol} ${timeframe}`);
             }
           }
 
           result = await handler(args);
 
           // Track get_ohlc results for potential use by compute_trading_signal
-          if (name === "get_ohlc" && Array.isArray(result)) {
-            const symbol = String(args.symbol ?? "").trim();
-            const timeframe = String(args.timeframe ?? "").trim();
-            lastOhlcResult = {
-              candles: result,
-              symbol,
-              timeframe,
-            };
+          if (name === "get_ohlc" && isOhlcResult(result)) {
+            lastOhlcResult = result;
+          } else if (name === "get_ohlc") {
+            lastOhlcResult = null;
           }
         } catch (error) {
           const err = error as Error;

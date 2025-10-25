@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import type { OhlcResult } from "../src/tools/ohlc";
 
 async function runTradingSignalTests() {
   const agentTools = await import("../src/tools/agentTools");
@@ -8,43 +9,58 @@ async function runTradingSignalTests() {
   try {
     Date.now = () => fixedNow;
     const hour = 60 * 60 * 1000;
-    const freshCandles = [
-      { o: 1990, h: 2005, l: 1985, c: 1998, t: fixedNow - 3 * hour },
-      { o: 1998, h: 2010, l: 1990, c: 2004, t: fixedNow - 2 * hour },
-      { o: 2004, h: 2018, l: 2000, c: 2012, t: fixedNow - hour },
-      { o: 2012, h: 2020, l: 2005, c: 2010, t: fixedNow - 20 * 60 * 1000 },
-    ];
-    const result = await agentTools.compute_trading_signal("XAUUSD", "1hour", freshCandles);
-    const latest = freshCandles[freshCandles.length - 1];
-    const candidate =
-      latest && fixedNow - latest.t < hour / 2 ? freshCandles[freshCandles.length - 2] ?? latest : latest;
-    const candidateIso = new Date(candidate?.t ?? fixedNow).toISOString();
-    const expectedLabel = `${candidateIso.slice(0, 10)} ${candidateIso.slice(11, 16)}`;
-
+    const freshCandles = Array.from({ length: 60 }, (_, index) => ({
+      o: 1990 + index,
+      h: 2005 + index,
+      l: 1985 + index,
+      c: 1998 + index,
+      t: Math.floor((fixedNow - (60 - index) * 5 * 60 * 1000) / 1000),
+    }));
+    const freshOhlc = {
+      symbol: "XAUUSD",
+      timeframe: "1hour" as const,
+      candles: freshCandles,
+      lastCandleUnix: freshCandles.at(-1)!.t,
+      lastCandleISO: new Date(freshCandles.at(-1)!.t * 1000).toISOString(),
+      ageSeconds: Math.floor((fixedNow / 1000) - freshCandles.at(-1)!.t),
+      isStale: false,
+      tooOld: false,
+      provider: "TEST",
+    } satisfies OhlcResult;
+    const result = await agentTools.compute_trading_signal({ ...freshOhlc, lang: "en" });
+    assert.strictEqual(result.status, "OK");
     assert.strictEqual(result.symbol, "XAUUSD");
     assert.strictEqual(result.timeframe, "1hour");
-    assert.strictEqual(result.time, `${expectedLabel} UTC`);
-    assert.strictEqual(result.stale, false, "recent candles should not be stale");
-    if (result.decision !== "NEUTRAL") {
-      assert.ok(Number.isFinite(result.entry));
-      assert.ok(Number.isFinite(result.tp1));
-      assert.ok(Number.isFinite(result.sl));
-      assert.ok(Number.isFinite(result.tp2));
+    assert.strictEqual(result.lastISO, freshOhlc.lastCandleISO);
+    assert.strictEqual(result.isDelayed, false, "recent candles should not be delayed");
+    if (result.signal !== "NEUTRAL") {
+      assert.ok(Number.isFinite(result.entry ?? NaN));
+      assert.ok(Number.isFinite(result.tp1 ?? NaN));
+      assert.ok(Number.isFinite(result.sl ?? NaN));
+      assert.ok(Number.isFinite(result.tp2 ?? NaN));
     } else {
-      assert.strictEqual(result.entry, undefined);
-      assert.strictEqual(result.tp1, undefined);
-      assert.strictEqual(result.sl, undefined);
-      assert.strictEqual(result.tp2, undefined);
+      assert.strictEqual(result.entry, null);
+      assert.strictEqual(result.tp1, null);
+      assert.strictEqual(result.sl, null);
+      assert.strictEqual(result.tp2, null);
     }
-    assert.ok(result.candles_count >= freshCandles.length);
-    assert.ok(Number.isFinite(result.indicators.rsi));
 
-    const oldCandles = freshCandles.map((candle) => ({
-      ...candle,
-      t: candle.t - 10 * hour,
-    }));
-    const staleResult = await agentTools.compute_trading_signal("XAUUSD", "1hour", oldCandles);
-    assert.strictEqual(staleResult.stale, true, "older candles should mark the signal as stale");
+    const oldOhlc: OhlcResult = {
+      ...freshOhlc,
+      candles: freshCandles.map((candle) => ({ ...candle, t: candle.t - 10 * 60 * 60 })) ,
+      lastCandleUnix: freshOhlc.lastCandleUnix - 10 * 60 * 60,
+      lastCandleISO: new Date((freshOhlc.lastCandleUnix - 10 * 60 * 60) * 1000).toISOString(),
+      ageSeconds: 10 * 60 * 60,
+      isStale: true,
+      tooOld: false,
+    };
+    const usable = await agentTools.compute_trading_signal({ ...oldOhlc, lang: "en" });
+    assert.strictEqual(usable.status, "OK");
+    assert.strictEqual(usable.isDelayed, true, "older candles should mark the signal as delayed");
+
+    const tooOld: OhlcResult = { ...oldOhlc, tooOld: true, ageSeconds: 10 * 24 * 60 * 60 };
+    const unusable = await agentTools.compute_trading_signal({ ...tooOld, lang: "en" });
+    assert.strictEqual(unusable.status, "UNUSABLE");
   } finally {
     Date.now = originalNow;
   }

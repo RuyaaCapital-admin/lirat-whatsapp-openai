@@ -2,8 +2,11 @@
 import { openai } from "../lib/openai";
 import { formatNewsMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
-import { Candle, get_ohlc as loadOhlc } from "./ohlc";
-import { compute_trading_signal as computeFromSeries } from "./compute_trading_signal";
+import { get_ohlc as loadOhlc, OhlcResult } from "./ohlc";
+import {
+  compute_trading_signal as computeSignal,
+  type TradingSignalResult,
+} from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
@@ -12,31 +15,6 @@ export interface PriceResult {
   price: number;
   timeUTC: string;
   source: string;
-}
-
-export interface TradingSignalIndicators {
-  rsi: number;
-  ema20: number;
-  ema50: number;
-  macd: number;
-  macdSignal: number;
-  macdHist: number;
-}
-
-export interface TradingSignalResult {
-  decision: "BUY" | "SELL" | "NEUTRAL";
-  entry?: number;
-  sl?: number;
-  tp1?: number;
-  tp2?: number;
-  time: string;
-  last_closed_utc: string;
-  symbol: string;
-  timeframe: TF;
-  stale: boolean;
-  reason: string;
-  indicators: TradingSignalIndicators;
-  candles_count: number;
 }
 
 export interface NewsRow {
@@ -69,31 +47,6 @@ function toUtcIso(input: number | string | null | undefined): string {
   return new Date().toISOString();
 }
 
-function normalizeCandles(candles: Candle[]): Candle[] {
-  return candles
-    .map((candle) => {
-      const numericT = Number(candle.t);
-      const seconds = Number.isFinite(numericT)
-        ? (numericT >= 10_000_000_000 ? Math.floor(numericT / 1000) : numericT)
-        : NaN;
-      return {
-        o: Number(candle.o),
-        h: Number(candle.h),
-        l: Number(candle.l),
-        c: Number(candle.c),
-        t: seconds,
-      };
-    })
-    .filter((candle) =>
-      Number.isFinite(candle.o) &&
-      Number.isFinite(candle.h) &&
-      Number.isFinite(candle.l) &&
-      Number.isFinite(candle.c) &&
-      Number.isFinite(candle.t),
-    )
-    .sort((a, b) => a.t - b.t);
-}
-
 export async function get_price(symbol: string, timeframe?: string): Promise<PriceResult> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
@@ -106,66 +59,21 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   return { symbol: mappedSymbol, price: price.price, timeUTC, source };
 }
 
-export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<Candle[]> {
+export async function get_ohlc(symbol: string, timeframe: string, limit = 60): Promise<OhlcResult> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  const requestedLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 200;
-  const safeLimit = Math.max(50, Math.min(requestedLimit, 200));
-  const series = await loadOhlc(mappedSymbol, tf, safeLimit);
-  const candles = normalizeCandles(series);
-  return candles;
+  const requestedLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 60;
+  return loadOhlc(mappedSymbol, tf, requestedLimit);
 }
 
-export async function compute_trading_signal(
-  symbol: string,
-  timeframe: string,
-  candles?: Candle[],
-): Promise<TradingSignalResult> {
-  const mappedSymbol = hardMapSymbol(symbol);
-  if (!mappedSymbol) {
-    throw new Error(`invalid_symbol:${symbol}`);
-  }
-  const tf = toTimeframe(timeframe) as TF;
-  let workingCandles = Array.isArray(candles) ? normalizeCandles(candles) : [];
-  if (!workingCandles.length) {
-    workingCandles = normalizeCandles(await get_ohlc(mappedSymbol, tf, 200));
-  }
-  if (!workingCandles.length) {
-    throw new Error("missing_ohlc");
-  }
-
-  const payload = computeFromSeries(mappedSymbol, tf, workingCandles);
-  const indicators = payload.indicators;
-  const roundedIndicators: TradingSignalIndicators = {
-    rsi: Number.isFinite(indicators.rsi) ? Number(indicators.rsi.toFixed(1)) : NaN,
-    ema20: Number.isFinite(indicators.ema20) ? Number(indicators.ema20.toFixed(4)) : NaN,
-    ema50: Number.isFinite(indicators.ema50) ? Number(indicators.ema50.toFixed(4)) : NaN,
-    macd: Number.isFinite(indicators.macd) ? Number(indicators.macd.toFixed(4)) : NaN,
-    macdSignal: Number.isFinite(indicators.macdSignal)
-      ? Number(indicators.macdSignal.toFixed(4))
-      : NaN,
-    macdHist: Number.isFinite(indicators.macdHist) ? Number(indicators.macdHist.toFixed(4)) : NaN,
-  };
-
-  return {
-    decision: payload.decision,
-    entry: payload.entry,
-    sl: payload.sl,
-    tp1: payload.tp1,
-    tp2: payload.tp2,
-    time: payload.time,
-    last_closed_utc: payload.time,
-    symbol: payload.symbol,
-    timeframe: payload.timeframe,
-    stale: Boolean(payload.stale),
-    reason: payload.reason,
-    indicators: roundedIndicators,
-    candles_count: payload.candles_count,
-  };
+export async function compute_trading_signal(input: OhlcResult & { lang?: string }): Promise<TradingSignalResult> {
+  return computeSignal({ ...input, lang: input.lang === "ar" ? "ar" : "en" });
 }
+
+export type { TradingSignalResult } from "./compute_trading_signal";
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";

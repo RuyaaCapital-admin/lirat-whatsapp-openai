@@ -18,6 +18,19 @@ export interface ProviderCandles {
   rawSymbol: string;
 }
 
+export interface OhlcResult {
+  symbol: string;
+  timeframe: TF;
+  candles: Candle[];
+  lastCandleUnix: number;
+  lastCandleISO: string;
+  ageSeconds: number;
+  isStale: boolean;
+  tooOld: boolean;
+  provider: OhlcSource;
+  rawSymbol: string;
+}
+
 export class OhlcError extends Error {
   constructor(
     public readonly code:
@@ -187,42 +200,86 @@ function getProviderOrder(symbol: string): ProviderResult[] {
   return [{ fetcher: fetchFromFcs }, { fetcher: fetchFromFmp }];
 }
 
-export async function get_ohlc(symbol: string, timeframe: TF, limit = 200): Promise<Candle[]> {
-  const safeLimit = Math.max(50, Math.min(limit, 400));
-  const order = getProviderOrder(symbol);
-  let lastError: OhlcError | null = null;
+export interface GetOhlcOptions {
+  limit?: number;
+}
 
-  for (const { fetcher } of order) {
+function selectCandidate(candidates: OhlcResult[]): OhlcResult | null {
+  if (!candidates.length) {
+    return null;
+  }
+  const hasUsable = candidates.filter((candidate) => !candidate.tooOld);
+  const pool = hasUsable.length ? hasUsable : candidates;
+  const byProvider = (source: OhlcSource, min = 0) =>
+    pool.find((candidate) => candidate.provider === source && candidate.candles.length >= min) ?? null;
+
+  return (
+    byProvider("FMP", 30) ||
+    byProvider("FCS", 30) ||
+    pool.find((candidate) => candidate.candles.length >= 30) ||
+    pool[0]
+  );
+}
+
+function buildResult(
+  symbol: string,
+  timeframe: TF,
+  sourceResult: ProviderCandles,
+  limit: number,
+): OhlcResult | null {
+  const sorted = ensureSorted(sourceResult.candles).slice(-limit);
+  if (!sorted.length) {
+    return null;
+  }
+  const last = sorted.at(-1)!;
+  const lastSec = Math.floor(last.t);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ageSeconds = Math.max(0, nowSec - lastSec);
+  const intervalSec = TF_SECONDS[timeframe] ?? 300;
+  const staleThreshold = Math.max(5 * 60, intervalSec * 2);
+  const isStale = ageSeconds > staleThreshold;
+  const tooOld = ageSeconds > 24 * 60 * 60;
+  const lastIso = new Date(lastSec * 1000).toISOString();
+
+  console.log(
+    `[OHLC] provider=${sourceResult.source} symbol=${symbol} rawSymbol=${sourceResult.rawSymbol} tf=${timeframe} bars=${sorted.length} lastTs=${lastSec} lastIso=${lastIso} age=${ageSeconds}s stale=${isStale} tooOld=${tooOld}`,
+  );
+
+  return {
+    symbol,
+    timeframe,
+    candles: sorted,
+    lastCandleUnix: lastSec,
+    lastCandleISO: lastIso,
+    ageSeconds,
+    isStale,
+    tooOld,
+    provider: sourceResult.source,
+    rawSymbol: sourceResult.rawSymbol,
+  };
+}
+
+export async function get_ohlc(symbol: string, timeframe: TF, limit = 60): Promise<OhlcResult> {
+  const safeLimit = Math.max(10, Math.min(limit, 60));
+  const providers = getProviderOrder(symbol);
+  const candidates: OhlcResult[] = [];
+
+  for (const { fetcher } of providers) {
     try {
-      const result = await fetcher(symbol, timeframe, safeLimit);
-      if (!result || !Array.isArray(result.candles) || result.candles.length === 0) {
+      const raw = await fetcher(symbol, timeframe, safeLimit);
+      if (!raw) {
         continue;
       }
-      const sorted = ensureSorted(result.candles).slice(-safeLimit);
-      if (!sorted.length) {
-        continue;
+      const candidate = buildResult(symbol, timeframe, raw, safeLimit);
+      if (candidate) {
+        candidates.push(candidate);
+        if (candidate.provider === "FMP" && candidate.candles.length >= 30 && !candidate.tooOld) {
+          break;
+        }
       }
-      const last = sorted.at(-1)!;
-      const intervalSec = TF_SECONDS[timeframe] ?? 300;
-      const nowSec = Math.floor(Date.now() / 1000);
-      const lastTs = Math.floor(last.t);
-      const stale = nowSec - lastTs > intervalSec * 3;
-      const lastIso = new Date(lastTs * 1000).toISOString();
-      console.log(
-        `[OHLC] provider=${result.source} symbol=${symbol} rawSymbol=${result.rawSymbol} tf=${timeframe} bars=${sorted.length} lastTs=${lastTs} lastIso=${lastIso} stale=${stale}`,
-      );
-      if (stale) {
-        lastError = new OhlcError("STALE_DATA", timeframe, result.source);
-        continue;
-      }
-      return sorted;
     } catch (error) {
       if (error instanceof OhlcError) {
-        lastError = error;
-        if (error.code === "STALE_DATA") {
-          continue;
-        }
-        if (error.code === "HTTP_ERROR" || error.code === "NO_DATA_FOR_INTERVAL") {
+        if (error.code === "HTTP_ERROR") {
           continue;
         }
       }
@@ -230,5 +287,14 @@ export async function get_ohlc(symbol: string, timeframe: TF, limit = 200): Prom
     }
   }
 
-  throw lastError ?? new OhlcError("NO_DATA_FOR_INTERVAL", timeframe);
+  const chosen = selectCandidate(candidates);
+  if (!chosen || chosen.tooOld) {
+    const err: any = new Error("NO_DATA");
+    err.code = "NO_DATA";
+    throw err;
+  }
+  return {
+    ...chosen,
+    candles: chosen.candles.slice(-safeLimit),
+  };
 }

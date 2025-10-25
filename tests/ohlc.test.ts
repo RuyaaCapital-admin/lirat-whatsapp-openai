@@ -27,25 +27,38 @@ async function runOhlcTests() {
     });
     ohlcModule.__setOhlcHttpClient?.(axiosInstance);
     const fresh = await ohlcModule.get_ohlc("XAUUSD", "1hour", 100);
-    assert.ok(Array.isArray(fresh) && fresh.length === 3, "should normalise candles");
-    const timestamps = fresh.map((candle: any) => candle.t);
+    assert.ok(Array.isArray(fresh.candles) && fresh.candles.length === 3, "should normalise candles");
+    assert.strictEqual(fresh.symbol, "XAUUSD");
+    assert.strictEqual(fresh.timeframe, "1hour");
+    const timestamps = fresh.candles.map((candle: any) => candle.t);
     assert.deepStrictEqual(timestamps, [...timestamps].sort((a, b) => a - b), "candles should be sorted");
     const expectedTimes = [makeCandle(2, 1), makeCandle(1, 1.5), makeCandle(0.5, 2)].map((c) => Math.floor(new Date(c.date).getTime() / 1000));
     assert.deepStrictEqual(timestamps, expectedTimes.sort((a, b) => a - b), "timestamps must be seconds");
+    assert.strictEqual(fresh.lastCandleUnix, timestamps.at(-1));
+    assert.ok(typeof fresh.lastCandleISO === "string" && fresh.lastCandleISO.endsWith("Z"));
 
     const recent = makeCandle(0.1, 3);
     axiosInstance.get = async () => ({ data: [recent] });
     const single = await ohlcModule.get_ohlc("XAUUSD", "1hour", 50);
-    assert.strictEqual(single.length, 1, "single candle response should be allowed");
-    assert.strictEqual(single[0].t, Math.floor(new Date(recent.date).getTime() / 1000));
+    assert.strictEqual(single.candles.length, 1, "single candle response should be allowed");
+    assert.strictEqual(
+      single.candles[0].t,
+      Math.floor(new Date(recent.date).getTime() / 1000),
+    );
 
     axiosInstance.get = async () => ({
       data: [makeCandle(10, 1), makeCandle(9, 1.5), makeCandle(8, 2)],
     });
+    const staleResult = await ohlcModule.get_ohlc("XAUUSD", "1hour", 100);
+    assert.ok(staleResult.isStale, "older candles should be flagged as stale");
+
+    axiosInstance.get = async () => ({
+      data: [makeCandle(30 * 24, 1)],
+    });
     await assert.rejects(
       ohlcModule.get_ohlc("XAUUSD", "1hour", 100),
-      (error: any) => error?.code === "STALE_DATA",
-      "stale responses should throw STALE_DATA",
+      (error: any) => error?.code === "NO_DATA",
+      "too old data should reject with NO_DATA",
     );
   } finally {
     ohlcModule.__setOhlcHttpClient?.(null);
