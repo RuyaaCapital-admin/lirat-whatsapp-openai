@@ -1,5 +1,6 @@
 // src/lib/workflowRunner.ts
 import { openai } from "./openai";
+import type { ChatCompletion, ChatCompletionCreateParams } from "openai/resources/chat/completions";
 import { TOOL_SCHEMAS } from "./toolSchemas";
 import { SYSTEM_PROMPT } from "./systemPrompt";
 import { memory } from "./memory";
@@ -82,7 +83,10 @@ export async function runWorkflowMessage(
     // Fallback to Chat Completions tool-call loop with persistent memory keyed by sessionId
     const smartReply = createSmartReply({
       chat: {
-        create: (params) => openai.chat.completions.create(params),
+        create: (params: ChatCompletionCreateParams): Promise<ChatCompletion> =>
+          openai.chat.completions
+            .create({ ...(params as any), stream: false })
+            .then((r: any) => r as ChatCompletion),
       },
       toolSchemas: TOOL_SCHEMAS,
       toolHandlers,
