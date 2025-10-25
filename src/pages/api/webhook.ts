@@ -32,9 +32,9 @@ const FALLBACK_EMPTY = {
   en: "How can I help?",
 } as const;
 
-const FALLBACK_DATA = {
-  ar: "ما وصلتني بيانات كافية، وضّح طلبك أكثر لو سمحت.",
-  en: "I don't have enough data, please clarify what you need.",
+const FALLBACK_UNAVAILABLE = {
+  ar: "البيانات غير متاحة حالياً. جرّب: price BTCUSDT.",
+  en: "Data unavailable right now. Try: price BTCUSDT.",
 } as const;
 
 const GREETING = {
@@ -43,6 +43,30 @@ const GREETING = {
 } as const;
 
 const processedMessageCache = new Set<string>();
+const lastSeenByUser = new Map<string, number>();
+const CONVERSATION_IDLE_MS = 30 * 60 * 1000;
+
+function getLastSeen(phone: string): number {
+  return lastSeenByUser.get(phone) ?? 0;
+}
+
+function touchLastSeen(phone: string) {
+  const now = Date.now();
+  lastSeenByUser.set(phone, now);
+  if (lastSeenByUser.size > 1000) {
+    let oldestKey: string | null = null;
+    let oldestValue = Number.POSITIVE_INFINITY;
+    for (const [key, value] of lastSeenByUser.entries()) {
+      if (value < oldestValue) {
+        oldestValue = value;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) {
+      lastSeenByUser.delete(oldestKey);
+    }
+  }
+}
 
 type LanguageCode = "ar" | "en";
 
@@ -56,6 +80,37 @@ type InboundMessage = {
 type ToolContext = {
   candles: Map<string, OhlcResultPayload>;
 };
+
+class ToolFallbackError extends Error {
+  fallback: string;
+
+  constructor(message: string, fallback: string) {
+    super(message);
+    this.name = "ToolFallbackError";
+    this.fallback = fallback;
+  }
+}
+
+function dataUnavailable(language: LanguageCode): string {
+  return FALLBACK_UNAVAILABLE[language] ?? FALLBACK_UNAVAILABLE.en;
+}
+
+function shouldUseDataFallback(toolName: string, error: unknown): boolean {
+  const code = typeof (error as any)?.code === "string" ? (error as any).code.toUpperCase() : "";
+  const message = typeof (error as any)?.message === "string" ? (error as any).message.toUpperCase() : "";
+  if (toolName === "search_web_news" || toolName === "get_price") {
+    return true;
+  }
+  if (toolName === "get_ohlc" || toolName === "compute_trading_signal") {
+    if (code && (code.includes("STALE") || code.includes("HTTP") || code.includes("NO_DATA") || code.includes("NETWORK"))) {
+      return true;
+    }
+    if (message && (message.includes("STALE") || message.includes("HTTP") || message.includes("NETWORK") || message.includes("TIMEOUT"))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function normaliseInboundText(message: any): string {
   if (!message || typeof message !== "object") return "";
@@ -138,54 +193,60 @@ async function callTool(
   ctx: ToolContext,
   language: LanguageCode,
 ) {
-  switch (toolName) {
-    case "get_price": {
-      const symbol = String(args.symbol ?? "");
-      const result = await get_price(symbol);
-      return { ...result };
-    }
-    case "get_ohlc": {
-      const symbol = String(args.symbol ?? "");
-      const timeframe = String(args.timeframe ?? "");
-      const limit = typeof args.limit === "number" ? args.limit : 200;
-      const snapshot = await get_ohlc(symbol, timeframe, limit);
-      const key = `${snapshot.symbol}:${snapshot.interval}`;
-      ctx.candles.set(key, snapshot);
-      return snapshot;
-    }
-    case "compute_trading_signal": {
-      const symbol = hardMapSymbol(String(args.symbol ?? "")) ?? String(args.symbol ?? "");
-      const timeframe = toTimeframe(String(args.timeframe ?? ""));
-      const key = `${symbol}:${timeframe}`;
-      let candles = Array.isArray(args.candles) ? (args.candles as any[]) : undefined;
-      if (!candles || !candles.length) {
-        const cached = ctx.candles.get(key);
-        if (cached) {
-          candles = cached.candles;
-        } else {
-          const snapshot = await get_ohlc(symbol, timeframe, 200);
-          ctx.candles.set(key, snapshot);
-          candles = snapshot.candles;
-        }
+  try {
+    switch (toolName) {
+      case "get_price": {
+        const symbol = String(args.symbol ?? "");
+        const result = await get_price(symbol);
+        return { ...result };
       }
-      const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, candles as any[]);
-      return signal;
+      case "get_ohlc": {
+        const symbol = String(args.symbol ?? "");
+        const timeframe = String(args.timeframe ?? "");
+        const snapshot = await get_ohlc(symbol, timeframe, 200);
+        const key = `${snapshot.symbol}:${snapshot.interval}`;
+        ctx.candles.set(key, snapshot);
+        return snapshot;
+      }
+      case "compute_trading_signal": {
+        const symbol = hardMapSymbol(String(args.symbol ?? "")) ?? String(args.symbol ?? "");
+        const timeframe = toTimeframe(String(args.timeframe ?? ""));
+        const key = `${symbol}:${timeframe}`;
+        let candles = Array.isArray(args.candles) ? (args.candles as any[]) : undefined;
+        if (!candles || !candles.length) {
+          const cached = ctx.candles.get(key);
+          if (cached) {
+            candles = cached.candles;
+          } else {
+            const snapshot = await get_ohlc(symbol, timeframe, 200);
+            ctx.candles.set(key, snapshot);
+            candles = snapshot.candles;
+          }
+        }
+        const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, candles as any[]);
+        return signal;
+      }
+      case "search_web_news": {
+        const query = String(args.query ?? "");
+        const lang = language === "ar" ? "ar" : "en";
+        const count = typeof args.count === "number" ? args.count : 3;
+        const result = await search_web_news(query, lang, count);
+        return { ...result, formatted: formatNewsMsg(result.rows, "* ") };
+      }
+      case "about_liirat_knowledge": {
+        const query = String(args.query ?? "");
+        const lang = typeof args.lang === "string" ? args.lang : language;
+        const result = await about_liirat_knowledge(query, lang);
+        return { text: result };
+      }
+      default:
+        throw new Error(`unknown_tool:${toolName}`);
     }
-    case "search_web_news": {
-      const query = String(args.query ?? "");
-      const lang = language === "ar" ? "ar" : "en";
-      const count = typeof args.count === "number" ? args.count : 3;
-      const result = await search_web_news(query, lang, count);
-      return { ...result, formatted: formatNewsMsg(result.rows) };
+  } catch (error) {
+    if (shouldUseDataFallback(toolName, error)) {
+      throw new ToolFallbackError(`${toolName}_fallback`, dataUnavailable(language));
     }
-    case "about_liirat_knowledge": {
-      const query = String(args.query ?? "");
-      const lang = typeof args.lang === "string" ? args.lang : language;
-      const result = await about_liirat_knowledge(query, lang);
-      return { text: result };
-    }
-    default:
-      throw new Error(`unknown_tool:${toolName}`);
+    throw error;
   }
 }
 
@@ -240,7 +301,13 @@ async function runAssistant(
           });
         } catch (error) {
           console.error("[TOOL] failed", { name, error });
-          return FALLBACK_DATA[language];
+          if (error instanceof ToolFallbackError) {
+            return error.fallback;
+          }
+          if (shouldUseDataFallback(name, error)) {
+            return dataUnavailable(language);
+          }
+          return dataUnavailable(language);
         }
       }
       continue;
@@ -254,7 +321,7 @@ async function runAssistant(
       break;
     }
   }
-  return lastAssistantContent || FALLBACK_DATA[language];
+  return lastAssistantContent || dataUnavailable(language);
 }
 
 async function handleIdentity(language: LanguageCode): Promise<string> {
@@ -283,7 +350,7 @@ async function buildAssistantReply(
     return await runAssistant(messages, language);
   } catch (error) {
     console.error("[ASSISTANT] error", error);
-    return FALLBACK_DATA[language];
+    return dataUnavailable(language);
   }
 }
 
@@ -311,7 +378,11 @@ async function saveMessageSafe(
   content: string,
 ) {
   if (!conversationId) return;
-  await deps.insertMessage({ conversationId, phone, role, content });
+  try {
+    await deps.insertMessage({ conversationId, phone, role, content });
+  } catch (error) {
+    console.warn("[SUPABASE] failed to log conversation", error);
+  }
 }
 
 export function createWebhookHandler(deps: WebhookDeps) {
@@ -350,6 +421,19 @@ export function createWebhookHandler(deps: WebhookDeps) {
   const normalisedText = normaliseDigits(inbound.text ?? "").trim();
   const language = detectLanguage(normalisedText) as LanguageCode;
   const identityQuestion = isIdentityQuestion(normalisedText);
+  const messageForLang = (inbound.text ?? "").trim() || normalisedText;
+  const preferredLang = detectPreferredLanguage(messageForLang || "");
+  const supabaseUrl = process.env.SUPABASE_URL ?? "";
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
+  console.debug("[SUPABASE] target", {
+    url: supabaseUrl ? `${supabaseUrl.slice(0, 30)}${supabaseUrl.length > 30 ? "..." : ""}` : "",
+    key: supabaseKey ? `${supabaseKey.slice(0, 6)}***` : "",
+  });
+
+  const lastSeen = getLastSeen(inbound.from);
+  const now = Date.now();
+  const isNewSession = !lastSeen || now - lastSeen > CONVERSATION_IDLE_MS;
+  const userContentForLog = messageForLang;
 
   try {
     await deps.markReadAndShowTyping(inbound.id);
@@ -357,30 +441,31 @@ export function createWebhookHandler(deps: WebhookDeps) {
     console.warn("[WEBHOOK] markRead error", error);
   }
 
-  const conversation = await deps.findOrCreateConversation(inbound.from, inbound.contactName);
+  const conversation = await deps.findOrCreateConversation(inbound.from, userContentForLog);
   const conversationId = conversation?.id ?? null;
-  const isNewConversation = conversation?.isNew ?? false;
   const history = conversationId ? await deps.fetchConversationMessages(conversationId, 10) : [];
-
-  if (conversationId) {
-    await saveMessageSafe(deps, conversationId, inbound.from, "user", normalisedText);
-  }
 
   const buildReply = deps.buildAssistantReply ?? buildAssistantReply;
   const assistantReply = await buildReply(normalisedText || " ", history, language, identityQuestion);
-  const shouldGreet = isNewConversation && !identityQuestion;
-  const preferredLang = detectPreferredLanguage(normalisedText || "");
+  const shouldGreet = isNewSession && !identityQuestion;
   const finalReply = prependGreeting(assistantReply, preferredLang, shouldGreet);
+  const bodyToSend = finalReply.trim() ? finalReply : dataUnavailable(preferredLang);
 
-  console.log("[WEBHOOK] sending reply", { to: inbound.from, preview: finalReply.slice(0, 100) });
+  if (conversationId) {
+    await saveMessageSafe(deps, conversationId, inbound.from, "user", userContentForLog);
+  }
+
+  console.log("[WEBHOOK] sending reply", { to: inbound.from, preview: bodyToSend.slice(0, 100) });
   try {
-    await deps.sendText(inbound.from, finalReply);
+    await deps.sendText(inbound.from, bodyToSend);
   } catch (error) {
     console.error("[WEBHOOK] sendText error", error);
+  } finally {
+    touchLastSeen(inbound.from);
   }
 
   if (conversationId) {
-    await saveMessageSafe(deps, conversationId, inbound.from, "assistant", finalReply);
+    await saveMessageSafe(deps, conversationId, inbound.from, "assistant", bodyToSend);
   }
 
   res.status(200).json({ received: true });

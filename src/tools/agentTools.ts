@@ -11,6 +11,7 @@ export interface PriceResult {
   symbol: string;
   price: number;
   timeUTC: string;
+  source: string;
   formatted: string;
 }
 
@@ -23,10 +24,10 @@ export interface OhlcResultPayload {
 
 export interface TradingSignalResult {
   decision: "BUY" | "SELL" | "NEUTRAL";
-  entry: number | null;
-  sl: number | null;
-  tp1: number | null;
-  tp2: number | null;
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
   time: string;
   symbol: string;
   interval: TF;
@@ -90,8 +91,9 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   void timeframe;
   const price = await getCurrentPrice(mappedSymbol);
   const timeUTC = toUtcIso(price.time ?? null);
-  const formatted = formatPriceMsg({ symbol: mappedSymbol, price: price.price, timeUTC });
-  return { symbol: mappedSymbol, price: price.price, timeUTC, formatted };
+  const source = price.source ?? "FCS latest";
+  const formatted = formatPriceMsg({ symbol: mappedSymbol, price: price.price, timeUTC, source });
+  return { symbol: mappedSymbol, price: price.price, timeUTC, source, formatted };
 }
 
 export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<OhlcResultPayload> {
@@ -100,7 +102,8 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
-  const safeLimit = Math.max(50, Math.min(limit, 400));
+  const requestedLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 200;
+  const safeLimit = Math.max(50, Math.min(requestedLimit, 200));
   const series = await loadOhlc(mappedSymbol, tf, safeLimit);
   const candles = normalizeCandles(series.candles);
   const lastClosedUTC = toUtcIso(series.lastClosed?.t ?? candles.at(-1)?.t ?? null);
@@ -131,7 +134,6 @@ export async function compute_trading_signal(
     tp2: payload.tp2,
     time: payload.timeUTC,
     symbol: payload.symbol,
-    interval: payload.interval,
   });
   return {
     decision: payload.signal,
@@ -208,6 +210,6 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
     source: item.source ?? "",
     title: item.title ?? "",
   }));
-  const formatted = formatNewsMsg(rows);
+  const formatted = formatNewsMsg(rows, "* ");
   return { rows, formatted };
 }
