@@ -3,7 +3,7 @@ import type {
   ChatCompletion,
   ChatCompletionMessageParam,
   ChatCompletionTool,
-  ChatCompletionCreateParams,
+  ChatCompletionCreateParamsNonStreaming,
 } from "openai/resources/chat/completions";
 
 import { openai } from "./openai";
@@ -158,7 +158,7 @@ const FALLBACK_EMPTY: Record<LanguageCode, string> = {
 
 export interface SmartReplyDeps {
   chat: {
-    create: (params: ChatCompletionCreateParams) => Promise<ChatCompletion>;
+    create: (params: ChatCompletionCreateParamsNonStreaming) => Promise<ChatCompletion>;
   };
   tools: {
     get_price: typeof get_price;
@@ -259,7 +259,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
           temperature: 0,
           max_tokens: 700,
           messages,
-          tools: TOOL_SCHEMAS as ChatCompletionCreateParams["tools"],
+          tools: TOOL_SCHEMAS as ChatCompletionCreateParamsNonStreaming["tools"],
           tool_choice: "auto",
         });
 
