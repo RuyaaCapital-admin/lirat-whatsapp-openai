@@ -96,11 +96,29 @@ export async function runWorkflowMessage(
   }
 
   // Send user message into the workflow session
+  // Prefer official Agent Builder runner if present
+  if ((openai as any).agents?.Runner) {
+    try {
+      // Dynamically import user-provided workflow entrypoint when available in env
+      const modulePath = process.env.OPENAI_WORKFLOW_ENTRY || "";
+      if (modulePath) {
+        const mod = await import(modulePath);
+        if (mod?.runWorkflow) {
+          const result = await mod.runWorkflow({ input_as_text: userText });
+          const out = (result?.output_text ?? "").toString().trim();
+          if (out) return out;
+        }
+      }
+    } catch (e) {
+      // Fallthrough to Workflows API path
+    }
+  }
+
   let run = await wf.runs.create({
     workflow_id: workflowId,
     version,
     session_id: sessionId,
-    input: { text: userText },
+    input: { input_as_text: userText },
   });
 
   // Loop until final
