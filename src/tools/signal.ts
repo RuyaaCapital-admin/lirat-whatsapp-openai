@@ -30,20 +30,23 @@ export type SignalBlock = {
   tp2: number;
   source: OhlcSource;
   stale: boolean;
+  reason?: string;
 };
 
 function resolveTimeISO(payload: TradingSignalResult): string {
   if (payload.lastClosed?.t) {
     const timestamp = Number(payload.lastClosed.t);
     if (Number.isFinite(timestamp)) {
-      return new Date(timestamp).toISOString();
+      const ms = timestamp >= 10_000_000_000 ? timestamp : timestamp * 1000;
+      return new Date(ms).toISOString();
     }
   }
-  if (payload.last_closed_utc) {
-    const normalized = `${payload.last_closed_utc.replace(/\s+/, 'T')}Z`;
-    const parsed = new Date(normalized);
-    if (!Number.isNaN(parsed.getTime())) {
-      return parsed.toISOString();
+  if (typeof (payload as any).time === 'string' && (payload as any).time.trim()) {
+    const raw = (payload as any).time.trim();
+    const withoutUtc = raw.replace(/\s*UTC$/i, '').trim();
+    const isoCandidate = new Date(`${withoutUtc.replace(/\s+/, 'T')}Z`);
+    if (!Number.isNaN(isoCandidate.getTime())) {
+      return isoCandidate.toISOString();
     }
   }
   return new Date().toISOString();
@@ -63,7 +66,7 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
   const trading_signal = await computeSignalPayload(symbol, tf);
   const timeUTC = resolveTimeISO(trading_signal);
   const decision = trading_signal.decision ?? 'NEUTRAL';
-  const entry = toFiniteNumber(trading_signal.entry);
+  const entry = toFiniteNumber(trading_signal.entry, Number.NaN);
   const sl = toFiniteNumber(trading_signal.sl, entry);
   const tp1 = toFiniteNumber(trading_signal.tp1, entry);
   const tp2 = toFiniteNumber(trading_signal.tp2, entry);
@@ -91,6 +94,7 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
     tp2,
     source: 'PROVIDED',
     stale: Boolean(trading_signal.stale),
+    reason: trading_signal.reason,
   };
 }
 
@@ -103,5 +107,6 @@ export function formatSignalBlock(block: SignalBlock): string {
     tp2: block.tp2,
     time: block.timeUTC,
     symbol: block.symbol,
+    reason: block.reason,
   });
 }

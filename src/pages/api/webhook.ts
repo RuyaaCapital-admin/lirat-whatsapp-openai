@@ -21,7 +21,7 @@ import {
   type TradingSignalResult,
 } from "../../tools/agentTools";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
-import { formatNewsMsg, formatPriceMsg } from "../../utils/formatters";
+import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../../utils/formatters";
 import { hardMapSymbol, toTimeframe } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
@@ -169,37 +169,16 @@ function formatRiskRatio(entry: number, target: number, stop: number): string {
 }
 
 function buildSignalReply(result: TradingSignalResult): string {
-  const timeLine = `Time (UTC): ${result.last_closed_utc} (${result.timeframe})`;
-  const symbolLine = `Symbol: ${result.symbol}`;
-  const signalLine = `SIGNAL: ${result.decision}`;
-  const rsiLabel = formatIndicator(result.indicators.rsi, 1);
-  const ema20Label = formatPriceLike(result.indicators.ema20, result.symbol);
-  const ema50Label = formatPriceLike(result.indicators.ema50, result.symbol);
-  const macdLabel = formatIndicator(result.indicators.macd, 3);
-  if (result.decision === "NEUTRAL") {
-    return [
-      timeLine,
-      symbolLine,
-      signalLine,
-      `Reason: السوق ما عم يعطي اتجاه واضح حالياً (RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel})`,
-    ].join("\n");
-  }
-
-  const entry = Number.isFinite(result.entry) ? result.entry : NaN;
-  const sl = Number.isFinite(result.sl) ? result.sl : entry;
-  const tp1 = Number.isFinite(result.tp1) ? result.tp1 : entry;
-  const tp2 = Number.isFinite(result.tp2) ? result.tp2 : entry;
-
-  const entryLine = `Entry: ${formatPriceLike(entry, result.symbol)}`;
-  const slLine = `SL: ${formatPriceLike(sl, result.symbol)}`;
-  const tp1Ratio = formatRiskRatio(entry, tp1, sl);
-  const tp2Ratio = formatRiskRatio(entry, tp2, sl);
-  const tp1Line = `TP1: ${formatPriceLike(tp1, result.symbol)}${tp1Ratio ? ` ${tp1Ratio}` : ""}`;
-  const tp2Line = `TP2: ${formatPriceLike(tp2, result.symbol)}${tp2Ratio ? ` ${tp2Ratio}` : ""}`;
-
-  const reasonLine = `Reason: RSI=${rsiLabel}, EMA20=${ema20Label}, EMA50=${ema50Label}, MACD=${macdLabel}`;
-
-  return [timeLine, symbolLine, signalLine, entryLine, slLine, tp1Line, tp2Line, reasonLine].join("\n");
+  return formatSignalMsg({
+    decision: result.decision,
+    entry: result.entry,
+    sl: result.sl,
+    tp1: result.tp1,
+    tp2: result.tp2,
+    time: result.time || result.last_closed_utc,
+    symbol: result.symbol,
+    reason: result.reason,
+  });
 }
 
 function buildNewsReply(rows: { date: string; source: string; title: string; impact?: string }[]): string {
