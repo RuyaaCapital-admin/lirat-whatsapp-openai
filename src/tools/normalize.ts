@@ -29,6 +29,40 @@ const HARD_MAP: Record<string, string> = SYMBOL_ALIASES.reduce((map, entry) => {
   return map;
 }, {} as Record<string,string>);
 
+export const TF_SECONDS: Record<TF, number> = {
+  "1min": 60,
+  "5min": 5 * 60,
+  "15min": 15 * 60,
+  "30min": 30 * 60,
+  "1hour": 60 * 60,
+  "4hour": 4 * 60 * 60,
+  "1day": 24 * 60 * 60,
+};
+
+export const FMP_TIMEFRAME_MAP: Record<TF, string> = {
+  "1min": "1min",
+  "5min": "5min",
+  "15min": "15min",
+  "30min": "30min",
+  "1hour": "1hour",
+  "4hour": "4hour",
+  "1day": "1day",
+};
+
+export const FCS_TIMEFRAME_MAP: Record<TF, string> = {
+  "1min": "1m",
+  "5min": "5m",
+  "15min": "15m",
+  "30min": "30m",
+  "1hour": "1h",
+  "4hour": "4h",
+  "1day": "1d",
+};
+
+export function toProviderInterval(provider: "FMP" | "FCS", tf: TF): string {
+  return provider === "FMP" ? FMP_TIMEFRAME_MAP[tf] : FCS_TIMEFRAME_MAP[tf];
+}
+
 function normalizeDigits(input: string) {
   return input.replace(/[٠-٩]/g, (d) => DIGIT_MAP[d] ?? d);
 }
@@ -53,6 +87,24 @@ export function hardMapSymbol(input: string): string | null {
 
 export function isCrypto(sym: string) {
   return sym.toUpperCase().endsWith('USDT');
+}
+
+export function mapToFmpSymbol(sym: string): string {
+  const upper = sym.toUpperCase();
+  if (upper === "BTCUSDT") return "BTCUSD";
+  if (upper === "ETHUSDT") return "ETHUSD";
+  return upper;
+}
+
+export function mapToFcsSymbol(sym: string): string {
+  const upper = sym.toUpperCase();
+  if (upper.includes("/")) {
+    return upper;
+  }
+  if (upper.length === 6) {
+    return `${upper.slice(0, 3)}/${upper.slice(3)}`;
+  }
+  return upper;
 }
 
 export function forPriceSource(sym: string): string {

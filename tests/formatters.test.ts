@@ -34,19 +34,23 @@ async function testSignal() {
     tp2: 4020.65,
     time: "2025-10-24T13:00:00Z",
     symbol: "XAUUSD",
+    reason: "EMA cross down + RSI momentum",
   });
   assert.strictEqual(
     block,
     [
-      "time (UTC): 2025-10-24 13:00",
-      "symbol: XAUUSD",
+      "SELL",
+      "",
+      "Time (UTC): 2025-10-24 13:00",
+      "Symbol: XAUUSD",
       "SIGNAL: SELL",
       "Entry: 4062.45",
       "SL: 4083.34",
       "TP1: 4041.54 (R 1.0)",
       "TP2: 4020.65 (R 2.0)",
+      "Reason: EMA cross down + RSI momentum",
     ].join("\n"),
-    "signal block must include 7 lines",
+    "signal block must include header and reason",
   );
 
   const neutral = formatSignalMsg({
@@ -57,19 +61,19 @@ async function testSignal() {
     tp2: null,
     time: "2025-10-24T13:00:00Z",
     symbol: "XAUUSD",
+    reason: "No clear setup",
   });
   assert.strictEqual(
     neutral,
     [
-      "time (UTC): 2025-10-24 13:00",
-      "symbol: XAUUSD",
+      "NEUTRAL",
+      "",
+      "Time (UTC): 2025-10-24 13:00",
+      "Symbol: XAUUSD",
       "SIGNAL: NEUTRAL",
-      "Entry: 0.00",
-      "SL: 0.00",
-      "TP1: 0.00",
-      "TP2: 0.00",
+      "Reason: No clear setup",
     ].join("\n"),
-    "neutral block should include numeric placeholders",
+    "neutral block should only include reason line",
   );
 }
 

@@ -23,12 +23,19 @@ async function runTradingSignalTests() {
 
     assert.strictEqual(result.symbol, "XAUUSD");
     assert.strictEqual(result.timeframe, "1hour");
-    assert.strictEqual(result.last_closed_utc, expectedLabel);
+    assert.strictEqual(result.time, `${expectedLabel} UTC`);
     assert.strictEqual(result.stale, false, "recent candles should not be stale");
-    assert.ok(Number.isFinite(result.entry));
-    assert.ok(Number.isFinite(result.tp1));
-    assert.ok(Number.isFinite(result.sl));
-    assert.ok(Number.isFinite(result.tp2));
+    if (result.decision !== "NEUTRAL") {
+      assert.ok(Number.isFinite(result.entry));
+      assert.ok(Number.isFinite(result.tp1));
+      assert.ok(Number.isFinite(result.sl));
+      assert.ok(Number.isFinite(result.tp2));
+    } else {
+      assert.strictEqual(result.entry, undefined);
+      assert.strictEqual(result.tp1, undefined);
+      assert.strictEqual(result.sl, undefined);
+      assert.strictEqual(result.tp2, undefined);
+    }
     assert.ok(result.candles_count >= freshCandles.length);
     assert.ok(Number.isFinite(result.indicators.rsi));
 

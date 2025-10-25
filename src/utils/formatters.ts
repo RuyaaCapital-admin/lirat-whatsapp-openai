@@ -66,18 +66,47 @@ export function formatPriceMsg({ symbol, price, timeUTC, source }: PriceMessageI
 
 export interface SignalMessageInput {
   decision: "BUY" | "SELL" | "NEUTRAL";
-  entry: number | null;
-  sl: number | null;
-  tp1: number | null;
-  tp2: number | null;
+  entry?: number | null;
+  sl?: number | null;
+  tp1?: number | null;
+  tp2?: number | null;
   time: string | number | Date;
   symbol: string;
+  reason?: string;
 }
 
-function formatRiskRatio(entry: number, target: number, stop: number): string {
-  const risk = Math.abs(entry - stop);
-  const reward = Math.abs(entry - target);
-  if (!Number.isFinite(risk) || risk === 0 || !Number.isFinite(reward)) {
+function normalizeNumeric(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function formatSignalPrice(value: number | null, symbol: string): string {
+  if (value == null) return "-";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  const upper = symbol.toUpperCase();
+  const abs = Math.abs(numeric);
+  const decimals = upper.endsWith("USDT")
+    ? 2
+    : abs >= 100
+      ? 2
+      : abs >= 10
+        ? 3
+        : 4;
+  return numeric.toFixed(decimals);
+}
+
+function formatRiskRatio(entry: number | null, target: number | null, stop: number | null): string {
+  if (!Number.isFinite(entry) || !Number.isFinite(target) || !Number.isFinite(stop)) {
+    return "";
+  }
+  const risk = Math.abs((entry as number) - (stop as number));
+  if (!Number.isFinite(risk) || risk === 0) {
+    return "";
+  }
+  const reward = Math.abs((target as number) - (entry as number));
+  if (!Number.isFinite(reward) || reward === 0) {
     return "";
   }
   const ratio = reward / risk;
@@ -86,23 +115,37 @@ function formatRiskRatio(entry: number, target: number, stop: number): string {
 
 export function formatSignalMsg(input: SignalMessageInput): string {
   const label = formatUtcLabel(input.time);
-  const entry = formatNumber(input.entry).toFixed(2);
-  const sl = formatNumber(input.sl).toFixed(2);
-  const tp1 = formatNumber(input.tp1).toFixed(2);
-  const tp2 = formatNumber(input.tp2).toFixed(2);
-  const tp1Ratio = formatRiskRatio(Number(entry), Number(tp1), Number(sl));
-  const tp2Ratio = formatRiskRatio(Number(entry), Number(tp2), Number(sl));
-  const tp1Line = tp1Ratio ? `TP1: ${tp1} ${tp1Ratio}` : `TP1: ${tp1}`;
-  const tp2Line = tp2Ratio ? `TP2: ${tp2} ${tp2Ratio}` : `TP2: ${tp2}`;
-  return [
-    `time (UTC): ${label}`,
-    `symbol: ${input.symbol}`,
-    `SIGNAL: ${input.decision}`,
-    `Entry: ${entry}`,
-    `SL: ${sl}`,
-    tp1Line,
-    tp2Line,
-  ].join("\n");
+  const symbol = input.symbol;
+  const decision = input.decision;
+  const reason =
+    (typeof input.reason === "string" && input.reason.trim()) ||
+    (decision === "NEUTRAL" ? "No clear momentum / structure." : "Momentum bias");
+  const lines: string[] = [decision, "", `Time (UTC): ${label}`, `Symbol: ${symbol}`, `SIGNAL: ${decision}`];
+
+  if (decision === "NEUTRAL") {
+    lines.push(`Reason: ${reason}`);
+    return lines.join("\n");
+  }
+
+  const entryValue = normalizeNumeric(input.entry);
+  const slValue = normalizeNumeric(input.sl);
+  const tp1Value = normalizeNumeric(input.tp1);
+  const tp2Value = normalizeNumeric(input.tp2);
+
+  lines.push(`Entry: ${formatSignalPrice(entryValue, symbol)}`);
+  lines.push(`SL: ${formatSignalPrice(slValue, symbol)}`);
+
+  const tp1Ratio = formatRiskRatio(entryValue, tp1Value, slValue);
+  const tp2Ratio = formatRiskRatio(entryValue, tp2Value, slValue);
+
+  const tp1Label = formatSignalPrice(tp1Value, symbol);
+  const tp2Label = formatSignalPrice(tp2Value, symbol);
+
+  lines.push(tp1Ratio ? `TP1: ${tp1Label} ${tp1Ratio}` : `TP1: ${tp1Label}`);
+  lines.push(tp2Ratio ? `TP2: ${tp2Label} ${tp2Ratio}` : `TP2: ${tp2Label}`);
+  lines.push(`Reason: ${reason}`);
+
+  return lines.join("\n");
 }
 
 export interface NewsRow {

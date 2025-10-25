@@ -25,14 +25,16 @@ export interface TradingSignalIndicators {
 
 export interface TradingSignalResult {
   decision: "BUY" | "SELL" | "NEUTRAL";
-  entry: number;
-  sl: number;
-  tp1: number;
-  tp2: number;
+  entry?: number;
+  sl?: number;
+  tp1?: number;
+  tp2?: number;
+  time: string;
   last_closed_utc: string;
   symbol: string;
   timeframe: TF;
   stale: boolean;
+  reason: string;
   indicators: TradingSignalIndicators;
   candles_count: number;
 }
@@ -69,13 +71,19 @@ function toUtcIso(input: number | string | null | undefined): string {
 
 function normalizeCandles(candles: Candle[]): Candle[] {
   return candles
-    .map((candle) => ({
-      o: Number(candle.o),
-      h: Number(candle.h),
-      l: Number(candle.l),
-      c: Number(candle.c),
-      t: Number(candle.t),
-    }))
+    .map((candle) => {
+      const numericT = Number(candle.t);
+      const seconds = Number.isFinite(numericT)
+        ? (numericT >= 10_000_000_000 ? Math.floor(numericT / 1000) : numericT)
+        : NaN;
+      return {
+        o: Number(candle.o),
+        h: Number(candle.h),
+        l: Number(candle.l),
+        c: Number(candle.c),
+        t: seconds,
+      };
+    })
     .filter((candle) =>
       Number.isFinite(candle.o) &&
       Number.isFinite(candle.h) &&
@@ -148,10 +156,12 @@ export async function compute_trading_signal(
     sl: payload.sl,
     tp1: payload.tp1,
     tp2: payload.tp2,
-    last_closed_utc: payload.last_closed_utc,
+    time: payload.time,
+    last_closed_utc: payload.time,
     symbol: payload.symbol,
     timeframe: payload.timeframe,
     stale: Boolean(payload.stale),
+    reason: payload.reason,
     indicators: roundedIndicators,
     candles_count: payload.candles_count,
   };

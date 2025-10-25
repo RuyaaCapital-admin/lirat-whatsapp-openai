@@ -30,18 +30,23 @@ async function runOhlcTests() {
     assert.ok(Array.isArray(fresh) && fresh.length === 3, "should normalise candles");
     const timestamps = fresh.map((candle: any) => candle.t);
     assert.deepStrictEqual(timestamps, [...timestamps].sort((a, b) => a - b), "candles should be sorted");
+    const expectedTimes = [makeCandle(2, 1), makeCandle(1, 1.5), makeCandle(0.5, 2)].map((c) => Math.floor(new Date(c.date).getTime() / 1000));
+    assert.deepStrictEqual(timestamps, expectedTimes.sort((a, b) => a - b), "timestamps must be seconds");
 
     const recent = makeCandle(0.1, 3);
     axiosInstance.get = async () => ({ data: [recent] });
     const single = await ohlcModule.get_ohlc("XAUUSD", "1hour", 50);
     assert.strictEqual(single.length, 1, "single candle response should be allowed");
-    assert.strictEqual(single[0].t, new Date(recent.date).getTime());
+    assert.strictEqual(single[0].t, Math.floor(new Date(recent.date).getTime() / 1000));
 
     axiosInstance.get = async () => ({
       data: [makeCandle(10, 1), makeCandle(9, 1.5), makeCandle(8, 2)],
     });
-    const stale = await ohlcModule.get_ohlc("XAUUSD", "1hour", 100);
-    assert.ok(stale.length === 3, "stale response still returns candles");
+    await assert.rejects(
+      ohlcModule.get_ohlc("XAUUSD", "1hour", 100),
+      (error: any) => error?.code === "STALE_DATA",
+      "stale responses should throw STALE_DATA",
+    );
   } finally {
     ohlcModule.__setOhlcHttpClient?.(null);
     axiosInstance.get = originalGet;
