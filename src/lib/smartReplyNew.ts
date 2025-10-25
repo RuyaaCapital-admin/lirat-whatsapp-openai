@@ -170,7 +170,7 @@ async function handleMemoryQuestion(
   }
 
   try {
-    const messages = await getRecentContext(conversationId, 4);
+    const messages = await fetchRecentContext(conversationId, 4);
     if (messages.length === 0) {
       return language === "ar" 
         ? "ما في محادثة سابقة."
@@ -206,21 +206,6 @@ async function handleAboutLiirat(
     return language === "ar" 
       ? "البيانات غير متاحة حالياً."
       : "Data not available right now.";
-  }
-}
-
-async function handleNewsIntent(
-  query: string,
-  language: LanguageCode
-): Promise<string> {
-  try {
-    const news = await search_web_news(query, language, 3);
-    return newsFormatter(news.rows, language);
-  } catch (error) {
-    console.error("[NEWS] Error:", error);
-    return language === "ar" 
-      ? "لا يوجد أخبار متاحة الآن."
-      : "No news available right now.";
   }
 }
 
