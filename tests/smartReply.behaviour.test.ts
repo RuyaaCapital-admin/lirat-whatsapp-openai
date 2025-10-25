@@ -123,14 +123,45 @@ async function testTradingSignalFlow() {
     t: 1_700_000_000 + index * 60,
   }));
 
-  const signalText = [
-    "- Time: 2025-10-25T10:30:00Z (5min)",
-    "- Symbol: XAUUSD",
-    "- SIGNAL: SELL",
-    "- Entry: 2350.2",
-    "- SL: 2355.8",
-    "- TP1: 2345.0 (R 1.0)",
-    "- TP2: 2340.0 (R 2.0)",
+  const ohlcResponse = {
+    symbol: "XAUUSD",
+    timeframe: "5min",
+    candles,
+    lastCandleUnix: candles.at(-1)!.t,
+    lastCandleISO: new Date(candles.at(-1)!.t * 1000).toISOString(),
+    ageSeconds: 120,
+    isStale: false,
+    tooOld: false,
+    provider: "TEST",
+  };
+
+  const signalResult = {
+    status: "OK" as const,
+    lang: "ar" as const,
+    symbol: "XAUUSD",
+    timeframe: "5min" as const,
+    signal: "SELL" as const,
+    entry: 2350.2,
+    sl: 2355.8,
+    tp1: 2345.0,
+    tp2: 2340.0,
+    reason: "الاتجاه العام هابط والمؤشرات تدعم البيع.",
+    lastISO: ohlcResponse.lastCandleISO,
+    ageSeconds: ohlcResponse.ageSeconds,
+    isDelayed: false,
+    provider: "TEST",
+  };
+
+  const expectedBlock = [
+    `time (UTC): ${signalResult.lastISO.slice(0, 10)} ${signalResult.lastISO.slice(11, 16)}`,
+    "symbol: XAUUSD",
+    "SIGNAL: SELL",
+    "Entry: 2350.20",
+    "SL: 2355.80",
+    "TP1: 2345.00",
+    "TP2: 2340.00",
+    `Reason: ${signalResult.reason}`,
+    "Data age: 2m (live)",
   ].join("\n");
 
   const responses = [
@@ -189,16 +220,15 @@ async function testTradingSignalFlow() {
         ohlcCalls += 1;
         assert.strictEqual(symbol, "XAUUSD");
         assert.strictEqual(timeframe, "5min");
-        assert.strictEqual(limit, 200);
-        return JSON.stringify({ text: JSON.stringify({ symbol, timeframe, candles }) });
+        assert.strictEqual(limit, 60);
+        return { ...ohlcResponse };
       },
-      compute_trading_signal: async (symbol: string, timeframe: string, passedCandles?: typeof candles) => {
+      compute_trading_signal: async (input) => {
         computeCalls += 1;
-        assert.strictEqual(symbol, "XAUUSD");
-        assert.strictEqual(timeframe, "5min");
-        assert.ok(passedCandles);
-        assert.strictEqual(passedCandles?.length, candles.length);
-        return signalText;
+        assert.strictEqual(input.symbol, "XAUUSD");
+        assert.strictEqual(input.timeframe, "5min");
+        assert.strictEqual(input.candles.length, candles.length);
+        return signalResult;
       },
       search_web_news: async () => {
         throw new Error("search_web_news should not be called");
@@ -216,7 +246,7 @@ async function testTradingSignalFlow() {
   const smart = createSmartReply(deps);
   const result = await smart({ phone: "9715", text: "صفقة ذهب 5 دقايق" });
 
-  assert.strictEqual(result.replyText, `أنا مساعد ليرات، كيف فيني ساعدك؟\n${signalText}`);
+  assert.strictEqual(result.replyText, `أنا مساعد ليرات، كيف فيني ساعدك؟\n${expectedBlock}`);
   assert.strictEqual(ohlcCalls, 2);
   assert.strictEqual(computeCalls, 1);
 }

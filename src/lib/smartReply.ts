@@ -13,12 +13,13 @@ import {
   compute_trading_signal,
   search_web_news,
   about_liirat_knowledge,
+  type TradingSignalResult,
 } from "../tools/agentTools";
 import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
-import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../utils/formatters";
-import type { Candle } from "../tools/ohlc";
+import { formatNewsMsg, formatPriceMsg, formatUtcLabel } from "../utils/formatters";
+import type { OhlcResult } from "../tools/ohlc";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
 
@@ -67,7 +68,7 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
             type: "string",
             enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
           },
-          limit: { type: "integer", minimum: 50, maximum: 400, default: 200 },
+          limit: { type: "integer", minimum: 30, maximum: 60, default: 60 },
         },
         required: ["symbol", "timeframe"],
         additionalProperties: false,
@@ -82,29 +83,52 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          symbol: { type: "string" },
-          timeframe: {
-            type: "string",
-            enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
-          },
-          candles: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                o: { type: "number" },
-                h: { type: "number" },
-                l: { type: "number" },
-                c: { type: "number" },
-                t: { type: "integer", description: "unix seconds" },
+          ohlc: {
+            type: "object",
+            properties: {
+              symbol: { type: "string" },
+              timeframe: {
+                type: "string",
+                enum: ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day"],
               },
-              required: ["o", "h", "l", "c", "t"],
-              additionalProperties: false,
+              candles: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    o: { type: "number" },
+                    h: { type: "number" },
+                    l: { type: "number" },
+                    c: { type: "number" },
+                    t: { type: "integer", description: "unix seconds" },
+                  },
+                  required: ["o", "h", "l", "c", "t"],
+                  additionalProperties: false,
+                },
+              },
+              lastCandleUnix: { type: "integer" },
+              lastCandleISO: { type: "string" },
+              ageSeconds: { type: "number" },
+              isStale: { type: "boolean" },
+              tooOld: { type: "boolean" },
+              provider: { type: "string" },
             },
-            minItems: 50,
+            required: [
+              "symbol",
+              "timeframe",
+              "candles",
+              "lastCandleUnix",
+              "lastCandleISO",
+              "ageSeconds",
+              "isStale",
+              "tooOld",
+              "provider",
+            ],
+            additionalProperties: false,
           },
+          lang: { type: "string", enum: ["ar", "en"] },
         },
-        required: ["symbol", "timeframe"],
+        required: ["ohlc"],
         additionalProperties: false,
       },
     },
@@ -155,6 +179,52 @@ const GREETING: Record<LanguageCode, string> = {
   ar: "أنا مساعد ليرات، كيف فيني ساعدك؟",
   en: "I'm Liirat assistant. How can I help you?",
 };
+
+const SIGNAL_UNUSABLE: Record<LanguageCode, string> = {
+  ar: "ما عندي بيانات كافية لهالتايم فريم حالياً. جرّب فريم أعلى (5min أو 1hour).",
+  en: "Not enough recent data for that timeframe. Try 5min or 1hour.",
+};
+
+type TradingSignalOk = Extract<TradingSignalResult, { status: "OK" }>;
+
+function signalUnavailable(language: LanguageCode): string {
+  return SIGNAL_UNUSABLE[language] ?? SIGNAL_UNUSABLE.en;
+}
+
+function formatSignalPrice(value: number | null | undefined, symbol: string): string {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
+  }
+  const upper = symbol.toUpperCase();
+  const abs = Math.abs(value);
+  const decimals = upper.endsWith("USDT") ? 2 : abs >= 100 ? 2 : abs >= 10 ? 3 : 4;
+  return value.toFixed(decimals);
+}
+
+function formatDataAge(ageSeconds: number, delayed: boolean): string {
+  const minutes = Math.max(0, Math.floor(ageSeconds / 60));
+  return `${minutes}m (${delayed ? "delayed" : "live"})`;
+}
+
+function formatSignalBlock(result: TradingSignalOk): string {
+  const lines: string[] = [
+    `time (UTC): ${formatUtcLabel(result.lastISO)}`,
+    `symbol: ${result.symbol}`,
+    `SIGNAL: ${result.signal}`,
+  ];
+  if (result.signal !== "NEUTRAL") {
+    lines.push(`Entry: ${formatSignalPrice(result.entry, result.symbol)}`);
+    lines.push(`SL: ${formatSignalPrice(result.sl, result.symbol)}`);
+    lines.push(`TP1: ${formatSignalPrice(result.tp1, result.symbol)}`);
+    lines.push(`TP2: ${formatSignalPrice(result.tp2, result.symbol)}`);
+  }
+  const reason = typeof result.reason === "string" && result.reason.trim() ? result.reason.trim() : "";
+  if (reason) {
+    lines.push(`Reason: ${reason}`);
+  }
+  lines.push(`Data age: ${formatDataAge(result.ageSeconds, result.isDelayed)}`);
+  return lines.join("\n");
+}
 
 export interface SmartReplyDeps {
   chat: {
@@ -213,6 +283,12 @@ function sanitiseArgs(args: Record<string, unknown>) {
   if (Array.isArray(clone.candles)) {
     clone.candles = `len:${clone.candles.length}`;
   }
+  if (clone.ohlc && typeof clone.ohlc === "object") {
+    const ohlc = clone.ohlc as Record<string, unknown>;
+    if (Array.isArray(ohlc.candles)) {
+      clone.ohlc = { ...ohlc, candles: `len:${ohlc.candles.length}` };
+    }
+  }
   return clone;
 }
 
@@ -231,10 +307,8 @@ function applyGreeting(text: string, shouldGreet: boolean, language: LanguageCod
   return `${greeting}\n${base}`;
 }
 
-type CandleSeries = Candle[];
-
 interface ToolContext {
-  lastCandlesBySymbolTimeframe: Record<string, CandleSeries>;
+  lastOhlcBySymbolTimeframe: Record<string, OhlcResult>;
 }
 
 function keyFor(symbol: string, timeframe: string) {
@@ -277,7 +351,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
       { role: "user", content: userMessageContent },
     ];
 
-    const toolContext: ToolContext = { lastCandlesBySymbolTimeframe: {} };
+    const toolContext: ToolContext = { lastOhlcBySymbolTimeframe: {} };
     const messages = [...baseMessages];
 
     const respondWithFallback = async (fallback: string, greet: boolean) => {
@@ -343,86 +417,61 @@ export function createSmartReply(deps: SmartReplyDeps) {
               } else if (toolName === "get_ohlc") {
                 const symbolInput = String(parsed.symbol ?? normalisedText).trim();
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
-                const limit = typeof parsed.limit === "number" ? parsed.limit : 200;
+                const limit = typeof parsed.limit === "number" ? parsed.limit : 60;
                 const resolvedSymbol = hardMapSymbol(symbolInput);
                 if (!resolvedSymbol) {
                   throw new Error("invalid_symbol");
                 }
                 const resolvedTimeframe = toTimeframe(timeframeInput);
-                const candles = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, limit);
+                const ohlc = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, limit);
                 const key = keyFor(resolvedSymbol, resolvedTimeframe);
-                toolContext.lastCandlesBySymbolTimeframe[key] = candles;
-                const last = candles.at(-1);
-                const tfMs: Record<string, number> = {
-                  "1min": 60_000,
-                  "5min": 5 * 60_000,
-                  "15min": 15 * 60_000,
-                  "30min": 30 * 60_000,
-                  "1hour": 60 * 60_000,
-                  "4hour": 4 * 60 * 60_000,
-                  "1day": 24 * 60 * 60_000,
-                };
-                const lastClosedUtc = last
-                  ? (() => {
-                      const iso = new Date(last.t).toISOString();
-                      return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
-                    })()
-                  : "";
-                const stale = last
-                  ? Date.now() - last.t > (tfMs[resolvedTimeframe] ?? 60 * 60_000) * 3
-                  : true;
+                toolContext.lastOhlcBySymbolTimeframe[key] = ohlc;
                 console.log("[TOOL] get_ohlc -> ok", {
                   symbol: resolvedSymbol,
                   timeframe: resolvedTimeframe,
-                  candles: candles.length,
+                  candles: ohlc.candles.length,
                 });
                 messages.push({
                   role: "tool",
                   tool_call_id: call.id,
                   content: JSON.stringify({
-                    symbol: resolvedSymbol,
-                    timeframe: resolvedTimeframe,
-                    last_closed_utc: lastClosedUtc,
-                    candles,
-                    stale,
+                    symbol: ohlc.symbol,
+                    timeframe: ohlc.timeframe,
+                    lastCandleISO: ohlc.lastCandleISO,
+                    ageSeconds: ohlc.ageSeconds,
+                    isStale: ohlc.isStale,
+                    tooOld: ohlc.tooOld,
+                    provider: ohlc.provider,
+                    candles: `len:${ohlc.candles.length}`,
                   }),
                 });
               } else if (toolName === "compute_trading_signal") {
-                const symbolInput = String(parsed.symbol ?? normalisedText).trim();
-                const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
+                const parsedOhlc = (parsed as any)?.ohlc ?? {};
+                const symbolInput = String(parsedOhlc.symbol ?? normalisedText).trim();
+                const timeframeInput = String(parsedOhlc.timeframe ?? normalisedText).trim();
                 const resolvedSymbol = hardMapSymbol(symbolInput);
                 if (!resolvedSymbol) {
                   throw new Error("invalid_symbol");
                 }
                 const resolvedTimeframe = toTimeframe(timeframeInput);
                 const key = keyFor(resolvedSymbol, resolvedTimeframe);
-                let candles = toolContext.lastCandlesBySymbolTimeframe[key];
-                if (!candles || candles.length === 0) {
-                  candles = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
-                  toolContext.lastCandlesBySymbolTimeframe[key] = candles;
+                let ohlc = toolContext.lastOhlcBySymbolTimeframe[key];
+                if (!ohlc) {
+                  ohlc = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 60);
+                  toolContext.lastOhlcBySymbolTimeframe[key] = ohlc;
                 }
-                const signal = await tools.compute_trading_signal(resolvedSymbol, resolvedTimeframe, candles);
-                const timeForMsg = signal.last_closed_utc
-                  ? `${signal.last_closed_utc.replace(/\s+/, "T")}:00Z`
-                  : new Date().toISOString();
-                const trimmed = formatSignalMsg({
-                  decision: signal.decision,
-                  entry: signal.entry,
-                  sl: signal.sl,
-                  tp1: signal.tp1,
-                  tp2: signal.tp2,
-                  time: timeForMsg,
-                  symbol: signal.symbol,
-                }).trim();
-                if (!trimmed) {
-                  throw new Error("empty_signal");
+                const signal = await tools.compute_trading_signal({ ...ohlc, lang: language });
+                if (signal.status !== "OK") {
+                  return respondWithFallback(signalUnavailable(language), false);
                 }
                 console.log("[TOOL] compute_trading_signal -> ok", {
                   symbol: resolvedSymbol,
                   timeframe: resolvedTimeframe,
+                  candles: ohlc.candles.length,
                 });
                 const ensured = await ensureConversation();
-                const replyText = applyGreeting(trimmed, isNewConversation, language);
+                const block = formatSignalBlock(signal);
+                const replyText = applyGreeting(block, isNewConversation, language);
                 return { replyText, language, conversationId: ensured };
               } else if (toolName === "search_web_news") {
                 const query = String(parsed.query ?? normalisedText).trim();
