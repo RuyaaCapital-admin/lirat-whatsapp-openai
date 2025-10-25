@@ -21,9 +21,9 @@ import {
   type PriceResult,
   type TradingSignalResult,
 } from "../../tools/agentTools";
-import type { OhlcResult } from "../../tools/ohlc";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
 import { formatNewsMsg, formatPriceMsg } from "../../utils/formatters";
+import { formatTradingSignalWhatsapp } from "../../utils/tradingSignalFormatter";
 import { hardMapSymbol, toTimeframe, normalizeArabic, type TF } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
@@ -136,61 +136,7 @@ function buildPriceReply(result: PriceResult): string {
   });
 }
 
-function formatPriceLike(value: number, symbol: string): string {
-  if (!Number.isFinite(value)) return "-";
-  const abs = Math.abs(value);
-  const upper = symbol.toUpperCase();
-  if (upper.endsWith("USDT")) {
-    return value.toFixed(2);
-  }
-  if (abs >= 100) {
-    return value.toFixed(2);
-  }
-  if (abs >= 10) {
-    return value.toFixed(2);
-  }
-  return value.toFixed(3);
-}
-
 type TradingSignalOk = Extract<TradingSignalResult, { status: "OK" }>;
-
-function formatSignalPrice(value: number | null | undefined, symbol: string): string {
-  if (value == null || !Number.isFinite(value)) {
-    return "-";
-  }
-  return formatPriceLike(value, symbol);
-}
-
-function formatUtcTimestampFromUnix(seconds: number): string {
-  if (!Number.isFinite(seconds)) {
-    return new Date().toISOString().replace("T", " ").slice(0, 16);
-  }
-  const ms = Math.floor(seconds) * 1000;
-  const iso = new Date(ms).toISOString();
-  return iso.replace("T", " ").slice(0, 16);
-}
-
-const STALE_SUFFIX = {
-  ar: " (إشارة قديمة، للمراجعة فقط).",
-  en: " (stale, for review only).",
-} as const;
-
-function pickReason(signal: "BUY" | "SELL" | "NEUTRAL", lang: LanguageCode, isStale: boolean): string {
-  const base = (() => {
-    if (lang === "ar") {
-      if (signal === "BUY") return "ضغط شراء فوق المتوسطات";
-      if (signal === "SELL") return "ضغط بيع تحت المتوسطات";
-      return "السوق بدون اتجاه واضح حالياً";
-    }
-    if (signal === "BUY") return "Buy pressure above key averages";
-    if (signal === "SELL") return "Sell pressure below key averages";
-    return "Market is currently sideways";
-  })();
-  if (isStale) {
-    return `${base}${lang === "ar" ? STALE_SUFFIX.ar : STALE_SUFFIX.en}`;
-  }
-  return base;
-}
 
 const TIMEFRAME_PATTERNS: Array<{ tf: TF; regex: RegExp }> = [
   { tf: "1min", regex: /(\b1\s*(?:m|min|minute)\b|\bدقيقة\b|\bعال?دقيقة\b)/i },
@@ -275,32 +221,6 @@ function resolveSignalParams(args: ResolveSignalParamsArgs): ResolvedSignalParam
     timeframe = "5min";
   }
   return { symbol, timeframe, timeframeExplicit: fromText.explicit || Boolean(planTf) };
-}
-
-interface BuildSignalMessageArgs {
-  ohlc: OhlcResult;
-  signal: TradingSignalOk;
-  lang: LanguageCode;
-}
-
-function buildSignalMessage({ ohlc, signal, lang }: BuildSignalMessageArgs): string {
-  const ageMinutes = ohlc.ageMinutes ?? Math.max(0, Math.floor(ohlc.ageSeconds / 60));
-  const timeLabel = formatUtcTimestampFromUnix(ohlc.lastCandleUnix);
-  const reason = pickReason(signal.signal, lang, ohlc.isStale);
-  const lines: string[] = [
-    `time (UTC): ${timeLabel}`,
-    `symbol: ${ohlc.symbol}`,
-    `SIGNAL: ${signal.signal}`,
-    `Reason: ${reason}`,
-    `Data age: ${ageMinutes}m (${ohlc.isStale ? "stale" : "fresh"})`,
-  ];
-  if (signal.signal !== "NEUTRAL") {
-    lines.push(`Entry: ${formatSignalPrice(signal.entry, ohlc.symbol)}`);
-    lines.push(`SL: ${formatSignalPrice(signal.sl, ohlc.symbol)}`);
-    lines.push(`TP1: ${formatSignalPrice(signal.tp1, ohlc.symbol)}`);
-    lines.push(`TP2: ${formatSignalPrice(signal.tp2, ohlc.symbol)}`);
-  }
-  return lines.join("\n");
 }
 
 function buildNewsReply(rows: { date: string; source: string; title: string; impact?: string }[]): string {
@@ -515,16 +435,15 @@ async function smartToolLoop({
         timeframe: ohlc.timeframe,
         candles: ohlc.candles.length,
         decision: signal.signal,
-        stale: ohlc.isStale,
-        age_min: ohlc.ageMinutes ?? Math.floor(ohlc.ageSeconds / 60),
-        last_iso: ohlc.lastCandleISO,
+        stale: signal.isStale,
+        age_min: signal.ageMinutes,
+        last_iso: signal.lastTimeISO,
       });
 
-      const reply = buildSignalMessage({ ohlc, signal, lang: language });
+      const reply = formatTradingSignalWhatsapp({ signal, lang: language });
       return {
         text: reply,
-        skipGreeting: true,
-        contextUpdate: { last_symbol: ohlc.symbol, last_tf: ohlc.timeframe },
+        contextUpdate: { last_symbol: signal.symbol, last_tf: signal.timeframe },
       };
     } catch (error) {
       const code = (error as any)?.code;

@@ -22,10 +22,14 @@ async function runTradingSignalTests() {
       candles: freshCandles,
       lastCandleUnix: freshCandles.at(-1)!.t,
       lastCandleISO: new Date(freshCandles.at(-1)!.t * 1000).toISOString(),
+      lastTimeISO: new Date(freshCandles.at(-1)!.t * 1000).toISOString(),
+      lastCandleUTCMinute: Math.floor(freshCandles.at(-1)!.t / 60) * 60 * 1000,
       ageSeconds: Math.floor((fixedNow / 1000) - freshCandles.at(-1)!.t),
+      ageMinutes: Math.floor(Math.floor((fixedNow / 1000) - freshCandles.at(-1)!.t) / 60),
       isStale: false,
       tooOld: false,
       provider: "TEST",
+      rawSymbol: "XAUUSD",
     } satisfies OhlcResult;
     const result = await agentTools.compute_trading_signal({ ...freshOhlc, lang: "en" });
     assert.strictEqual(result.status, "OK");
@@ -50,7 +54,10 @@ async function runTradingSignalTests() {
       candles: freshCandles.map((candle) => ({ ...candle, t: candle.t - 10 * 60 * 60 })) ,
       lastCandleUnix: freshOhlc.lastCandleUnix - 10 * 60 * 60,
       lastCandleISO: new Date((freshOhlc.lastCandleUnix - 10 * 60 * 60) * 1000).toISOString(),
+      lastTimeISO: new Date((freshOhlc.lastCandleUnix - 10 * 60 * 60) * 1000).toISOString(),
+      lastCandleUTCMinute: Math.floor((freshOhlc.lastCandleUnix - 10 * 60 * 60) / 60) * 60 * 1000,
       ageSeconds: 10 * 60 * 60,
+      ageMinutes: Math.floor((10 * 60 * 60) / 60),
       isStale: true,
       tooOld: false,
     };
@@ -58,7 +65,12 @@ async function runTradingSignalTests() {
     assert.strictEqual(usable.status, "OK");
     assert.strictEqual(usable.isDelayed, true, "older candles should mark the signal as delayed");
 
-    const tooOld: OhlcResult = { ...oldOhlc, tooOld: true, ageSeconds: 10 * 24 * 60 * 60 };
+    const tooOld: OhlcResult = {
+      ...oldOhlc,
+      tooOld: true,
+      ageSeconds: 10 * 24 * 60 * 60,
+      ageMinutes: Math.floor((10 * 24 * 60 * 60) / 60),
+    };
     const unusable = await agentTools.compute_trading_signal({ ...tooOld, lang: "en" });
     assert.strictEqual(unusable.status, "UNUSABLE");
   } finally {

@@ -6,6 +6,7 @@ import "./formatters.test";
 import "./ohlc.test";
 import "./trading-signal.test";
 import "./signal.test";
+import "./whatsapp-format.test";
 
 (async () => {
   try {

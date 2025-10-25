@@ -105,8 +105,7 @@ async function runSignalModuleTests() {
       } as any);
       const ohlc = await get_ohlc("XAUUSD", "1hour", 200);
       assert.ok(ohlc.isStale, "stale dataset should be flagged");
-      const ageMinutes = ohlc.ageMinutes ?? Math.floor(ohlc.ageSeconds / 60);
-      assert.ok(ageMinutes >= 36 * 60, "ageMinutes should reflect stale age");
+      assert.ok(ohlc.ageMinutes >= 36 * 60, "ageMinutes should reflect stale age");
       const signal = compute_trading_signal({ ...ohlc, lang: "en" });
       assert.strictEqual(signal.status, "UNUSABLE");
     }

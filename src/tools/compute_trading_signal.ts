@@ -17,8 +17,11 @@ export interface TradingSignalOk {
   tp2: number | null;
   reason: string;
   lastISO: string;
+  lastTimeISO: string;
   ageSeconds: number;
+  ageMinutes: number;
   isDelayed: boolean;
+  isStale: boolean;
   provider: string;
 }
 
@@ -215,6 +218,11 @@ export function compute_trading_signal(input: TradingSignalInput): TradingSignal
   const targets = computeTargets(signal, lastClose, previousClose, atrValue);
   const reason = buildReason(signal, lang);
 
+  const lastIso = input.lastCandleISO ?? input.lastTimeISO ?? new Date().toISOString();
+  const ageSeconds = Number.isFinite(input.ageSeconds) ? input.ageSeconds : Math.max(0, input.ageMinutes * 60);
+  const ageMinutes = Number.isFinite(input.ageMinutes) ? Math.floor(input.ageMinutes) : Math.floor(ageSeconds / 60);
+  const stale = Boolean(input.isStale);
+
   const result: TradingSignalOk = {
     status: "OK",
     lang,
@@ -226,9 +234,12 @@ export function compute_trading_signal(input: TradingSignalInput): TradingSignal
     tp1: targets.tp1,
     tp2: targets.tp2,
     reason,
-    lastISO: input.lastCandleISO,
-    ageSeconds: input.ageSeconds,
-    isDelayed: input.isStale,
+    lastISO: lastIso,
+    lastTimeISO: lastIso,
+    ageSeconds,
+    ageMinutes,
+    isDelayed: stale,
+    isStale: stale,
     provider: input.provider,
   };
 
