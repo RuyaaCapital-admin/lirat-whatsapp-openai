@@ -24,6 +24,11 @@ export interface ConversationLookupResult {
   isNew: boolean;
 }
 
+export interface ConversationHistory {
+  conversationId: string | null;
+  messages: Array<{ role: ConversationRole; content: string }>;
+}
+
 const TENANT_ID = "default";
 
 let client: SupabaseClient | null = null;
@@ -85,6 +90,42 @@ export async function findOrCreateConversation(phone: string, title?: string): P
   }
 }
 
+export async function getOrCreateConversation(phone: string, title?: string): Promise<string | null> {
+  const result = await findOrCreateConversation(phone, title);
+  return result?.id ?? null;
+}
+
+export async function loadConversationHistory(phone: string, limit = 10): Promise<ConversationHistory> {
+  if (!phone) {
+    return { conversationId: null, messages: [] };
+  }
+  const supabase = getClient();
+  if (!supabase) {
+    return { conversationId: null, messages: [] };
+  }
+  try {
+    const { data: conversation, error } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("user_id", phone)
+      .eq("tenant_id", TENANT_ID)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error && error.code !== "PGRST116") {
+      throw error;
+    }
+    if (!conversation?.id) {
+      return { conversationId: null, messages: [] };
+    }
+    const messages = await fetchConversationMessages(conversation.id, limit);
+    return { conversationId: conversation.id, messages };
+  } catch (err) {
+    console.warn("[SUPABASE] load history failed", err);
+    return { conversationId: null, messages: [] };
+  }
+}
+
 export interface MessageInsertPayload {
   conversationId: string;
   phone: string;
@@ -126,14 +167,15 @@ export async function fetchConversationMessages(
       .from("messages")
       .select("role, content")
       .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
+      .order("created_at", { ascending: false })
       .limit(limit);
     if (error) {
       throw error;
     }
     return (data ?? [])
+      .reverse()
       .map((row) => ({
-        role: row.role === "assistant" ? "assistant" : "user",
+        role: (row.role === "assistant" ? "assistant" : "user") as ConversationRole,
         content: typeof row.content === "string" ? row.content : "",
       }))
       .filter((row) => row.content.trim().length > 0);
