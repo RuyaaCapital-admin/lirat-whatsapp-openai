@@ -1,211 +1,209 @@
 // src/lib/supabase.ts
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { HistoryMessage } from "./memory";
 
-export type StoredMessageRole = "user" | "assistant";
+export type ConversationRole = "user" | "assistant";
 
-export interface StoredMessage {
-  id?: string;
-  wa_id?: string;
-  role?: string | null;
-  direction?: string | null;
-  body?: string | null;
-  content?: string | null;
-  message?: string | null;
-  text?: string | null;
-  created_at?: string | null;
-  timestamp?: string | null;
-  lang?: string | null;
-  contact_name?: string | null;
+export interface ConversationMessage {
+  role: ConversationRole;
+  content: string;
 }
 
-export interface LoadedHistory {
-  messages: HistoryMessage[];
-  lastInboundAt: number | null;
+export interface ConversationHistory {
+  conversationId: string | null;
+  messages: ConversationMessage[];
 }
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
-const MESSAGES_TABLE = process.env.SUPABASE_MESSAGES_TABLE || "messages";
-const PROCESSED_TABLE = process.env.SUPABASE_PROCESSED_TABLE || "processed_messages";
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_KEY ||
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.SUPABASE_ANON_KEY ||
+  "";
 
-function isDisabledFlag(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalised = value.trim().toLowerCase();
-  return normalised === "1" || normalised === "true" || normalised === "yes";
-}
-
-const SUPABASE_DISABLED = isDisabledFlag(process.env.SUPABASE_DISABLED);
+const DEFAULT_TENANT_ID = process.env.SUPABASE_TENANT_ID || "default-tenant";
+const DEFAULT_EXTERNAL_USER = process.env.SUPABASE_EXTERNAL_USER_ID || "external";
 
 let client: SupabaseClient | null = null;
+let disabledLogged = false;
 
-if (!SUPABASE_DISABLED && SUPABASE_URL && SUPABASE_SERVICE_ROLE) {
-  client = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+function getClient(): SupabaseClient | null {
+  if (client) {
+    return client;
+  }
+
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    if (!disabledLogged) {
+      console.log("[SUPABASE] disabled", { reason: "missing_env" });
+      disabledLogged = true;
+    }
+    return null;
+  }
+
+  client = createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+  return client;
 }
 
-export function isSupabaseEnabled(): boolean {
-  return client !== null;
-}
-
-function coerceRole(row: StoredMessage): StoredMessageRole | null {
-  const raw = (row.role || row.direction || "").toString().toLowerCase();
-  if (["user", "in", "incoming", "inbound"].includes(raw)) return "user";
-  if (["assistant", "out", "outgoing", "outbound", "bot"].includes(raw)) return "assistant";
-  return null;
-}
-
-function extractBody(row: StoredMessage): string {
-  const candidates = [row.body, row.content, row.message, row.text];
-  for (const value of candidates) {
-    if (typeof value === "string" && value.trim()) {
-      return value;
-    }
-  }
-  return "";
-}
-
-function parseTimestamp(row: StoredMessage): number | null {
-  const candidates = [row.created_at, row.timestamp, (row as any).inserted_at, (row as any).updated_at, (row as any).createdAt];
-  for (const value of candidates) {
-    if (typeof value === "string" && value) {
-      const parsed = Date.parse(value);
-      if (!Number.isNaN(parsed)) return parsed;
-    }
-  }
-  return null;
-}
-
-export async function fetchHistoryFromSupabase(waId: string, limit = 15): Promise<LoadedHistory> {
-  if (!client || !waId) {
-    return { messages: [], lastInboundAt: null };
+async function findConversationId(phone: string): Promise<string | null> {
+  const supabase = getClient();
+  if (!supabase) {
+    return null;
   }
 
   try {
-    const response = await client
-      .from(MESSAGES_TABLE)
-      .select("*")
-      .eq("wa_id", waId)
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("tenant_id", DEFAULT_TENANT_ID)
+      .eq("title", phone)
       .order("created_at", { ascending: false, nullsFirst: false })
-      .order("timestamp", { ascending: false, nullsFirst: false })
-      .limit(limit);
+      .limit(1)
+      .maybeSingle();
 
-    if (response.error) {
-      console.warn("[SUPABASE] fetch history failed", response.error);
-      return { messages: [], lastInboundAt: null };
+    if (error && error.code !== "PGRST116") {
+      throw error;
     }
 
-    const rows = Array.isArray(response.data) ? (response.data as StoredMessage[]) : [];
-    rows.sort((a, b) => (parseTimestamp(a) ?? 0) - (parseTimestamp(b) ?? 0));
-
-    const history: HistoryMessage[] = [];
-    let lastInboundAt: number | null = null;
-
-    for (const row of rows) {
-      const role = coerceRole(row);
-      const content = extractBody(row);
-      if (!role || !content) continue;
-      history.push({ role, content });
-      if (role === "user") {
-        const ts = parseTimestamp(row);
-        if (typeof ts === "number") {
-          lastInboundAt = lastInboundAt ? Math.max(lastInboundAt, ts) : ts;
-        }
-      }
-    }
-
-    return { messages: history.slice(-limit), lastInboundAt };
+    return (data as { id?: string } | null)?.id ?? null;
   } catch (error) {
-    console.warn("[SUPABASE] fetch history exception", error);
-    return { messages: [], lastInboundAt: null };
+    console.error("[SUPABASE] error findConversation", error);
+    return null;
   }
 }
 
-export interface LogMessageInput {
-  waId: string;
-  role: StoredMessageRole;
-  content: string;
-  lang?: string;
-  messageId?: string;
-  contactName?: string;
+export async function getOrCreateConversation(
+  phone: string,
+  contactName?: string,
+): Promise<string | null> {
+  if (!phone) {
+    return null;
+  }
+
+  const supabase = getClient();
+  if (!supabase) {
+    return null;
+  }
+
+  const existing = await findConversationId(phone);
+  if (existing) {
+    return existing;
+  }
+
+  try {
+    const title = phone;
+    const payload = {
+      title,
+      tenant_id: DEFAULT_TENANT_ID,
+      user_id: DEFAULT_EXTERNAL_USER,
+      created_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("conversations")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return (data as { id?: string } | null)?.id ?? null;
+  } catch (error) {
+    console.error("[SUPABASE] error createConversation", error);
+    return null;
+  }
 }
 
-export async function logSupabaseMessage(input: LogMessageInput): Promise<void> {
-  if (!client) return;
-  const { waId, role, content, lang, messageId, contactName } = input;
-  if (!waId || !content) return;
+export async function loadRecentMessages(
+  conversationId: string,
+  limit = 10,
+): Promise<ConversationMessage[]> {
+  const supabase = getClient();
+  if (!supabase || !conversationId) {
+    return [];
+  }
 
-  const payload: Record<string, unknown> = {
-    wa_id: waId,
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("role,content")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true, nullsFirst: false })
+      .limit(limit);
+
+    if (error) {
+      throw error;
+    }
+
+    return (data as Array<{ role?: string | null; content?: string | null }> | null)?.flatMap(
+      (row) => {
+        const role = row?.role === "assistant" ? "assistant" : row?.role === "user" ? "user" : null;
+        const content = typeof row?.content === "string" ? row.content.trim() : "";
+        return role && content ? [{ role, content }] : [];
+      },
+    ) ?? [];
+  } catch (error) {
+    console.error("[SUPABASE] error loadMessages", error);
+    return [];
+  }
+}
+
+export async function loadConversationHistory(
+  phone: string,
+  limit = 10,
+): Promise<ConversationHistory> {
+  if (!phone) {
+    return { conversationId: null, messages: [] };
+  }
+
+  const supabase = getClient();
+  if (!supabase) {
+    return { conversationId: null, messages: [] };
+  }
+
+  const conversationId = await findConversationId(phone);
+  if (!conversationId) {
+    return { conversationId: null, messages: [] };
+  }
+
+  const messages = await loadRecentMessages(conversationId, limit);
+  return { conversationId, messages };
+}
+
+export interface SaveMessageOptions {
+  userId?: string | null;
+}
+
+export async function saveMessage(
+  conversationId: string,
+  role: ConversationRole,
+  content: string,
+  options: SaveMessageOptions = {},
+): Promise<void> {
+  const supabase = getClient();
+  if (!supabase || !conversationId) {
+    return;
+  }
+
+  const payload = {
+    conversation_id: conversationId,
     role,
-    body: content,
-    lang: lang ?? null,
-    message_id: messageId ?? null,
-    direction: role === "user" ? "inbound" : "outbound",
-    contact_name: contactName ?? null,
+    content,
+    user_id:
+      options.userId ?? (role === "user" ? DEFAULT_EXTERNAL_USER : role === "assistant" ? "assistant" : null),
+    created_at: new Date().toISOString(),
   };
 
   try {
-    const { error } = await client.from(MESSAGES_TABLE).insert(payload);
+    const { error } = await supabase.from("messages").insert(payload);
     if (error) {
-      console.warn("[SUPABASE] failed to log message", error);
+      throw error;
     }
   } catch (error) {
-    console.warn("[SUPABASE] insert exception", error);
-  }
-}
-
-export async function shouldGreet(waId: string, lastInboundTimestamp?: number | null): Promise<boolean> {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  if (typeof lastInboundTimestamp === "number") {
-    return lastInboundTimestamp < cutoff;
-  }
-  if (!client || !waId) return false;
-  try {
-    const { data, error } = await client
-      .from(MESSAGES_TABLE)
-      .select("created_at,timestamp,inserted_at,updated_at")
-      .eq("wa_id", waId)
-      .eq("role", "user")
-      .order("created_at", { ascending: false, nullsFirst: false })
-      .order("timestamp", { ascending: false, nullsFirst: false })
-      .limit(1);
-    if (error) {
-      console.warn("[SUPABASE] shouldGreet query failed", error);
-      return false;
-    }
-    if (!data || !data.length) {
-      return true;
-    }
-    const ts = parseTimestamp(data[0] as StoredMessage);
-    if (!ts) return true;
-    return ts < cutoff;
-  } catch (error) {
-    console.warn("[SUPABASE] shouldGreet exception", error);
-    return false;
-  }
-}
-
-export async function reserveMessageProcessing(messageId: string): Promise<boolean> {
-  if (!client || !messageId) {
-    return true;
-  }
-  try {
-    const payload = { id: messageId, created_at: new Date().toISOString() };
-    const { error } = await client.from(PROCESSED_TABLE).insert(payload);
-    if (!error) {
-      return true;
-    }
-    if ((error as any)?.code === "23505" || /duplicate/i.test(String((error as any)?.message ?? ""))) {
-      console.info("[SUPABASE] message already processed", { messageId });
-      return false;
-    }
-    console.warn("[SUPABASE] reserve message failed", error);
-    return true;
-  } catch (error) {
-    console.warn("[SUPABASE] reserve message exception", error);
-    return true;
+    console.error("[SUPABASE] error saveMessage", error);
+    throw error;
   }
 }
 

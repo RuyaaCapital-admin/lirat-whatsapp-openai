@@ -118,6 +118,10 @@ async function run() {
   await testParseOhlcPayload();
   await testNeutralFormatting();
   await testBuyFormatting();
+  const { runSmartReplyTests } = await import("./smartReply.behaviour.test.ts");
+  await runSmartReplyTests();
+  const { runWebhookHandlerTests } = await import("./webhook-handler.test.ts");
+  await runWebhookHandlerTests();
   console.log("All tests passed");
 }
 
