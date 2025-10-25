@@ -238,6 +238,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
             if (
               symbol &&
               timeframe &&
+              lastOhlcResult &&
               lastOhlcResult.symbol === symbol &&
               lastOhlcResult.timeframe === timeframe
             ) {
