@@ -11,7 +11,7 @@ const baseUrl = `https://graph.facebook.com/${WHATSAPP_VERSION}`;
 
 async function makeRequest(endpoint: string, payload: any, retries = 1): Promise<any> {
   const url = `${baseUrl}/${PHONE_NUMBER_ID}/${endpoint}`;
-  
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await fetch(url, {
@@ -34,9 +34,17 @@ async function makeRequest(endpoint: string, payload: any, retries = 1): Promise
         continue;
       }
 
-      const error = await response.text();
-      console.error(`[WABA] API error: ${response.status} ${error}`);
-      throw new Error(`WhatsApp API error: ${response.status}`);
+      const text = await response.text();
+      let parsed: any = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch (err) {
+        void err;
+      }
+      const error: any = new Error(`WhatsApp API error: ${response.status}`);
+      error.status = response.status;
+      error.responseBody = parsed;
+      throw error;
     } catch (error) {
       if (attempt === retries) throw error;
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -45,15 +53,37 @@ async function makeRequest(endpoint: string, payload: any, retries = 1): Promise
 }
 
 export async function sendText(to: string, body: string): Promise<void> {
+  const recipient = (to ?? '').trim();
+  if (!recipient) {
+    console.warn('[WABA] skipped send: empty recipient');
+    return;
+  }
+  let messageBody = typeof body === 'string' ? body : '';
+  if (!messageBody.trim()) {
+    const fallbackAr = 'البيانات غير متاحة حالياً.';
+    const fallbackEn = 'Data unavailable right now.';
+    const hasArabic = /[\u0600-\u06FF]/.test(body ?? '');
+    messageBody = hasArabic ? fallbackAr : fallbackEn;
+  }
   const payload = {
     messaging_product: 'whatsapp',
-    to: to,
+    to: recipient,
     type: 'text',
-    text: { body }
+    text: { body: messageBody }
   };
 
-  await makeRequest('messages', payload);
-  console.log('[WABA] reply sent', { to, kind: 'text' });
+  const preview = messageBody.slice(0, 60);
+  try {
+    await makeRequest('messages', payload);
+    console.log('[WABA] reply sent', { to: recipient, kind: 'text' });
+  } catch (error) {
+    const err: any = error;
+    if (err?.status === 400) {
+      console.warn('[WABA] sendText 400', { to: recipient, preview, error: err.responseBody ?? err.message });
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function sendTyping(messageId: string): Promise<void> {

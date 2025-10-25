@@ -7,10 +7,20 @@ testSignal();
 testNews();
 
 async function testPrice() {
-  const text = formatPriceMsg({ symbol: "XAGUSD", price: 48.6385, timeUTC: "2025-10-24T17:44:00Z" });
+  const text = formatPriceMsg({
+    symbol: "XAGUSD",
+    price: 48.6385,
+    timeUTC: "2025-10-24T17:44:00Z",
+    source: "FCS latest",
+  });
   assert.strictEqual(
     text,
-    "- Time (UTC): 2025-10-24 17:44\n- Symbol: XAGUSD\n- Price: 48.6385",
+    [
+      "Time (UTC): 2025-10-24 17:44",
+      "Symbol: XAGUSD",
+      "Price: 48.6385",
+      "Source: FCS latest",
+    ].join("\n"),
     "price formatter must match spec",
   );
 }
@@ -24,18 +34,17 @@ async function testSignal() {
     tp2: 4020.65,
     time: "2025-10-24T13:00:00Z",
     symbol: "XAUUSD",
-    interval: "1hour",
   });
   assert.strictEqual(
     block,
     [
-      "- Time (UTC): 2025-10-24 13:00",
-      "- Symbol: XAUUSD (1hour)",
-      "- SIGNAL: SELL",
-      "- Entry: 4062.445",
-      "- SL: 4083.34",
-      "- TP1: 4041.54",
-      "- TP2: 4020.65",
+      "Time (UTC): 2025-10-24 13:00",
+      "Symbol: XAUUSD",
+      "SIGNAL: SELL",
+      "Entry: 4062.445",
+      "SL: 4083.34",
+      "TP1: 4041.54",
+      "TP2: 4020.65",
     ].join("\n"),
     "signal block must include 7 lines",
   );
@@ -48,12 +57,19 @@ async function testSignal() {
     tp2: null,
     time: "2025-10-24T13:00:00Z",
     symbol: "XAUUSD",
-    interval: "1hour",
   });
   assert.strictEqual(
     neutral,
-    "- Time (UTC): 2025-10-24 13:00\n- Symbol: XAUUSD (1hour)\n- SIGNAL: NEUTRAL",
-    "neutral block should be 3 lines",
+    [
+      "Time (UTC): 2025-10-24 13:00",
+      "Symbol: XAUUSD",
+      "SIGNAL: NEUTRAL",
+      "Entry: 0",
+      "SL: 0",
+      "TP1: 0",
+      "TP2: 0",
+    ].join("\n"),
+    "neutral block should include numeric placeholders",
   );
 }
 
@@ -64,7 +80,7 @@ async function testNews() {
   ]);
   assert.strictEqual(
     news,
-    "2025-10-24 — Reuters — Headline 1\n2025-10-23 — CNBC — Headline 2",
+    "* 2025-10-24 — Reuters — Headline 1\n* 2025-10-23 — CNBC — Headline 2",
     "news formatter trims to three lines",
   );
 }

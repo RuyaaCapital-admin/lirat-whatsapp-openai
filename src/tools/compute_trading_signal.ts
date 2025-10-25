@@ -1,13 +1,13 @@
 import { formatSignalMsg } from "../utils/formatters";
-import { TF, timeframeToLabel } from "./normalize";
+import { TF } from "./normalize";
 import { get_ohlc, Candle, OhlcResult, OhlcSource } from "./ohlc";
 
 export interface SignalPayload extends Record<string, unknown> {
   signal: "BUY" | "SELL" | "NEUTRAL";
-  entry: number | null;
-  sl: number | null;
-  tp1: number | null;
-  tp2: number | null;
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
   timeUTC: string;
   symbol: string;
   interval: TF;
@@ -188,10 +188,10 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
 
   return {
     signal: decision,
-    entry: decision === "NEUTRAL" ? null : entry,
-    sl: decision === "NEUTRAL" ? null : stopLoss,
-    tp1: decision === "NEUTRAL" ? null : takeProfit1,
-    tp2: decision === "NEUTRAL" ? null : takeProfit2,
+    entry,
+    sl: stopLoss,
+    tp1: takeProfit1,
+    tp2: takeProfit2,
     timeUTC: toUtcIso(series.lastClosed.t),
     symbol: normaliseSymbol(symbol),
     interval: timeframe,
@@ -230,7 +230,6 @@ export function formatSignalPayload(signal: SignalPayload): string {
     tp2: signal.tp2,
     time: signal.timeUTC,
     symbol: signal.symbol,
-    interval: timeframeToLabel(signal.interval),
   });
 }
 

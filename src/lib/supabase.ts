@@ -29,7 +29,7 @@ export interface ConversationHistory {
   messages: Array<{ role: ConversationRole; content: string }>;
 }
 
-const TENANT_ID = "default";
+const TENANT_ID = process.env.TENANT_ID ?? null;
 
 let client: SupabaseClient | null = null;
 
@@ -47,22 +47,25 @@ function getClient(): SupabaseClient | null {
   return client;
 }
 
-export async function findOrCreateConversation(phone: string, title?: string): Promise<ConversationLookupResult | null> {
+export async function findOrCreateConversation(
+  phone: string,
+  title?: string,
+): Promise<ConversationLookupResult | null> {
   if (!phone) {
     return null;
   }
+  const conversationId = phone;
   const supabase = getClient();
   if (!supabase) {
-    return null;
+    return { id: conversationId, isNew: true };
   }
+  const createdAt = new Date().toISOString();
+  const safeTitle = title && title.trim() ? title.trim() : "WhatsApp chat";
   try {
     const { data: existing, error: lookupError } = await supabase
       .from("conversations")
       .select("id")
-      .eq("user_id", phone)
-      .eq("tenant_id", TENANT_ID)
-      .order("created_at", { ascending: false })
-      .limit(1)
+      .eq("id", conversationId)
       .maybeSingle();
     if (lookupError && lookupError.code !== "PGRST116") {
       throw lookupError;
@@ -71,22 +74,20 @@ export async function findOrCreateConversation(phone: string, title?: string): P
       return { id: existing.id, isNew: false };
     }
     const payload = {
+      id: conversationId,
       user_id: phone,
       tenant_id: TENANT_ID,
-      title: title && title.trim() ? title.trim() : phone,
+      title: safeTitle,
+      created_at: createdAt,
     };
-    const { data: inserted, error: insertError } = await supabase
-      .from("conversations")
-      .insert(payload)
-      .select("id")
-      .single();
+    const { error: insertError } = await supabase.from("conversations").insert(payload);
     if (insertError) {
       throw insertError;
     }
-    return { id: inserted!.id, isNew: true };
+    return { id: conversationId, isNew: true };
   } catch (error) {
-    console.warn("[SUPABASE] conversation error", error);
-    return null;
+    console.warn("[SUPABASE] failed to log conversation", error);
+    return { id: conversationId, isNew: false };
   }
 }
 
@@ -107,10 +108,7 @@ export async function loadConversationHistory(phone: string, limit = 10): Promis
     const { data: conversation, error } = await supabase
       .from("conversations")
       .select("id")
-      .eq("user_id", phone)
-      .eq("tenant_id", TENANT_ID)
-      .order("created_at", { ascending: false })
-      .limit(1)
+      .eq("id", phone)
       .maybeSingle();
     if (error && error.code !== "PGRST116") {
       throw error;
@@ -144,13 +142,14 @@ export async function insertMessage({ conversationId, phone, role, content }: Me
       user_id: phone,
       role,
       content,
+      created_at: new Date().toISOString(),
     };
     const { error } = await supabase.from("messages").insert(payload);
     if (error) {
       throw error;
     }
   } catch (error) {
-    console.warn("[SUPABASE] insert message failed", error);
+    console.warn("[SUPABASE] failed to log conversation", error);
   }
 }
 

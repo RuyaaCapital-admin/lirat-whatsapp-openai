@@ -17,7 +17,7 @@ for (const { price, expected } of cases) {
   assert.strictEqual(lines[0], 'Time (UTC): 10:00');
   assert.strictEqual(lines[1], 'Symbol: XAU/USD');
   assert.strictEqual(lines[2], `Price: ${expected}`);
-  assert.strictEqual(lines[3], 'Note: latest CLOSED price');
+  assert.strictEqual(lines[3], 'Source: latest CLOSED price');
 }
 
 console.log('formatCompactPrice tests passed');

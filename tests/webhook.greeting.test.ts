@@ -54,12 +54,14 @@ async function runCase({
   isNew,
   useDefaultAssistant = false,
   id = Math.random().toString(36).slice(2),
+  from = "97155",
 }: {
   text: string;
   assistantReply: string;
   isNew: boolean;
   useDefaultAssistant?: boolean;
   id?: string;
+  from?: string;
 }) {
   let sentBody = "";
   const handler = createWebhookHandler({
@@ -83,7 +85,7 @@ async function runCase({
   });
   const req = {
     method: "POST",
-    body: makePayload(text, "97155", id),
+    body: makePayload(text, from, id),
   } as NextApiRequest;
   const res = makeRes();
   await handler(req, res);
@@ -93,9 +95,16 @@ async function runCase({
 }
 
 async function testReturningUserNoGreeting() {
-  const body = await runCase({ text: "سعر الفضة", assistantReply: "- Time (UTC): 2025-10-24 17:44\n- Symbol: XAGUSD\n- Price: 48.6385", isNew: false });
+  await runCase({ text: "مرحبا", assistantReply: "Time (UTC): 2025-10-24 17:44", isNew: true, id: "seed-1" });
+  const body = await runCase({
+    text: "سعر الفضة",
+    assistantReply:
+      "Time (UTC): 2025-10-24 17:44\nSymbol: XAGUSD\nPrice: 48.6385\nSource: FCS latest",
+    isNew: false,
+    id: "follow-1",
+  });
   assert.ok(!body.startsWith("مرحباً"), "returning user should not get greeting");
-  assert.ok(body.startsWith("- Time (UTC):"), "body should start with time line");
+  assert.ok(body.startsWith("Time (UTC):"), "body should start with time line");
 }
 
 async function testIdentity() {
@@ -104,7 +113,13 @@ async function testIdentity() {
 }
 
 async function testFirstContactGreeting() {
-  const body = await runCase({ text: "مرحبا", assistantReply: "شكراً لتواصلك", isNew: true });
+  const body = await runCase({
+    text: "مرحبا",
+    assistantReply: "شكراً لتواصلك",
+    isNew: true,
+    from: "97156",
+    id: "seed-2",
+  });
   assert.ok(body.startsWith("مرحباً، أنا مساعد ليرات"));
   assert.ok(body.includes("\nشكراً"));
 }
