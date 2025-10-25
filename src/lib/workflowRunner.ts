@@ -118,7 +118,18 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
     return await get_ohlc(symbol, timeframe, limit);
   },
   async compute_trading_signal(args) {
-    const ohlc = args.ohlc || args;
+    // Accept either a full OHLC payload or symbol/timeframe and fetch candles through get_ohlc
+    let ohlc = args.ohlc || args;
+    if (!ohlc?.candles || !Array.isArray(ohlc.candles)) {
+      const sym = String(ohlc.symbol || args.symbol || "").trim();
+      const tf = String(ohlc.timeframe || args.timeframe || "").trim();
+      if (sym && tf) {
+        const fetched = await get_ohlc(sym, tf, 60);
+        if (fetched && (fetched as any).ok) {
+          ohlc = fetched;
+        }
+      }
+    }
     const signal: TradingSignal = await compute_trading_signal(ohlc);
     return {
       timeUtc: signal.timeUTC,
@@ -227,7 +238,14 @@ export async function runWorkflowMessage(
         const id = call?.id || "";
         let args: Record<string, any> = {};
         try {
-          args = call?.function?.arguments ? JSON.parse(call.function.arguments) : {};
+          const raw = (call as any)?.function?.arguments;
+          if (typeof raw === "string") {
+            args = raw ? JSON.parse(raw) : {};
+          } else if (raw && typeof raw === "object") {
+            args = raw as Record<string, any>;
+          } else {
+            args = {};
+          }
         } catch {}
         try {
           const handler = toolHandlers[name];

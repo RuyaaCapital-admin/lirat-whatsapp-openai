@@ -206,7 +206,14 @@ export function createSmartReply(deps: SmartReplyDeps) {
         const name = call.function?.name ?? "";
         let args: Record<string, unknown> = {};
         try {
-          args = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
+          const rawArgs: any = call.function?.arguments as any;
+          if (typeof rawArgs === "string") {
+            args = rawArgs ? JSON.parse(rawArgs) : {};
+          } else if (rawArgs && typeof rawArgs === "object") {
+            args = rawArgs;
+          } else {
+            args = {};
+          }
         } catch (error) {
           messages.push({
             role: "tool",
@@ -235,6 +242,15 @@ export function createSmartReply(deps: SmartReplyDeps) {
             ) {
               args.ohlc = lastOhlcResult;
               console.info(`[CANDLE_INJECTION] Auto-injecting OHLC for ${symbol} ${timeframe}`);
+            }
+            // If still missing candles but we have symbol/timeframe, fetch directly
+            if (!args.ohlc && symbol && timeframe) {
+              try {
+                const fetched = await toolHandlers["get_ohlc"]({ symbol, timeframe, limit: 60 });
+                if (fetched && (fetched as any).ok) {
+                  args.ohlc = fetched;
+                }
+              } catch {}
             }
           }
 
