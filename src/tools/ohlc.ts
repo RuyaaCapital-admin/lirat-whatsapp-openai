@@ -27,6 +27,14 @@ export class OhlcError extends Error {
   }
 }
 
+type HttpClient = Pick<typeof axios, "get">;
+
+let httpClient: HttpClient = axios;
+
+export function __setOhlcHttpClient(client?: HttpClient | null) {
+  httpClient = client ?? axios;
+}
+
 const TF_TO_MS: Record<TF, number> = {
   "1min": 60_000,
   "5min": 5 * 60_000,
@@ -110,7 +118,7 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promi
   const interval = FMP_INTERVAL[timeframe];
   const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
   try {
-    const { data } = await axios.get(url, { timeout: 9000 });
+    const { data } = await httpClient.get(url, { timeout: 9000 });
     const candles = (Array.isArray(data) ? data : [])
       .map(mapFmpRow)
       .filter(isFiniteCandle)
@@ -142,7 +150,7 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
     ? `https://fcsapi.com/api-v3/crypto/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`
     : `https://fcsapi.com/api-v3/forex/candle?symbol=${pair}&period=${timeframe}&access_key=${process.env.FCS_API_KEY}`;
   try {
-    const { data } = await axios.get(url, { timeout: 9000 });
+    const { data } = await httpClient.get(url, { timeout: 9000 });
     const rows = (data?.response ?? data?.candles ?? []) as any[];
     const candles = rows
       .slice(-limit)

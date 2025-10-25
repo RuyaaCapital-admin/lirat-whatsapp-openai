@@ -25,6 +25,7 @@ async function runOhlcTests() {
     axiosInstance.get = async () => ({
       data: [makeCandle(2, 1), makeCandle(1, 1.5), makeCandle(0.5, 2)],
     });
+    ohlcModule.__setOhlcHttpClient?.(axiosInstance);
     const fresh = await ohlcModule.get_ohlc("XAUUSD", "1hour", 100);
     assert.strictEqual(fresh.stale, false, "fresh data should not be marked stale");
     assert.ok(Array.isArray(fresh.candles) && fresh.candles.length === 3, "should normalise candles");
@@ -38,6 +39,7 @@ async function runOhlcTests() {
     assert.strictEqual(stale.stale, true, "old data should flag stale true");
     assert.ok(stale.candles.length === 3, "stale response still returns candles");
   } finally {
+    ohlcModule.__setOhlcHttpClient?.(null);
     axiosInstance.get = originalGet;
     Date.now = originalNow;
   }
