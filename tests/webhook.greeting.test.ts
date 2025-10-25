@@ -52,14 +52,12 @@ async function runCase({
   text,
   assistantReply,
   isNew,
-  useDefaultAssistant = false,
   id = Math.random().toString(36).slice(2),
   from = "97155",
 }: {
   text: string;
   assistantReply: string;
   isNew: boolean;
-  useDefaultAssistant?: boolean;
   id?: string;
   from?: string;
 }) {
@@ -69,19 +67,12 @@ async function runCase({
     sendText: async (_to, body) => {
       sentBody = body;
     },
-    findOrCreateConversation: async () => ({ id: "conv-1", isNew }),
-    insertMessage: async () => {},
-    fetchConversationMessages: async () => [],
-    ...(useDefaultAssistant
-      ? {}
-      : {
-          buildAssistantReply: async (
-            _text: string,
-            _history: Array<{ role: "user" | "assistant"; content: string }>,
-            lang: "ar" | "en",
-            identity: boolean,
-          ) => (identity ? (lang === "ar" ? "مساعد ليرات" : "Liirat assistant.") : assistantReply),
-        }),
+    createOrGetConversation: async () => ({ conversation_id: "conv-1", tenant_id: null, isNew }),
+    logMessage: async () => {},
+    getRecentContext: async () => [],
+    getConversationMessageCount: async () => (isNew ? 0 : 2),
+    smartToolLoop: async ({ identityQuestion, language }) =>
+      identityQuestion ? (language === "ar" ? "مساعد ليرات" : "Liirat assistant.") : assistantReply,
   });
   const req = {
     method: "POST",
@@ -95,16 +86,16 @@ async function runCase({
 }
 
 async function testReturningUserNoGreeting() {
-  await runCase({ text: "مرحبا", assistantReply: "Time (UTC): 2025-10-24 17:44", isNew: true, id: "seed-1" });
+  await runCase({ text: "مرحبا", assistantReply: "time (UTC): 2025-10-24 17:44", isNew: true, id: "seed-1" });
   const body = await runCase({
     text: "سعر الفضة",
     assistantReply:
-      "Time (UTC): 2025-10-24 17:44\nSymbol: XAGUSD\nPrice: 48.6385\nSource: FCS latest",
+      "time (UTC): 2025-10-24 17:44\nsymbol: XAGUSD\nprice: 48.64\nsource: FCS",
     isNew: false,
     id: "follow-1",
   });
   assert.ok(!body.startsWith("مرحباً"), "returning user should not get greeting");
-  assert.ok(body.startsWith("Time (UTC):"), "body should start with time line");
+  assert.ok(body.startsWith("time (UTC):"), "body should start with time line");
 }
 
 async function testIdentity() {
