@@ -10,7 +10,7 @@ export interface SignalIndicators {
   macdHist: number;
 }
 
-export interface SignalPayload {
+export interface TradingSignalResult {
   decision: "BUY" | "SELL" | "NEUTRAL";
   entry: number;
   sl: number;
@@ -22,7 +22,6 @@ export interface SignalPayload {
   lastClosed: Candle;
   indicators: SignalIndicators;
   stale: boolean;
-  source?: string;
   candles_count: number;
 }
 
@@ -235,7 +234,7 @@ function computeTargets(
   };
 }
 
-export function computeFromCandles(symbol: string, timeframe: TF, candles: Candle[]): SignalPayload {
+export function computeFromCandles(symbol: string, timeframe: TF, candles: Candle[]): TradingSignalResult {
   const sorted = ensureSorted(candles);
   if (!sorted.length) {
     throw new Error("missing_candles");
@@ -282,24 +281,29 @@ export function computeFromCandles(symbol: string, timeframe: TF, candles: Candl
     lastClosed,
     indicators,
     stale,
-    source: "PROVIDED",
     candles_count: sorted.length,
   };
+}
+
+export function compute_trading_signal(
+  symbol: string,
+  timeframe: TF,
+  candles: Candle[],
+): TradingSignalResult {
+  if (!Array.isArray(candles) || !candles.length) {
+    throw new Error("missing_candles");
+  }
+  return computeFromCandles(symbol, timeframe, candles);
 }
 
 export async function computeSignal(
   symbol: string,
   timeframe: TF,
   candles?: Candle[],
-): Promise<SignalPayload> {
+): Promise<TradingSignalResult> {
   let working = Array.isArray(candles) ? candles : [];
   if (!working.length) {
-    const snapshot = await get_ohlc(symbol, timeframe, 200);
-    working = snapshot.candles;
+    working = await get_ohlc(symbol, timeframe, 200);
   }
-  const result = computeFromCandles(symbol, timeframe, working);
-  if (!result.source) {
-    result.source = "PROVIDED";
-  }
-  return result;
+  return computeFromCandles(symbol, timeframe, working);
 }
