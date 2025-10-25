@@ -10,44 +10,7 @@ import {
 
 export type Candle = { t: number; o: number; h: number; l: number; c: number; v?: number };
 
-export type OhlcSource = "FMP" | "FCS" | "PROVIDED";
-
-export interface ProviderCandles {
-  candles: Candle[];
-  source: OhlcSource;
-  rawSymbol: string;
-}
-
-export interface OhlcResult {
-  symbol: string;
-  timeframe: TF;
-  candles: Candle[];
-  lastCandleUnix: number;
-  lastCandleISO: string;
-  lastTimeISO: string;
-  lastCandleUTCMinute: number;
-  ageSeconds: number;
-  ageMinutes: number;
-  isStale: boolean;
-  tooOld: boolean;
-  provider: OhlcSource;
-  rawSymbol: string;
-}
-
-export class OhlcError extends Error {
-  constructor(
-    public readonly code:
-      | "NO_DATA_FOR_INTERVAL"
-      | "NO_CLOSED_BAR"
-      | "HTTP_ERROR"
-      | "INVALID_CANDLES"
-      | "STALE_DATA",
-    public readonly timeframe: TF,
-    public readonly source?: OhlcSource,
-  ) {
-    super(code);
-  }
-}
+export type OhlcSource = "FMP" | "FCS";
 
 type HttpClient = Pick<typeof axios, "get">;
 
@@ -113,7 +76,7 @@ function ensureSorted(candles: Candle[]): Candle[] {
     .sort((a, b) => a.t - b.t);
 }
 
-async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<ProviderCandles | null> {
+async function fetchFromFmp(symbol: string, timeframe: TF, limit: number) {
   const mappedSymbol = mapToFmpSymbol(symbol);
   const interval = toProviderInterval("FMP", timeframe);
   const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${mappedSymbol}?apikey=${process.env.FMP_API_KEY}`;
@@ -124,12 +87,11 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promi
     if (!mapped.length) {
       return null;
     }
-    const sorted = ensureSorted(mapped);
-    const trimmed = sorted.slice(-limit);
-    if (!trimmed.length) {
+    const sorted = ensureSorted(mapped).slice(-limit);
+    if (!sorted.length) {
       return null;
     }
-    return { candles: trimmed, source: "FMP", rawSymbol: mappedSymbol };
+    return { provider: "FMP" as const, rawSymbol: mappedSymbol, candles: sorted };
   } catch (error) {
     if (error instanceof AxiosError) {
       if (error.response?.status === 404) {
@@ -141,13 +103,13 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promi
         status: error.response?.status,
         message: error.message,
       });
-      throw new OhlcError("HTTP_ERROR", timeframe, "FMP");
+      return { provider: "FMP" as const, rawSymbol: mappedSymbol, candles: [] };
     }
     throw error;
   }
 }
 
-async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promise<ProviderCandles | null> {
+async function fetchFromFcs(symbol: string, timeframe: TF, limit: number) {
   const pair = mapToFcsSymbol(symbol);
   const period = toProviderInterval("FCS", timeframe);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -169,12 +131,11 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
     if (!mapped.length) {
       return null;
     }
-    const sorted = ensureSorted(mapped);
-    const trimmed = sorted.slice(-limit);
-    if (!trimmed.length) {
+    const sorted = ensureSorted(mapped).slice(-limit);
+    if (!sorted.length) {
       return null;
     }
-    return { candles: trimmed, source: "FCS", rawSymbol: pair };
+    return { provider: "FCS" as const, rawSymbol: pair, candles: sorted };
   } catch (error) {
     if (error instanceof AxiosError) {
       if (error.response?.status === 404) {
@@ -186,24 +147,25 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
         status: error.response?.status,
         message: error.message,
       });
-      throw new OhlcError("HTTP_ERROR", timeframe, "FCS");
+      return { provider: "FCS" as const, rawSymbol: pair, candles: [] };
     }
     throw error;
   }
 }
 
-type ProviderResult = {
-  fetcher: (symbol: string, timeframe: TF, limit: number) => Promise<ProviderCandles | null>;
-};
+type ProviderFetcher = (
+  symbol: string,
+  timeframe: TF,
+  limit: number,
+) => Promise<{ provider: OhlcSource; rawSymbol: string; candles: Candle[] } | null>;
 
-function getProviderOrder(symbol: string): ProviderResult[] {
-  const results: ProviderResult[] = [];
-  const add = (fetcher: ProviderResult["fetcher"]) => {
-    if (!results.some((entry) => entry.fetcher === fetcher)) {
-      results.push({ fetcher });
+function getProviderOrder(symbol: string): ProviderFetcher[] {
+  const order: ProviderFetcher[] = [];
+  const add = (fn: ProviderFetcher) => {
+    if (!order.includes(fn)) {
+      order.push(fn);
     }
   };
-
   if (isCrypto(symbol)) {
     add(fetchFromFmp);
     add(fetchFromFcs);
@@ -211,8 +173,7 @@ function getProviderOrder(symbol: string): ProviderResult[] {
     add(fetchFromFcs);
     add(fetchFromFmp);
   }
-
-  return results;
+  return order;
 }
 
 export interface GetOhlcOptions {
@@ -220,12 +181,10 @@ export interface GetOhlcOptions {
   nowMs?: number;
 }
 
-const STALE_THRESHOLDS_MIN: Record<TF, number> = {
-  "1min": 3,
-  "5min": 15,
-  "15min": 60,
-  "30min": 90,
-  "1hour": 120,
+const STALE_LIMIT_MINUTES: Partial<Record<TF, number>> = {
+  "1min": 10,
+  "5min": 10,
+  "1hour": 90,
   "4hour": 360,
   "1day": 1440,
 };
@@ -237,102 +196,121 @@ function resolveNowMs(candidate?: number): number {
   return Date.now();
 }
 
-function computeAge(nowMs: number, lastMs: number): { ageSeconds: number; ageMinutes: number } {
+function computeAge(nowMs: number, lastMs: number): { ageMinutes: number; lastISO: string } {
   const diffMs = Math.max(0, nowMs - lastMs);
-  const ageSeconds = Math.floor(diffMs / 1000);
-  const ageMinutes = Math.floor(ageSeconds / 60);
-  return { ageSeconds, ageMinutes };
+  const ageMinutes = Math.floor(diffMs / 60000);
+  const lastISO = new Date(lastMs).toISOString();
+  return { ageMinutes, lastISO };
 }
 
-function isStaleFor(timeframe: TF, ageMinutes: number): boolean {
-  const threshold = STALE_THRESHOLDS_MIN[timeframe] ?? 60;
-  return ageMinutes > threshold;
+function isStale(timeframe: TF, ageMinutes: number): boolean {
+  const limit = STALE_LIMIT_MINUTES[timeframe] ?? 60;
+  return ageMinutes > limit;
 }
 
-function selectCandidate(candidates: OhlcResult[]): OhlcResult | null {
-  if (!candidates.length) {
-    return null;
-  }
-  const sorted = [...candidates].sort((a, b) => a.ageMinutes - b.ageMinutes);
-  return sorted[0] ?? null;
+export interface ProviderSnapshot {
+  provider: OhlcSource;
+  candles: Candle[];
+  lastTs: number;
+  lastISO: string;
+  ageMinutes: number;
+  stale: boolean;
+  rawSymbol: string;
 }
 
-function buildResult(
+export type GetOhlcSuccess = {
+  ok: true;
+  symbol: string;
+  timeframe: TF;
+  candles: Candle[];
+  lastISO: string;
+  ageMinutes: number;
+  stale: boolean;
+  provider: OhlcSource;
+  rawSymbol: string;
+};
+
+export type GetOhlcFailure = { ok: false; reason: "NO_DATA" };
+
+export type GetOhlcResponse = GetOhlcSuccess | GetOhlcFailure;
+
+function buildSnapshot(
   symbol: string,
   timeframe: TF,
-  sourceResult: ProviderCandles,
+  source: { provider: OhlcSource; rawSymbol: string; candles: Candle[] },
   limit: number,
   nowMs: number,
-): OhlcResult | null {
-  const sorted = ensureSorted(sourceResult.candles).slice(-limit);
-  if (!sorted.length) {
+): ProviderSnapshot | null {
+  const candles = ensureSorted(source.candles).slice(-limit);
+  if (!candles.length) {
     return null;
   }
-  const last = sorted.at(-1)!;
-  const lastSec = Math.floor(last.t);
-  const lastMs = lastSec * 1000;
-  const { ageSeconds, ageMinutes } = computeAge(nowMs, lastMs);
-  const roundedAgeMinutes = Math.max(0, ageMinutes);
-  const isStale = isStaleFor(timeframe, roundedAgeMinutes);
-  const tooOld = ageMinutes > 60 * 24 * 14; // 14 days
-  const lastIso = new Date(lastMs).toISOString();
-  const lastUtcMinute = Math.floor(lastMs / 60_000) * 60_000;
-
+  const last = candles[candles.length - 1];
+  const lastMs = Math.floor(last.t) * 1000;
+  const { ageMinutes, lastISO } = computeAge(nowMs, lastMs);
+  const stale = isStale(timeframe, ageMinutes);
   console.log(
-    `[OHLC] provider=${sourceResult.source} symbol=${symbol} rawSymbol=${sourceResult.rawSymbol} tf=${timeframe} bars=${sorted.length} lastTs=${lastSec} lastIso=${lastIso} age=${ageSeconds}s stale=${isStale}`,
+    `[OHLC] provider=${source.provider} symbol=${symbol} tf=${timeframe} lastIso=${lastISO} ageMin=${ageMinutes} stale=${stale}`,
   );
-
   return {
-    symbol,
-    timeframe,
-    candles: sorted,
-    lastCandleUnix: lastSec,
-    lastCandleISO: lastIso,
-    lastTimeISO: lastIso,
-    lastCandleUTCMinute: lastUtcMinute,
-    ageSeconds,
-    ageMinutes: roundedAgeMinutes,
-    isStale,
-    tooOld,
-    provider: sourceResult.source,
-    rawSymbol: sourceResult.rawSymbol,
+    provider: source.provider,
+    candles,
+    lastTs: Math.floor(last.t),
+    lastISO,
+    ageMinutes,
+    stale,
+    rawSymbol: source.rawSymbol,
   };
 }
 
-export async function get_ohlc(symbol: string, timeframe: TF, limit = 60, opts: GetOhlcOptions = {}): Promise<OhlcResult> {
-  const safeLimit = Math.max(10, Math.min(limit, 60));
-  const providers = getProviderOrder(symbol);
-  const candidates: OhlcResult[] = [];
-  const nowMs = resolveNowMs(opts.nowMs);
+function pickFreshest(snapshots: ProviderSnapshot[]): ProviderSnapshot | null {
+  if (!snapshots.length) {
+    return null;
+  }
+  return [...snapshots].sort((a, b) => a.ageMinutes - b.ageMinutes)[0] ?? null;
+}
 
-  for (const { fetcher } of providers) {
+export async function get_ohlc(
+  symbol: string,
+  timeframe: TF,
+  limit = 60,
+  opts: GetOhlcOptions = {},
+): Promise<GetOhlcResponse> {
+  const safeLimit = Math.max(20, Math.min(limit, 120));
+  const nowMs = resolveNowMs(opts.nowMs);
+  const order = getProviderOrder(symbol);
+  const snapshots: ProviderSnapshot[] = [];
+
+  for (const fetcher of order) {
     try {
-      const raw = await fetcher(symbol, timeframe, safeLimit);
-      if (!raw) {
-        continue;
-      }
-      const candidate = buildResult(symbol, timeframe, raw, safeLimit, nowMs);
-      if (candidate) {
-        candidates.push(candidate);
+      const result = await fetcher(symbol, timeframe, safeLimit);
+      if (!result) continue;
+      const snapshot = buildSnapshot(symbol, timeframe, result, safeLimit, nowMs);
+      if (snapshot) {
+        snapshots.push(snapshot);
       }
     } catch (error) {
-      if (error instanceof OhlcError) {
-        if (error.code === "HTTP_ERROR") {
-          continue;
-        }
+      if (error instanceof AxiosError) {
+        continue;
       }
-      throw error;
+      console.warn("[OHLC] provider fetch error", error);
     }
   }
 
-  const chosen = selectCandidate(candidates);
+  const chosen = pickFreshest(snapshots);
   if (!chosen) {
-    const err: any = new Error("NO_DATA");
-    err.code = "NO_DATA";
-    throw err;
+    return { ok: false, reason: "NO_DATA" };
   }
+
   return {
-    ...chosen,
-    candles: chosen.candles.slice(-safeLimit),
+    ok: true,
+    symbol,
+    timeframe,
+    candles: chosen.candles,
+    lastISO: chosen.lastISO,
+    ageMinutes: chosen.ageMinutes,
+    stale: chosen.stale,
+    provider: chosen.provider,
+    rawSymbol: chosen.rawSymbol,
   };
 }

@@ -159,6 +159,13 @@ export function computeSignal(symbol: string, interval: string, candles: Candle[
     tp2,
     source: "PROVIDED",
     stale: false,
+    ageMinutes: 0,
+    reason:
+      decision === "BUY"
+        ? "bullish_pressure"
+        : decision === "SELL"
+          ? "bearish_pressure"
+          : "no_clear_bias",
   } satisfies SignalBlock;
 }
 

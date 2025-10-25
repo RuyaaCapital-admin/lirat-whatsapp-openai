@@ -1,19 +1,15 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
-import { formatNewsMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
-import { get_ohlc as loadOhlc, OhlcResult, type GetOhlcOptions } from "./ohlc";
-import {
-  compute_trading_signal as computeSignal,
-  type TradingSignalResult,
-} from "./compute_trading_signal";
+import { get_ohlc as loadOhlc, type GetOhlcOptions, type GetOhlcResponse } from "./ohlc";
+import { compute_trading_signal as computeSignal, type TradingSignal } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
 export interface PriceResult {
   symbol: string;
   price: number;
-  timeUTC: string;
+  timeISO: string;
   source: string;
 }
 
@@ -25,7 +21,6 @@ export interface NewsRow {
 
 export interface NewsResult {
   rows: NewsRow[];
-  formatted: string;
 }
 
 function toUtcIso(input: number | string | null | undefined): string {
@@ -54,9 +49,9 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   }
   void timeframe;
   const price = await getCurrentPrice(mappedSymbol);
-  const timeUTC = toUtcIso(price.time ?? null);
+  const timeISO = toUtcIso(price.time ?? null);
   const source = price.source ?? "FCS";
-  return { symbol: mappedSymbol, price: price.price, timeUTC, source };
+  return { symbol: mappedSymbol, price: price.price, timeISO, source };
 }
 
 export async function get_ohlc(
@@ -64,7 +59,7 @@ export async function get_ohlc(
   timeframe: string,
   limit = 60,
   options: GetOhlcOptions = {},
-): Promise<OhlcResult> {
+): Promise<GetOhlcResponse> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -74,11 +69,21 @@ export async function get_ohlc(
   return loadOhlc(mappedSymbol, tf, requestedLimit, options);
 }
 
-export async function compute_trading_signal(input: OhlcResult & { lang?: string }): Promise<TradingSignalResult> {
-  return computeSignal({ ...input, lang: input.lang === "ar" ? "ar" : "en" });
+export async function compute_trading_signal(
+  input: Extract<GetOhlcResponse, { ok: true }> & { lang?: string },
+): Promise<TradingSignal> {
+  void input.lang;
+  return computeSignal({
+    symbol: input.symbol,
+    timeframe: input.timeframe,
+    candles: input.candles,
+    lastISO: input.lastISO,
+    ageMinutes: input.ageMinutes,
+    stale: input.stale,
+  });
 }
 
-export type { TradingSignalResult } from "./compute_trading_signal";
+export type { TradingSignal } from "./compute_trading_signal";
 
 function detectLang(text?: string) {
   if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
@@ -142,6 +147,5 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
     source: item.source ?? "",
     title: item.title ?? "",
   }));
-  const formatted = formatNewsMsg(rows);
-  return { rows, formatted };
+  return { rows };
 }

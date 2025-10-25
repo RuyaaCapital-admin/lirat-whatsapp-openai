@@ -13,13 +13,13 @@ import {
   compute_trading_signal,
   search_web_news,
   about_liirat_knowledge,
-  type TradingSignalResult,
+  type TradingSignal,
 } from "../tools/agentTools";
 import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
-import { formatNewsMsg, formatPriceMsg, formatUtcLabel } from "../utils/formatters";
-import type { OhlcResult } from "../tools/ohlc";
+import { newsFormatter, priceFormatter, signalFormatter } from "../utils/formatters";
+import type { GetOhlcSuccess } from "../tools/ohlc";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
 
@@ -185,62 +185,24 @@ const SIGNAL_UNUSABLE: Record<LanguageCode, string> = {
   en: "Not enough recent data for that timeframe. Try 5min or 1hour.",
 };
 
-type TradingSignalOk = Extract<TradingSignalResult, { status: "OK" }>;
-
 function signalUnavailable(language: LanguageCode): string {
   return SIGNAL_UNUSABLE[language] ?? SIGNAL_UNUSABLE.en;
 }
 
-function formatSignalPrice(value: number | null | undefined, symbol: string): string {
-  if (value == null || !Number.isFinite(value)) {
-    return "-";
-  }
-  const upper = symbol.toUpperCase();
-  const abs = Math.abs(value);
-  const decimals = upper.endsWith("USDT") ? 2 : abs >= 100 ? 2 : abs >= 10 ? 3 : 4;
-  return value.toFixed(decimals);
-}
-
-const STALE_SUFFIX = {
-  ar: " (إشارة قديمة، للمراجعة فقط).",
-  en: " (stale, for review only).",
-} as const;
-
-function pickReason(signal: "BUY" | "SELL" | "NEUTRAL", lang: LanguageCode, stale: boolean): string {
-  const base = (() => {
-    if (lang === "ar") {
-      if (signal === "BUY") return "ضغط شراء فوق المتوسطات";
-      if (signal === "SELL") return "ضغط بيع تحت المتوسطات";
-      return "السوق بدون اتجاه واضح حالياً";
-    }
-    if (signal === "BUY") return "Buy pressure above key averages";
-    if (signal === "SELL") return "Sell pressure below key averages";
-    return "Market is currently sideways";
-  })();
-  if (stale) {
-    return `${base}${lang === "ar" ? STALE_SUFFIX.ar : STALE_SUFFIX.en}`;
-  }
-  return base;
-}
-
-function formatSignalBlock(result: TradingSignalOk): string {
-  const ageMinutes = Math.max(0, Math.floor(result.ageSeconds / 60));
-  const stale = Boolean(result.isDelayed);
-  const reason = pickReason(result.signal, result.lang, stale);
-  const lines: string[] = [
-    `time (UTC): ${formatUtcLabel(result.lastISO)}`,
-    `symbol: ${result.symbol}`,
-    `SIGNAL: ${result.signal}`,
-    `Reason: ${reason}`,
-    `Data age: ${ageMinutes}m (${stale ? "stale" : "fresh"})`,
-  ];
-  if (result.signal !== "NEUTRAL") {
-    lines.push(`Entry: ${formatSignalPrice(result.entry, result.symbol)}`);
-    lines.push(`SL: ${formatSignalPrice(result.sl, result.symbol)}`);
-    lines.push(`TP1: ${formatSignalPrice(result.tp1, result.symbol)}`);
-    lines.push(`TP2: ${formatSignalPrice(result.tp2, result.symbol)}`);
-  }
-  return lines.join("\n");
+function formatSignalBlock(result: TradingSignal, lang: LanguageCode): string {
+  return signalFormatter(
+    {
+      symbol: result.symbol,
+      timeframe: result.timeframe,
+      timeUTC: result.timeUTC,
+      decision: result.decision,
+      reason: result.reason,
+      levels: result.levels,
+      stale: result.stale,
+      ageMinutes: result.ageMinutes,
+    },
+    lang,
+  );
 }
 
 export interface SmartReplyDeps {
@@ -325,7 +287,7 @@ function applyGreeting(text: string, shouldGreet: boolean, language: LanguageCod
 }
 
 interface ToolContext {
-  lastOhlcBySymbolTimeframe: Record<string, OhlcResult>;
+  lastOhlcBySymbolTimeframe: Record<string, GetOhlcSuccess>;
 }
 
 function keyFor(symbol: string, timeframe: string) {
@@ -424,12 +386,10 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const timeframe = typeof parsed.timeframe === "string" ? parsed.timeframe : undefined;
                 const price = await tools.get_price(symbol, timeframe);
                 console.log("[TOOL] get_price -> ok", { symbol: price.symbol });
-                const formatted = formatPriceMsg({
-                  symbol: price.symbol,
-                  price: price.price,
-                  timeUTC: price.timeUTC,
-                  source: price.source,
-                });
+                const formatted = priceFormatter(
+                  { symbol: price.symbol, price: price.price, timeISO: price.timeISO },
+                  language,
+                );
                 messages.push({ role: "tool", tool_call_id: call.id, content: formatted });
               } else if (toolName === "get_ohlc") {
                 const symbolInput = String(parsed.symbol ?? normalisedText).trim();
@@ -441,12 +401,26 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 }
                 const resolvedTimeframe = toTimeframe(timeframeInput);
                 const ohlc = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, limit);
+                if (!ohlc.ok) {
+                  console.warn("[TOOL] get_ohlc -> no_data", {
+                    symbol: resolvedSymbol,
+                    timeframe: resolvedTimeframe,
+                  });
+                  messages.push({
+                    role: "tool",
+                    tool_call_id: call.id,
+                    content: JSON.stringify(ohlc),
+                  });
+                  continue;
+                }
                 const key = keyFor(resolvedSymbol, resolvedTimeframe);
                 toolContext.lastOhlcBySymbolTimeframe[key] = ohlc;
                 console.log("[TOOL] get_ohlc -> ok", {
                   symbol: resolvedSymbol,
                   timeframe: resolvedTimeframe,
                   candles: ohlc.candles.length,
+                  ageMinutes: ohlc.ageMinutes,
+                  stale: ohlc.stale,
                 });
                 messages.push({
                   role: "tool",
@@ -454,10 +428,9 @@ export function createSmartReply(deps: SmartReplyDeps) {
                   content: JSON.stringify({
                     symbol: ohlc.symbol,
                     timeframe: ohlc.timeframe,
-                    lastCandleISO: ohlc.lastCandleISO,
-                    ageSeconds: ohlc.ageSeconds,
-                    isStale: ohlc.isStale,
-                    tooOld: ohlc.tooOld,
+                    lastISO: ohlc.lastISO,
+                    ageMinutes: ohlc.ageMinutes,
+                    stale: ohlc.stale,
                     provider: ohlc.provider,
                     candles: `len:${ohlc.candles.length}`,
                   }),
@@ -474,26 +447,29 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const key = keyFor(resolvedSymbol, resolvedTimeframe);
                 let ohlc = toolContext.lastOhlcBySymbolTimeframe[key];
                 if (!ohlc) {
-                  ohlc = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 60);
+                  const fetched = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 60);
+                  if (!fetched.ok) {
+                    return respondWithFallback(signalUnavailable(language), false);
+                  }
+                  ohlc = fetched;
                   toolContext.lastOhlcBySymbolTimeframe[key] = ohlc;
                 }
                 const signal = await tools.compute_trading_signal({ ...ohlc, lang: language });
-                if (signal.status !== "OK") {
-                  return respondWithFallback(signalUnavailable(language), false);
-                }
                 console.log("[TOOL] compute_trading_signal -> ok", {
                   symbol: resolvedSymbol,
                   timeframe: resolvedTimeframe,
                   candles: ohlc.candles.length,
+                  stale: signal.stale,
+                  ageMinutes: signal.ageMinutes,
                 });
                 const ensured = await ensureConversation();
-                const block = formatSignalBlock(signal);
+                const block = formatSignalBlock(signal, language);
                 const replyText = applyGreeting(block, isNewConversation, language);
                 return { replyText, language, conversationId: ensured };
               } else if (toolName === "search_web_news") {
                 const query = String(parsed.query ?? normalisedText).trim();
                 const news = await tools.search_web_news(query, language === "ar" ? "ar" : "en", 3);
-                const formatted = formatNewsMsg(news.rows).trim();
+                const formatted = newsFormatter(news.rows, language).trim();
                 if (!formatted) {
                   throw new Error("insufficient_news");
                 }
