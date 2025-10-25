@@ -1,55 +1,41 @@
 import assert from "node:assert";
-
-import { formatTradingSignalWhatsapp } from "../src/utils/tradingSignalFormatter";
-import type { TradingSignalOk } from "../src/tools/compute_trading_signal";
-
-function makeSignal(overrides: Partial<TradingSignalOk> = {}): TradingSignalOk {
-  return {
-    status: "OK",
-    lang: "ar",
-    symbol: "BTCUSDT",
-    timeframe: "1min",
-    signal: "BUY",
-    entry: 111404,
-    sl: 111372.2,
-    tp1: 111435.8,
-    tp2: 111467.61,
-    reason: "ضغط شراء فوق المتوسطات",
-    lastISO: "2025-10-25T12:59:00Z",
-    lastTimeISO: "2025-10-25T12:59:00Z",
-    ageSeconds: 60,
-    ageMinutes: 1,
-    isDelayed: false,
-    isStale: false,
-    provider: "FMP",
-    ...overrides,
-  };
-}
+import { signalFormatter, priceFormatter, type SignalFormatterInput } from "../src/utils/formatters";
 
 async function runWhatsappFormatTests() {
-  {
-    const signal = makeSignal();
-    const text = formatTradingSignalWhatsapp({ signal, lang: "ar" });
-    assert.ok(!text.includes("Data age"), "fresh signal must not include data age");
-    assert.ok(!text.startsWith("تنبيه"), "fresh signal must not start with warning");
-    assert.ok(text.includes("time (UTC): 2025-10-25 12:59"), "should format timestamp");
+  function makeSignal(overrides: Partial<SignalFormatterInput> = {}): SignalFormatterInput {
+    return {
+      symbol: "BTCUSDT",
+      timeframe: "5min",
+      timeUTC: "2025-10-25 12:55",
+      decision: "BUY",
+      reason: "bullish_pressure",
+      levels: { entry: 111404, sl: 111372.2, tp1: 111435.8, tp2: 111467.61 },
+      stale: false,
+      ageMinutes: 2,
+      ...overrides,
+    };
   }
 
-  {
-    const signal = makeSignal({ signal: "NEUTRAL", entry: null, sl: null, tp1: null, tp2: null, isStale: true, ageMinutes: 241, isDelayed: true });
-    const text = formatTradingSignalWhatsapp({ signal, lang: "ar" });
-    assert.strictEqual(text, "مافي إشارة واضحة حالياً (البيانات متأخرة).", "stale neutral should collapse to one line");
-  }
+  const english = signalFormatter(makeSignal(), "en");
+  assert.ok(english.includes("SIGNAL: BUY"));
+  assert.ok(english.includes("timeframe: 5min"));
+  assert.ok(english.includes("Reason: Buy pressure above short-term averages"));
 
-  {
-    const signal = makeSignal({ signal: "SELL", isStale: true, isDelayed: true, ageMinutes: 241 });
-    const text = formatTradingSignalWhatsapp({ signal, lang: "ar" });
-    const [firstLine] = text.split("\n");
-    assert.strictEqual(firstLine, "تنبيه: البيانات متأخرة ~241 دقيقة", "stale warning must be first line");
-    assert.ok(text.includes("SIGNAL: SELL"), "should include signal block");
-  }
+  const arabicStale = signalFormatter(makeSignal({ stale: true, ageMinutes: 244 }), "ar");
+  assert.ok(arabicStale.startsWith("تنبيه: البيانات متأخرة بحوالي 244 دقيقة"));
+  assert.ok(arabicStale.includes("السبب: ضغط شراء فوق المتوسطات (إشارة قديمة، للمراجعة فقط)"));
 
-  console.log("whatsapp format tests passed");
+  const neutral = signalFormatter(
+    makeSignal({ decision: "NEUTRAL", reason: "no_clear_bias", levels: { entry: null, sl: null, tp1: null, tp2: null } }),
+    "en",
+  );
+  assert.ok(neutral.includes("SIGNAL: NEUTRAL"));
+  assert.ok(neutral.includes("Entry: -"));
+
+  const priceEn = priceFormatter({ symbol: "XAUUSD", price: 2375.2, timeISO: "2025-10-25T12:59:00Z" }, "en");
+  assert.ok(priceEn.includes("price: 2375.20"));
+  const priceAr = priceFormatter({ symbol: "XAGUSD", price: 48.61, timeISO: "2025-10-25T12:59:00Z" }, "ar");
+  assert.ok(priceAr.includes("السعر: 48.61"));
 }
 
 runWhatsappFormatTests().catch((error) => {

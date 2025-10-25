@@ -1,39 +1,38 @@
 import { TF } from "./normalize";
-import { Candle, OhlcResult } from "./ohlc";
+import type { Candle } from "./ohlc";
 
-type SignalDirection = "BUY" | "SELL" | "NEUTRAL";
+export type SignalDecision = "BUY" | "SELL" | "NEUTRAL";
 
-type Lang = "ar" | "en";
+export type ReasonToken = "bullish_pressure" | "bearish_pressure" | "no_clear_bias";
 
-export interface TradingSignalOk {
-  status: "OK";
-  lang: Lang;
+export interface TradingSignalInput {
   symbol: string;
   timeframe: TF;
-  signal: SignalDirection;
+  candles: Candle[];
+  lastISO: string;
+  ageMinutes: number;
+  stale: boolean;
+}
+
+export interface TradingSignalLevels {
   entry: number | null;
   sl: number | null;
   tp1: number | null;
   tp2: number | null;
-  reason: string;
-  lastISO: string;
-  lastTimeISO: string;
-  ageSeconds: number;
+}
+
+export interface TradingSignal {
+  symbol: string;
+  timeframe: TF;
+  timeUTC: string;
+  decision: SignalDecision;
+  reason: ReasonToken;
+  levels: TradingSignalLevels;
+  stale: boolean;
   ageMinutes: number;
-  isDelayed: boolean;
-  isStale: boolean;
-  provider: string;
 }
 
-export interface TradingSignalUnusable {
-  status: "UNUSABLE";
-  lang: Lang;
-  error: "NO_DATA";
-}
-
-export type TradingSignalResult = TradingSignalOk | TradingSignalUnusable;
-
-const MIN_CANDLES = 30;
+const MIN_CANDLES = 40;
 
 function ensureSorted(candles: Candle[]): Candle[] {
   return candles
@@ -122,24 +121,23 @@ function roundPrice(value: number) {
   return Number(value.toFixed(decimals));
 }
 
-function buildReason(signal: SignalDirection, lang: Lang): string {
-  if (lang === "ar") {
-    if (signal === "BUY") return "الاتجاه العام صاعد والمؤشرات تدعم الشراء.";
-    if (signal === "SELL") return "الاتجاه العام هابط والمؤشرات تدعم البيع.";
-    return "السوق بدون اتجاه واضح حالياً.";
+function mapReason(decision: SignalDecision): ReasonToken {
+  if (decision === "BUY") {
+    return "bullish_pressure";
   }
-  if (signal === "BUY") return "Trend is up and indicators support buying.";
-  if (signal === "SELL") return "Trend is down and indicators support selling.";
-  return "Momentum is mixed; no clear setup right now.";
+  if (decision === "SELL") {
+    return "bearish_pressure";
+  }
+  return "no_clear_bias";
 }
 
 function computeTargets(
-  signal: SignalDirection,
+  decision: SignalDecision,
   lastClose: number,
   previousClose: number,
   atrValue: number,
 ): { entry: number | null; sl: number | null; tp1: number | null; tp2: number | null } {
-  if (signal === "NEUTRAL") {
+  if (decision === "NEUTRAL") {
     return { entry: null, sl: null, tp1: null, tp2: null };
   }
   const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || lastClose * 0.0008);
@@ -149,7 +147,7 @@ function computeTargets(
   if (!Number.isFinite(entry) || !Number.isFinite(riskRounded)) {
     return { entry: null, sl: null, tp1: null, tp2: null };
   }
-  if (signal === "BUY") {
+  if (decision === "BUY") {
     const sl = roundPrice(entry - riskRounded);
     return {
       entry,
@@ -167,12 +165,12 @@ function computeTargets(
   };
 }
 
-function deriveSignal(
+function deriveDecision(
   fastEma: number,
   slowEma: number,
   momentum: number,
   rsiValue: number,
-): SignalDirection {
+): SignalDecision {
   if (!Number.isFinite(fastEma) || !Number.isFinite(slowEma) || !Number.isFinite(rsiValue)) {
     return "NEUTRAL";
   }
@@ -189,73 +187,78 @@ function deriveSignal(
   return "NEUTRAL";
 }
 
-interface TradingSignalInput extends OhlcResult {
-  lang?: Lang;
+function formatUtcLabel(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return formatUtcLabel(new Date().toISOString());
+  }
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const hh = String(date.getUTCHours()).padStart(2, "0");
+  const min = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 }
 
-export function compute_trading_signal(input: TradingSignalInput): TradingSignalResult {
-  const lang: Lang = input.lang === "ar" ? "ar" : "en";
+function deriveMomentum(closes: number[]): number {
+  if (closes.length < 2) return 0;
+  const window = Math.min(6, closes.length - 1);
+  return closes[closes.length - 1] - closes[closes.length - 1 - window];
+}
+
+export function compute_trading_signal(input: TradingSignalInput): TradingSignal {
   const sorted = ensureSorted(input.candles);
-  if (sorted.length < MIN_CANDLES || input.tooOld) {
-    return { status: "UNUSABLE", lang, error: "NO_DATA" };
+  if (!sorted.length) {
+    return {
+      symbol: input.symbol,
+      timeframe: input.timeframe,
+      timeUTC: formatUtcLabel(input.lastISO),
+      decision: "NEUTRAL",
+      reason: "no_clear_bias",
+      levels: { entry: null, sl: null, tp1: null, tp2: null },
+      stale: Boolean(input.stale),
+      ageMinutes: Math.max(0, Math.floor(input.ageMinutes)),
+    };
   }
 
-  const closes = sorted.map((candle) => candle.c);
-  const highs = sorted.map((candle) => candle.h);
-  const lows = sorted.map((candle) => candle.l);
-  const last = sorted.at(-1)!;
-  const previous = sorted.at(-2) ?? last;
+  const candles = sorted.slice(-Math.max(MIN_CANDLES, sorted.length));
+  const closes = candles.map((candle) => candle.c);
+  const highs = candles.map((candle) => candle.h);
+  const lows = candles.map((candle) => candle.l);
+  const last = candles[candles.length - 1];
+  const previous = candles[candles.length - 2] ?? last;
   const lastClose = last.c;
   const previousClose = previous.c;
-  const lookback = Math.max(0, sorted.length - 6);
-  const momentum = lastClose - sorted[lookback].c;
 
+  const momentum = deriveMomentum(closes);
   const fastEma = ema(closes, 20);
   const slowEma = ema(closes, 50);
   const rsiValue = rsi(closes, 14);
   const atrValue = atr(highs, lows, closes, 14);
-  const signal = deriveSignal(fastEma, slowEma, momentum, rsiValue);
-  const targets = computeTargets(signal, lastClose, previousClose, atrValue);
-  const reason = buildReason(signal, lang);
+  const decision = candles.length < MIN_CANDLES ? "NEUTRAL" : deriveDecision(fastEma, slowEma, momentum, rsiValue);
+  const targets = computeTargets(decision, lastClose, previousClose, atrValue);
 
-  const lastIso = input.lastCandleISO ?? input.lastTimeISO ?? new Date().toISOString();
-  const ageSeconds = Number.isFinite(input.ageSeconds) ? input.ageSeconds : Math.max(0, input.ageMinutes * 60);
-  const ageMinutes = Number.isFinite(input.ageMinutes) ? Math.floor(input.ageMinutes) : Math.floor(ageSeconds / 60);
-  const stale = Boolean(input.isStale);
+  const timeUTC = formatUtcLabel(input.lastISO);
+  const reason = mapReason(decision);
+  const ageMinutes = Math.max(0, Math.floor(Number(input.ageMinutes) || 0));
 
-  const result: TradingSignalOk = {
-    status: "OK",
-    lang,
+  const levels: TradingSignalLevels = decision === "NEUTRAL"
+    ? { entry: null, sl: null, tp1: null, tp2: null }
+    : targets;
+
+  const result: TradingSignal = {
     symbol: input.symbol,
     timeframe: input.timeframe,
-    signal,
-    entry: targets.entry,
-    sl: targets.sl,
-    tp1: targets.tp1,
-    tp2: targets.tp2,
+    timeUTC,
+    decision,
     reason,
-    lastISO: lastIso,
-    lastTimeISO: lastIso,
-    ageSeconds,
+    levels,
+    stale: Boolean(input.stale),
     ageMinutes,
-    isDelayed: stale,
-    isStale: stale,
-    provider: input.provider,
   };
 
-  if (signal === "NEUTRAL") {
-    result.entry = null;
-    result.sl = null;
-    result.tp1 = null;
-    result.tp2 = null;
-  }
-
-  const logEntry = Number.isFinite(result.entry ?? NaN) ? result.entry : "";
-  const logSl = Number.isFinite(result.sl ?? NaN) ? result.sl : "";
-  const logTp1 = Number.isFinite(result.tp1 ?? NaN) ? result.tp1 : "";
-  const logTp2 = Number.isFinite(result.tp2 ?? NaN) ? result.tp2 : "";
   console.log(
-    `[SIGNAL] symbol=${result.symbol} tf=${result.timeframe} signal=${result.signal} reason="${result.reason}" entry=${logEntry} sl=${logSl} tp1=${logTp1} tp2=${logTp2} delayed=${result.isDelayed}`,
+    `[SIGNAL] symbol=${result.symbol} tf=${result.timeframe} decision=${result.decision} reason=${result.reason} stale=${result.stale} age=${result.ageMinutes}`,
   );
 
   return result;

@@ -1,25 +1,34 @@
 import { strict as assert } from "node:assert";
 
+export type LanguageCode = "ar" | "en";
+
+export function detectArabic(text: string): boolean {
+  return /[\u0600-\u06FF]/.test(text);
+}
+
+export function toLanguage(text: string): LanguageCode {
+  return detectArabic(text) ? "ar" : "en";
+}
+
 function ensureDate(input: string | number | Date): Date {
-  if (input instanceof Date) return new Date(input.getTime());
+  if (input instanceof Date) {
+    return new Date(input.getTime());
+  }
   if (typeof input === "number") {
     const ms = input > 10_000_000_000 ? input : input * 1000;
     return new Date(ms);
   }
-  if (typeof input === "string") {
-    const trimmed = input.trim();
-    const parsed = new Date(trimmed);
+  if (typeof input === "string" && input.trim()) {
+    const parsed = new Date(input.trim());
     if (!Number.isNaN(parsed.getTime())) {
       return parsed;
     }
-    // Accept timestamps like "2024-05-01 10:00" (assumed UTC)
-    const normalised = trimmed.replace(/\s+/, "T") + "Z";
-    const alt = new Date(normalised);
+    const alt = new Date(`${input.trim().replace(/\s+/, "T")}Z`);
     if (!Number.isNaN(alt.getTime())) {
       return alt;
     }
   }
-  throw new Error("INVALID_DATE_INPUT");
+  throw new Error("INVALID_DATE");
 }
 
 export function formatUtcLabel(input: string | number | Date): string {
@@ -28,143 +37,125 @@ export function formatUtcLabel(input: string | number | Date): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
-export interface PriceMessageInput {
+function formatPriceValue(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.00";
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1000) return value.toFixed(2);
+  if (abs >= 100) return value.toFixed(2);
+  if (abs >= 10) return value.toFixed(3);
+  if (abs >= 1) return value.toFixed(4);
+  return value.toFixed(5);
+}
+
+export interface PriceFormatterInput {
   symbol: string;
   price: number;
-  timeUTC: string | number | Date;
-  source: string;
+  timeISO: string;
 }
 
-function formatNumber(value: number | null | undefined): number {
-  if (value == null || Number.isNaN(value)) {
-    return 0;
+export function priceFormatter(input: PriceFormatterInput, lang: LanguageCode): string {
+  assert(input.symbol, "symbol required");
+  const label = formatUtcLabel(input.timeISO);
+  const price = formatPriceValue(input.price);
+  if (lang === "ar") {
+    return [`الوقت (UTC): ${label}`, `الرمز: ${input.symbol}`, `السعر: ${price}`].join("\n");
   }
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) {
-    return 0;
-  }
-  return numeric;
+  return [`time (UTC): ${label}`, `symbol: ${input.symbol}`, `price: ${price}`].join("\n");
 }
 
-function formatPriceValue(value: number): string {
-  return formatNumber(value).toFixed(2);
-}
+export type ReasonToken = "bullish_pressure" | "bearish_pressure" | "no_clear_bias";
 
-export function formatPriceMsg({ symbol, price, timeUTC, source }: PriceMessageInput): string {
-  assert(symbol && typeof symbol === "string", "symbol required");
-  assert(Number.isFinite(price), "price must be finite");
-  const label = formatUtcLabel(timeUTC);
-  const rounded = formatPriceValue(price);
-  const sourceLabel = typeof source === "string" && source.trim() ? source.trim() : "FCS";
-  return [
-    `time (UTC): ${label}`,
-    `symbol: ${symbol}`,
-    `price: ${rounded}`,
-    `source: ${sourceLabel}`,
-  ].join("\n");
-}
-
-export interface SignalMessageInput {
-  decision: "BUY" | "SELL" | "NEUTRAL";
-  entry?: number | null;
-  sl?: number | null;
-  tp1?: number | null;
-  tp2?: number | null;
-  time: string | number | Date;
+export interface SignalFormatterInput {
   symbol: string;
-  reason?: string;
+  timeframe: string;
+  timeUTC: string;
+  decision: "BUY" | "SELL" | "NEUTRAL";
+  reason: ReasonToken;
+  levels: { entry: number | null; sl: number | null; tp1: number | null; tp2: number | null };
+  stale: boolean;
+  ageMinutes: number;
 }
 
-function normalizeNumeric(value: number | null | undefined): number | null {
-  if (value == null) return null;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : null;
-}
-
-function formatSignalPrice(value: number | null, symbol: string): string {
-  if (value == null) return "-";
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "-";
-  const upper = symbol.toUpperCase();
-  const abs = Math.abs(numeric);
-  const decimals = upper.endsWith("USDT")
-    ? 2
-    : abs >= 100
-      ? 2
-      : abs >= 10
-        ? 3
-        : 4;
-  return numeric.toFixed(decimals);
-}
-
-function formatRiskRatio(entry: number | null, target: number | null, stop: number | null): string {
-  if (!Number.isFinite(entry) || !Number.isFinite(target) || !Number.isFinite(stop)) {
-    return "";
+function formatLevel(value: number | null, symbol: string): string {
+  if (value == null || !Number.isFinite(value)) {
+    return "-";
   }
-  const risk = Math.abs((entry as number) - (stop as number));
-  if (!Number.isFinite(risk) || risk === 0) {
-    return "";
-  }
-  const reward = Math.abs((target as number) - (entry as number));
-  if (!Number.isFinite(reward) || reward === 0) {
-    return "";
-  }
-  const ratio = reward / risk;
-  return `(R ${ratio.toFixed(1)})`;
+  return formatPriceValue(value);
 }
 
-export function formatSignalMsg(input: SignalMessageInput): string {
-  const label = formatUtcLabel(input.time);
-  const symbol = input.symbol;
-  const decision = input.decision;
-  const reason =
-    (typeof input.reason === "string" && input.reason.trim()) ||
-    (decision === "NEUTRAL" ? "No clear momentum / structure." : "Momentum bias");
-  const lines: string[] = [decision, "", `Time (UTC): ${label}`, `Symbol: ${symbol}`, `SIGNAL: ${decision}`];
+const REASON_MAP: Record<LanguageCode, Record<ReasonToken, string>> = {
+  ar: {
+    bullish_pressure: "ضغط شراء فوق المتوسطات",
+    bearish_pressure: "ضغط بيع تحت المتوسطات",
+    no_clear_bias: "السوق بدون اتجاه واضح حالياً",
+  },
+  en: {
+    bullish_pressure: "Buy pressure above short-term averages",
+    bearish_pressure: "Bearish momentum below resistance",
+    no_clear_bias: "No clear directional bias right now",
+  },
+};
 
-  if (decision === "NEUTRAL") {
-    lines.push(`Reason: ${reason}`);
+export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode): string {
+  const age = Math.max(0, Math.round(input.ageMinutes));
+  const reasonText = REASON_MAP[lang][input.reason] ?? REASON_MAP.en.no_clear_bias;
+  const staleSuffix = input.stale
+    ? lang === "ar"
+      ? " (إشارة قديمة، للمراجعة فقط)"
+      : " (stale review only)"
+    : "";
+  const lines: string[] = [];
+  if (input.stale) {
+    lines.push(
+      lang === "ar"
+        ? `تنبيه: البيانات متأخرة بحوالي ${age} دقيقة`
+        : `Warning: data is delayed by ~${age} minutes`,
+    );
+  }
+  if (lang === "ar") {
+    lines.push(`الوقت (UTC): ${input.timeUTC}`);
+    lines.push(`الرمز: ${input.symbol}`);
+    lines.push(`الإطار الزمني: ${input.timeframe}`);
+    lines.push(`الإشارة: ${input.decision}`);
+    lines.push(`السبب: ${reasonText}${staleSuffix}`);
+    lines.push("مناطق الدخول/الإدارة:");
+    lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
+    lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
+    lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
+    lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
     return lines.join("\n");
   }
-
-  const entryValue = normalizeNumeric(input.entry);
-  const slValue = normalizeNumeric(input.sl);
-  const tp1Value = normalizeNumeric(input.tp1);
-  const tp2Value = normalizeNumeric(input.tp2);
-
-  lines.push(`Entry: ${formatSignalPrice(entryValue, symbol)}`);
-  lines.push(`SL: ${formatSignalPrice(slValue, symbol)}`);
-
-  const tp1Ratio = formatRiskRatio(entryValue, tp1Value, slValue);
-  const tp2Ratio = formatRiskRatio(entryValue, tp2Value, slValue);
-
-  const tp1Label = formatSignalPrice(tp1Value, symbol);
-  const tp2Label = formatSignalPrice(tp2Value, symbol);
-
-  lines.push(tp1Ratio ? `TP1: ${tp1Label} ${tp1Ratio}` : `TP1: ${tp1Label}`);
-  lines.push(tp2Ratio ? `TP2: ${tp2Label} ${tp2Ratio}` : `TP2: ${tp2Label}`);
-  lines.push(`Reason: ${reason}`);
-
+  lines.push(`time (UTC): ${input.timeUTC}`);
+  lines.push(`symbol: ${input.symbol}`);
+  lines.push(`timeframe: ${input.timeframe}`);
+  lines.push(`SIGNAL: ${input.decision}`);
+  lines.push(`Reason: ${reasonText}${staleSuffix}`);
+  lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
+  lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
+  lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
+  lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
   return lines.join("\n");
 }
 
-export interface NewsRow {
+export interface NewsItem {
   date: string | number | Date;
   source: string;
   title: string;
 }
 
-export function formatNewsMsg(rows: NewsRow[]): string {
-  return rows
+export function newsFormatter(rows: NewsItem[], lang: LanguageCode): string {
+  const items = rows
     .filter((row) => row && row.title && row.source)
     .slice(0, 3)
     .map((row) => {
-      const dateLabel = formatUtcLabel(row.date);
-      const datePart = dateLabel.slice(0, 10);
-      const impact = typeof (row as any).impact === "string" && (row as any).impact.trim()
-        ? ` — ${(row as any).impact.trim()}`
-        : "";
-      return `${datePart} — ${row.source} — ${row.title}${impact}`;
-    })
-    .join("\n");
+      const label = formatUtcLabel(row.date);
+      const date = label.slice(0, 10);
+      return `${date} — ${row.source} — ${row.title}`;
+    });
+  if (items.length) {
+    return items.join("\n");
+  }
+  return lang === "ar" ? "لا يوجد أخبار متاحة الآن." : "No news available right now.";
 }
