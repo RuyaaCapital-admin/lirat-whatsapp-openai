@@ -13,12 +13,12 @@ import {
   compute_trading_signal,
   search_web_news,
   about_liirat_knowledge,
-  type OhlcResultPayload,
 } from "../tools/agentTools";
 import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../utils/formatters";
+import type { Candle } from "../tools/ohlc";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
 
@@ -231,7 +231,7 @@ function applyGreeting(text: string, shouldGreet: boolean, language: LanguageCod
   return `${greeting}\n${base}`;
 }
 
-type CandleSeries = OhlcResultPayload["candles"];
+type CandleSeries = Candle[];
 
 interface ToolContext {
   lastCandlesBySymbolTimeframe: Record<string, CandleSeries>;
@@ -341,27 +341,50 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 });
                 messages.push({ role: "tool", tool_call_id: call.id, content: formatted });
               } else if (toolName === "get_ohlc") {
-                const symbol = String(parsed.symbol ?? normalisedText).trim();
+                const symbolInput = String(parsed.symbol ?? normalisedText).trim();
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
                 const limit = typeof parsed.limit === "number" ? parsed.limit : 200;
-                const snapshot = await tools.get_ohlc(symbol, timeframeInput, limit);
-                const key = keyFor(snapshot.symbol, snapshot.timeframe);
-                toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
+                const resolvedSymbol = hardMapSymbol(symbolInput);
+                if (!resolvedSymbol) {
+                  throw new Error("invalid_symbol");
+                }
+                const resolvedTimeframe = toTimeframe(timeframeInput);
+                const candles = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, limit);
+                const key = keyFor(resolvedSymbol, resolvedTimeframe);
+                toolContext.lastCandlesBySymbolTimeframe[key] = candles;
+                const last = candles.at(-1);
+                const tfMs: Record<string, number> = {
+                  "1min": 60_000,
+                  "5min": 5 * 60_000,
+                  "15min": 15 * 60_000,
+                  "30min": 30 * 60_000,
+                  "1hour": 60 * 60_000,
+                  "4hour": 4 * 60 * 60_000,
+                  "1day": 24 * 60 * 60_000,
+                };
+                const lastClosedUtc = last
+                  ? (() => {
+                      const iso = new Date(last.t).toISOString();
+                      return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+                    })()
+                  : "";
+                const stale = last
+                  ? Date.now() - last.t > (tfMs[resolvedTimeframe] ?? 60 * 60_000) * 3
+                  : true;
                 console.log("[TOOL] get_ohlc -> ok", {
-                  symbol: snapshot.symbol,
-                  timeframe: snapshot.timeframe,
-                  candles: snapshot.candles.length,
+                  symbol: resolvedSymbol,
+                  timeframe: resolvedTimeframe,
+                  candles: candles.length,
                 });
                 messages.push({
                   role: "tool",
                   tool_call_id: call.id,
                   content: JSON.stringify({
-                    symbol: snapshot.symbol,
-                    timeframe: snapshot.timeframe,
-                    last_closed_utc: snapshot.last_closed_utc,
-                    candles: snapshot.candles,
-                    source: snapshot.source,
-                    stale: snapshot.stale,
+                    symbol: resolvedSymbol,
+                    timeframe: resolvedTimeframe,
+                    last_closed_utc: lastClosedUtc,
+                    candles,
+                    stale,
                   }),
                 });
               } else if (toolName === "compute_trading_signal") {
@@ -375,18 +398,20 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const key = keyFor(resolvedSymbol, resolvedTimeframe);
                 let candles = toolContext.lastCandlesBySymbolTimeframe[key];
                 if (!candles || candles.length === 0) {
-                  const snapshot = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
-                  candles = snapshot.candles;
+                  candles = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
                   toolContext.lastCandlesBySymbolTimeframe[key] = candles;
                 }
                 const signal = await tools.compute_trading_signal(resolvedSymbol, resolvedTimeframe, candles);
+                const timeForMsg = signal.last_closed_utc
+                  ? `${signal.last_closed_utc.replace(/\s+/, "T")}:00Z`
+                  : new Date().toISOString();
                 const trimmed = formatSignalMsg({
                   decision: signal.decision,
                   entry: signal.entry,
                   sl: signal.sl,
                   tp1: signal.tp1,
                   tp2: signal.tp2,
-                  time: signal.time,
+                  time: timeForMsg,
                   symbol: signal.symbol,
                 }).trim();
                 if (!trimmed) {

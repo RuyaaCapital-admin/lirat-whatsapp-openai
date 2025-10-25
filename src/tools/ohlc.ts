@@ -5,12 +5,9 @@ export type Candle = { t: number; o: number; h: number; l: number; c: number; v?
 
 export type OhlcSource = "FMP" | "FCS" | "PROVIDED";
 
-export interface OhlcResult {
+export interface ProviderCandles {
   candles: Candle[];
-  lastClosed: Candle;
-  timeframe: TF;
   source: OhlcSource;
-  stale: boolean;
 }
 
 export class OhlcError extends Error {
@@ -34,16 +31,6 @@ let httpClient: HttpClient = axios;
 export function __setOhlcHttpClient(client?: HttpClient | null) {
   httpClient = client ?? axios;
 }
-
-const TF_TO_MS: Record<TF, number> = {
-  "1min": 60_000,
-  "5min": 5 * 60_000,
-  "15min": 15 * 60_000,
-  "30min": 30 * 60_000,
-  "1hour": 60 * 60_000,
-  "4hour": 4 * 60 * 60_000,
-  "1day": 24 * 60 * 60_000,
-};
 
 const FMP_INTERVAL: Record<TF, string> = {
   "1min": "1min",
@@ -97,56 +84,34 @@ function ensureSorted(candles: Candle[]): Candle[] {
     }));
 }
 
-function deriveLastClosed(candles: Candle[], timeframe: TF): { lastClosed: Candle; stale: boolean } {
-  const sorted = ensureSorted(candles);
-  const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
-  const now = Date.now();
-  const last = sorted.at(-1) ?? null;
-  const prev = sorted.at(-2) ?? null;
-  if (!last || !isFiniteCandle(last)) {
-    throw new OhlcError("INVALID_CANDLES", timeframe);
-  }
-  let candidate = last;
-  if (now - last.t < tfMs * 0.5) {
-    candidate = prev ?? last;
-  }
-  if (!candidate || !isFiniteCandle(candidate)) {
-    throw new OhlcError("NO_CLOSED_BAR", timeframe);
-  }
-  const stale = now - candidate.t > tfMs * 3;
-  return { lastClosed: candidate, stale };
-}
-
-async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
+async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<ProviderCandles | null> {
   const interval = FMP_INTERVAL[timeframe];
   const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${symbol}?apikey=${process.env.FMP_API_KEY}`;
   try {
     const { data } = await httpClient.get(url, { timeout: 9000 });
-    const candles = (Array.isArray(data) ? data : [])
-      .map(mapFmpRow)
-      .filter(isFiniteCandle)
-      .slice(-limit);
-    if (!candles.length) {
-      throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
+    const mapped = (Array.isArray(data) ? data : []).map(mapFmpRow).filter(isFiniteCandle);
+    if (!mapped.length) {
+      return null;
     }
-    const sorted = ensureSorted(candles);
-    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FMP", stale };
+    const sorted = ensureSorted(mapped);
+    const trimmed = sorted.slice(-limit);
+    if (!trimmed.length) {
+      return null;
+    }
+    return { candles: trimmed, source: "FMP" };
   } catch (error) {
-    if (error instanceof OhlcError) {
-      throw error;
-    }
     if (error instanceof AxiosError) {
       if (error.response?.status === 404) {
-        throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
+        return null;
       }
-      throw new OhlcError("HTTP_ERROR", timeframe, "FMP");
+      console.warn("[OHLC] FMP HTTP error", { symbol, timeframe, status: error.response?.status });
+      return null;
     }
     throw error;
   }
 }
 
-async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
+async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promise<ProviderCandles | null> {
   const isCrypto = /USDT$/i.test(symbol);
   const pair = isCrypto ? symbol.replace(/USDT$/i, "/USDT") : symbol.replace("USD", "/USD");
   const url = isCrypto
@@ -155,32 +120,30 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
   try {
     const { data } = await httpClient.get(url, { timeout: 9000 });
     const rows = (data?.response ?? data?.candles ?? []) as any[];
-    const candles = rows
-      .slice(-limit)
-      .map(mapFcsRow)
-      .filter(isFiniteCandle);
-    if (!candles.length) {
-      throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
+    const mapped = rows.map(mapFcsRow).filter(isFiniteCandle);
+    if (!mapped.length) {
+      return null;
     }
-    const sorted = ensureSorted(candles);
-    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FCS", stale };
+    const sorted = ensureSorted(mapped);
+    const trimmed = sorted.slice(-limit);
+    if (!trimmed.length) {
+      return null;
+    }
+    return { candles: trimmed, source: "FCS" };
   } catch (error) {
-    if (error instanceof OhlcError) {
-      throw error;
-    }
     if (error instanceof AxiosError) {
       if (error.response?.status === 404) {
-        throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
+        return null;
       }
-      throw new OhlcError("HTTP_ERROR", timeframe, "FCS");
+      console.warn("[OHLC] FCS HTTP error", { symbol, timeframe, status: error.response?.status });
+      return null;
     }
     throw error;
   }
 }
 
 type ProviderResult = {
-  fetcher: (symbol: string, timeframe: TF, limit: number) => Promise<OhlcResult>;
+  fetcher: (symbol: string, timeframe: TF, limit: number) => Promise<ProviderCandles | null>;
   source: OhlcSource;
 };
 
@@ -196,36 +159,26 @@ function getProviderOrder(symbol: string): ProviderResult[] {
   return isCrypto(symbol) ? cryptoFirst : fxFirst;
 }
 
-export async function get_ohlc(symbol: string, timeframe: TF, limit = 300): Promise<OhlcResult> {
+export async function get_ohlc(symbol: string, timeframe: TF, limit = 300): Promise<Candle[]> {
   const safeLimit = Math.max(50, Math.min(limit, 400));
   const order = getProviderOrder(symbol);
-  let lastError: OhlcError | null = null;
 
-  for (const { fetcher, source } of order) {
+  for (const { fetcher } of order) {
     try {
       const result = await fetcher(symbol, timeframe, safeLimit);
-      if (Array.isArray(result.candles) && result.candles.length > 0) {
-        return result;
+      if (result && Array.isArray(result.candles) && result.candles.length > 0) {
+        const sorted = ensureSorted(result.candles);
+        return sorted;
       }
-      lastError = new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, source);
     } catch (error) {
       if (error instanceof OhlcError) {
-        if (error.code === "NO_DATA_FOR_INTERVAL") {
-          lastError = error;
+        if (error.code === "HTTP_ERROR" || error.code === "NO_DATA_FOR_INTERVAL") {
           continue;
         }
-        if (error.code === "HTTP_ERROR") {
-          lastError = error;
-          continue;
-        }
-        throw error;
       }
       throw error;
     }
   }
 
-  if (lastError) {
-    throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, lastError.source);
-  }
-  throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe);
+  return [];
 }

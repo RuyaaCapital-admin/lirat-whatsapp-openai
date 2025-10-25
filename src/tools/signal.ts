@@ -2,7 +2,7 @@
 import { TF } from './normalize';
 import type { OhlcSource } from './ohlc';
 import { formatSignalMsg } from '../utils/formatters';
-import { computeSignal as computeSignalPayload, type SignalPayload } from './compute_trading_signal';
+import { computeSignal as computeSignalPayload, type TradingSignalResult } from './compute_trading_signal';
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
   const numeric = Number(value);
@@ -32,7 +32,7 @@ export type SignalBlock = {
   stale: boolean;
 };
 
-function resolveTimeISO(payload: SignalPayload): string {
+function resolveTimeISO(payload: TradingSignalResult): string {
   if (payload.lastClosed?.t) {
     const timestamp = Number(payload.lastClosed.t);
     if (Number.isFinite(timestamp)) {
@@ -67,7 +67,7 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
   const sl = toFiniteNumber(trading_signal.sl, entry);
   const tp1 = toFiniteNumber(trading_signal.tp1, entry);
   const tp2 = toFiniteNumber(trading_signal.tp2, entry);
-  const indicators = trading_signal.indicators ?? ({} as Partial<SignalPayload['indicators']>);
+  const indicators = trading_signal.indicators ?? ({} as Partial<TradingSignalResult['indicators']>);
   const lastClose = resolveNumber(trading_signal.lastClosed?.c, entry) ?? entry;
   const prevClose = resolveNumber(trading_signal.lastClosed?.o, lastClose) ?? entry;
   return {
@@ -89,7 +89,7 @@ export async function computeSignal(symbol: string, tf: TF): Promise<SignalBlock
     sl,
     tp1,
     tp2,
-    source: (trading_signal.source as OhlcSource | undefined) ?? 'PROVIDED',
+    source: 'PROVIDED',
     stale: Boolean(trading_signal.stale),
   };
 }

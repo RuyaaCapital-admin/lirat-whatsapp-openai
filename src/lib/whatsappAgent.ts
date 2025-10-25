@@ -163,13 +163,13 @@ export function createSmartReply(deps: SmartReplyDeps) {
           result = await handler(args);
 
           // Track get_ohlc results for potential use by compute_trading_signal
-          if (name === "get_ohlc" && result && typeof result === 'object' && 'candles' in result) {
+          if (name === "get_ohlc" && Array.isArray(result)) {
             const symbol = String(args.symbol ?? "").trim();
             const timeframe = String(args.timeframe ?? "").trim();
             lastOhlcResult = {
-              candles: (result as any).candles || [],
+              candles: result,
               symbol,
-              timeframe
+              timeframe,
             };
           }
         } catch (error) {

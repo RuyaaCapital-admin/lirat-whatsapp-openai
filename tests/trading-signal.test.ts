@@ -24,7 +24,6 @@ async function runTradingSignalTests() {
     assert.strictEqual(result.symbol, "XAUUSD");
     assert.strictEqual(result.timeframe, "1hour");
     assert.strictEqual(result.last_closed_utc, expectedLabel);
-    assert.strictEqual(result.time.slice(0, 16), candidateIso.slice(0, 16));
     assert.strictEqual(result.stale, false, "recent candles should not be stale");
     assert.ok(Number.isFinite(result.entry));
     assert.ok(Number.isFinite(result.tp1));

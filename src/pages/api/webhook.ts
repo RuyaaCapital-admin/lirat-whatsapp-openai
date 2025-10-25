@@ -19,7 +19,6 @@ import {
   about_liirat_knowledge,
   type PriceResult,
   type TradingSignalResult,
-  type OhlcResultPayload,
 } from "../../tools/agentTools";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
 import { formatNewsMsg, formatPriceMsg } from "../../utils/formatters";
@@ -381,20 +380,22 @@ async function smartToolLoop({
   if (plan.intent === "trading_signal") {
     const symbol = normaliseSymbol(plan.symbol ?? trimmed);
     if (!symbol) {
-      const clarification = language === "ar" ? "أي أداة بدك الصفقة عليها؟" : "Which instrument do you want the trade for?";
+      const clarification =
+        language === "ar"
+          ? "حدد الأداة (ذهب، فضة، يورو، بيتكوين...)."
+          : "Specify the instrument (gold, silver, euro, bitcoin...).";
       return { text: clarification, skipGreeting: true };
     }
     const timeframe = toTimeframe(plan.timeframe ?? trimmed);
 
     const runPipeline = async (tf: string) => {
       console.log("[TOOL] invoke get_ohlc", { symbol, timeframe: tf, limit: 200 });
-      const snapshot: OhlcResultPayload = await get_ohlc(symbol, tf, 200);
-      const candles = Array.isArray(snapshot.candles) ? snapshot.candles : [];
-      if (!candles.length) {
-        return { snapshot, signal: null as TradingSignalResult | null };
+      const candles = await get_ohlc(symbol, tf, 200);
+      if (!Array.isArray(candles) || candles.length === 0) {
+        return { candles: [] as typeof candles, signal: null as TradingSignalResult | null };
       }
       const signal = await compute_trading_signal(symbol, tf, candles);
-      return { snapshot, signal };
+      return { candles, signal };
     };
 
     try {
@@ -404,19 +405,25 @@ async function smartToolLoop({
       }
 
       let finalSignal = primary.signal;
+      let finalCandles = primary.candles;
 
       if (finalSignal.stale) {
-        const retryTimeframe = "5min";
-        const retry = await runPipeline(retryTimeframe);
-        if (retry.signal) {
+        const retry = await runPipeline("5min");
+        if (retry.signal && !retry.signal.stale) {
           finalSignal = retry.signal;
+          finalCandles = retry.candles;
+        } else if (retry.signal) {
+          finalSignal = retry.signal;
+          finalCandles = retry.candles;
+        } else if (retry.candles.length === 0) {
+          return { text: dataUnavailable(language), skipGreeting: true };
         }
       }
 
       console.log("[SIGNAL_PIPELINE]", {
         symbol: finalSignal.symbol,
         timeframe: finalSignal.timeframe,
-        candles: finalSignal.candles_count,
+        candles: finalCandles.length,
         decision: finalSignal.decision,
         stale: finalSignal.stale,
         last_closed_utc: finalSignal.last_closed_utc,
