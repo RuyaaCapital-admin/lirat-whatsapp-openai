@@ -120,12 +120,23 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
   async compute_trading_signal(args) {
     // Accept either a full OHLC payload or symbol/timeframe and fetch candles through get_ohlc
     let ohlc = args.ohlc || args;
+    const desiredSymbol = String(ohlc.symbol || args.symbol || "").trim();
+    const desiredTf = String(ohlc.timeframe || args.timeframe || "").trim();
     if (!ohlc?.candles || !Array.isArray(ohlc.candles)) {
       const sym = String(ohlc.symbol || args.symbol || "").trim();
       const tf = String(ohlc.timeframe || args.timeframe || "").trim();
       if (sym && tf) {
         const fetched = await get_ohlc(sym, tf, 60);
         if (fetched && (fetched as any).ok) {
+          ohlc = fetched;
+        }
+      }
+    }
+    // If too few candles, fetch a larger window to make a decision
+    if (!ohlc?.candles || ohlc.candles.length < 30) {
+      if (desiredSymbol && desiredTf) {
+        const fetched = await get_ohlc(desiredSymbol, desiredTf, 150);
+        if (fetched && (fetched as any).ok && (fetched as any).candles?.length >= 30) {
           ohlc = fetched;
         }
       }

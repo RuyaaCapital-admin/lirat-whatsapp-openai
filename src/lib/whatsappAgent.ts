@@ -231,9 +231,10 @@ export function createSmartReply(deps: SmartReplyDeps) {
           }
 
           // Special handling for compute_trading_signal to inject candles from last get_ohlc
-          if (name === "compute_trading_signal" && !args.ohlc && lastOhlcResult) {
+          if (name === "compute_trading_signal") {
             const symbol = String((args.ohlc as any)?.symbol ?? args.symbol ?? "").trim();
             const timeframe = String((args.ohlc as any)?.timeframe ?? args.timeframe ?? "").trim();
+            // Inject last OHLC when it matches
             if (
               symbol &&
               timeframe &&
@@ -244,11 +245,11 @@ export function createSmartReply(deps: SmartReplyDeps) {
               console.info(`[CANDLE_INJECTION] Auto-injecting OHLC for ${symbol} ${timeframe}`);
             }
             // If still missing candles but we have symbol/timeframe, fetch directly
-            if (!args.ohlc && symbol && timeframe) {
+            if ((!args.ohlc || !(args.ohlc as any).candles) && symbol && timeframe) {
               try {
-                const fetched = await toolHandlers["get_ohlc"]({ symbol, timeframe, limit: 60 });
-                if (fetched && (fetched as any).ok) {
-                  args.ohlc = fetched;
+                const fetched = await toolHandlers["get_ohlc"]({ symbol, timeframe, limit: 150 });
+                if (fetched && (fetched as any).ok && (fetched as any).candles?.length) {
+                  args.ohlc = fetched as any;
                 }
               } catch {}
             }

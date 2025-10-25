@@ -122,36 +122,36 @@ export function toTimeframe(user?: string): TF {
   
   // 1 minute patterns
   if (
-    /(\b1\s*(m|min|minute)\b|\bدقيقة\b|\bعلى دقيقة\b|\bعالدقيقة\b|\b1\s*دقيقة\b)/.test(t)
+    /(\b1\s*(m|min|minute)\b|\b1m\b|\b1\s*min\b|\bدقيقة\b|\bعلى دقيقة\b|\bعالدقيقة\b|\b1\s*دقيقة\b)/.test(t)
   )
     return "1min";
     
   // 5 minutes patterns  
   if (
-    /(\b5\s*(m|min)\b|\b5\s*(دقايق|دقائق)\b|\b٥\s*(دقايق|دقائق)\b|\bخمس دقائق\b|\b5\s*دقايق\b)/.test(t)
+    /(\b5\s*(m|min)\b|\b5m\b|\b٥\s*m\b|\b5\s*(دقايق|دقائق)\b|\b٥\s*(دقايق|دقائق)\b|\bخمس دقائق\b|\b5\s*دقايق\b)/.test(t)
   )
     return "5min";
     
   // 15 minutes patterns
-  if (/(\b15\s*(m|min)?\b|\b١٥\s*(دقيقة|دقايق)\b|\b15\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) 
+  if (/(\b15\s*(m|min)?\b|\b15m\b|\b١٥\s*(دقيقة|دقايق)\b|\b15\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) 
     return "15min";
     
   // 30 minutes patterns
   if (
-    /(\b30\s*(m|min)?\b|\b٣٠\s*(دقيقة|دقايق)\b|\b30\s*(دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/.test(t)
+    /(\b30\s*(m|min)?\b|\b30m\b|\b٣٠\s*(دقيقة|دقايق)\b|\b30\s*(دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/.test(t)
   )
     return "30min";
     
   // 1 hour patterns
-  if (/(\b1\s*(hour|h)\b|\bساعة\b|\bساعه\b|\b1\s*ساعة\b|\bعالساعة\b)/.test(t)) 
+  if (/(\b1\s*(hour|h)\b|\b1h\b|\bساعة\b|\bساعه\b|\b1\s*ساعة\b|\bعالساعة\b)/.test(t)) 
     return "1hour";
     
   // 4 hours patterns
-  if (/(\b4\s*(hour|h)\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b|\b4\s*ساعات\b)/.test(t)) 
+  if (/(\b4\s*(hour|h)\b|\b4h\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b|\b4\s*ساعات\b)/.test(t)) 
     return "4hour";
     
   // Daily patterns
-  if (/(\bdaily\b|\bيومي\b|\bيوم\b|\bعلى اليومي\b|\bعلى اليوم\b)/.test(t)) 
+  if (/(\b1d\b|\b1\s*day\b|\bdaily\b|\bday\b|\bيومي\b|\bيوم\b|\bعلى اليومي\b|\bعلى اليوم\b)/.test(t)) 
     return "1day";
     
   return "5min";
