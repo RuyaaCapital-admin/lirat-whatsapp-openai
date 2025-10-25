@@ -1,10 +1,10 @@
 // src/lib/smartReplyNew.ts
-import { decideUserIntent, type Intent, type ConversationState } from "./intentParser";
 import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from "../tools/agentTools";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
 import { getOrCreateConversationByTitle, fetchRecentContext } from "./supabaseLite";
+import { classifyIntent, type ClassifiedIntent } from "./intentClassifier";
 
 export interface SmartReplyInput {
   phone: string;
@@ -26,340 +26,147 @@ function normalizeText(text: string): string {
   return text.replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1632));
 }
 
-async function loadConversationState(phone: string): Promise<ConversationState & { conversationId: string | null }> {
-  try {
-    const conversationId = await getOrCreateConversationByTitle(phone);
-    return {
-      conversationId: conversationId ?? null,
-      lastSymbol: null,
-      lastTimeframe: null,
-    };
-  } catch {
-    return { conversationId: null, lastSymbol: null, lastTimeframe: null };
+// No persistent state used; classifier will leverage history for context
+
+async function buildSignalToolResult(symbol: string, timeframe: string, language: LanguageCode) {
+  const ohlc = await get_ohlc(symbol, timeframe, 150);
+  if (!ohlc.ok) {
+    return { tool_result: { type: "signal_error", symbol, timeframe, error: "NO_DATA" as const } };
   }
-}
+  const signal = await compute_trading_signal({ ...ohlc, lang: language });
+  const staleMinutes = Math.max(0, Math.round(ohlc.ageMinutes));
+  const reasonText = language === "ar"
+    ? (signal.reason === "bullish_pressure" ? "ضغط شراء فوق المتوسطات"
+      : signal.reason === "bearish_pressure" ? "ضغط بيع تحت المتوسطات" : "السوق بدون اتجاه واضح حالياً.")
+    : (signal.reason === "bullish_pressure" ? "Buy pressure above averages"
+      : signal.reason === "bearish_pressure" ? "Bearish pressure below averages" : "No clear directional bias right now.");
 
-async function handleSignalIntent(
-  symbol: string,
-  timeframe: string,
-  language: LanguageCode,
-  conversationId: string | null,
-  lastUserMessage: string
-): Promise<{ reply: string; tool: Record<string, unknown> } | { reply: string; tool: null }> {
-  try {
-    const ohlc = await get_ohlc(symbol, timeframe, 200);
-    let tool_result: Record<string, unknown> | null = null;
-    let tool_meta: Record<string, unknown> | null = null;
-    if (ohlc.ok) {
-      const signal = await compute_trading_signal({ ...ohlc, lang: language });
-      const reasonText = language === "ar"
-        ? (signal.reason === "bullish_pressure"
-            ? "ضغط شراء فوق المتوسطات"
-            : signal.reason === "bearish_pressure"
-              ? "ضغط بيع تحت المتوسطات"
-              : "مافي اتجاه واضح")
-        : (signal.reason === "bullish_pressure"
-            ? "Buy pressure above averages"
-            : signal.reason === "bearish_pressure"
-              ? "Bearish pressure below averages"
-              : "No clear bias");
-      const lastLabel = signal.timeUTC;
-      const staleMinutes = Math.max(0, Math.round(signal.ageMinutes));
-      const tooStale = (() => {
-        const tf = String(signal.timeframe);
-        if (tf === "1min" || tf === "5min" || tf === "15min") return staleMinutes > 10;
-        if (tf === "1hour") return staleMinutes > 30;
-        if (tf === "4hour") return staleMinutes > 180;
-        return staleMinutes > 1440;
-      })();
-      const decided = (!ohlc.ok || tooStale) ? "STALE" : signal.decision;
-      tool_result = {
-        type: "signal",
-        symbol: signal.symbol,
-        timeframe: signal.timeframe,
-        decided,
-        entry: signal.levels.entry,
-        sl: signal.levels.sl,
-        tp1: signal.levels.tp1,
-        tp2: signal.levels.tp2,
-        reason_short: decided === "STALE" ? (language === "ar" ? "البيانات متأخرة، ما فيني أعطي توصية مباشرة" : "Data is delayed; no direct trade") : reasonText,
-        last_candle_time_utc: lastLabel,
-        stale_minutes: staleMinutes,
-        too_stale: tooStale,
-      };
-      tool_meta = {
-        symbol: signal.symbol,
-        timeframe: signal.timeframe,
-        time: lastLabel,
-        staleMinutes,
-      };
-    } else {
-      tool_result = { type: "signal", error: "NO_DATA", symbol, timeframe };
-      tool_meta = { symbol, timeframe };
-    }
-
-    const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
-    const reply = await generateReply({
-      language,
-      lastUserMessage,
-      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
-      toolResult: tool_result,
-      toolMeta: tool_meta ?? undefined,
+  const tool_result: Record<string, unknown> = {
+    type: "signal",
+    symbol: signal.symbol,
+    timeframe: signal.timeframe,
+    utc_candle_time: ohlc.lastISO,
+    stale_minutes: staleMinutes,
+    decision: signal.decision,
+    reason: reasonText,
+  };
+  if (signal.decision !== "NEUTRAL") {
+    Object.assign(tool_result, {
+      entry: signal.levels.entry,
+      sl: signal.levels.sl,
+      tp1: signal.levels.tp1,
+      tp2: signal.levels.tp2,
     });
-
-    return { reply, tool: tool_result };
-  } catch (error) {
-    console.error("[SIGNAL] Error:", error);
-    const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
-    const reply = await generateReply({
-      language,
-      lastUserMessage,
-      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
-      toolResult: { type: "signal", error: "ERROR" },
-    });
-    return { reply, tool: null };
   }
+  return { tool_result };
 }
 
-async function handlePriceIntent(
-  symbol: string,
-  timeframe: string,
-  language: LanguageCode,
-  conversationId: string | null,
-  lastUserMessage: string
-): Promise<{ reply: string; tool: Record<string, unknown> } | { reply: string; tool: null }> {
-  try {
-    const price = await get_price(symbol, timeframe);
-    const tool_result = {
-      type: "price",
-      symbol: price.symbol,
-      price: price.price,
-      ts_utc: price.ts_utc,
-    } as const;
-    const tool_meta = { symbol: price.symbol, timeframe };
-    const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
-    const reply = await generateReply({
-      language,
-      lastUserMessage,
-      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
-      toolResult: tool_result as any,
-      toolMeta: tool_meta,
-    });
-    return { reply, tool: tool_result as any };
-  } catch (error) {
-    console.error("[PRICE] Error:", error);
-    const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
-    const reply = await generateReply({
-      language,
-      lastUserMessage,
-      conversationContext: context.length ? context : [{ role: "user", content: lastUserMessage }],
-      toolResult: { type: "price", error: "ERROR" },
-    });
-    return { reply, tool: null };
-  }
+async function buildPriceToolResult(symbol: string, timeframe: string) {
+  const price = await get_price(symbol, timeframe);
+  const now = Date.now();
+  const tsMs = Date.parse(price.ts_utc);
+  const staleMinutes = Number.isFinite(tsMs) ? Math.max(0, Math.round((now - tsMs) / 60000)) : 0;
+  const tool_result = {
+    type: "price",
+    symbol: price.symbol,
+    utc_time: price.ts_utc,
+    price: price.price,
+    source: price.source,
+    stale_minutes: staleMinutes,
+  } as const;
+  return { tool_result };
 }
 
-async function handleMemoryQuestion(
-  conversationId: string | null,
-  language: LanguageCode
-): Promise<string> {
-  if (!conversationId) {
-    return language === "ar" 
-      ? "ما في محادثة سابقة."
-      : "No previous conversation.";
-  }
+// memory recap handled by generator via history
 
-  try {
-    const messages = await fetchRecentContext(conversationId, 4);
-    if (messages.length === 0) {
-      return language === "ar" 
-        ? "ما في محادثة سابقة."
-        : "No previous conversation.";
-    }
-
-    // Create a simple recap
-    const recap = messages.slice(-4).map(msg => {
-      if (msg.role === "user") {
-        return language === "ar" ? "طلبت: " + msg.content.substring(0, 50) + "..." : "You asked: " + msg.content.substring(0, 50) + "...";
-      } else {
-        return language === "ar" ? "ردت: " + msg.content.substring(0, 50) + "..." : "I replied: " + msg.content.substring(0, 50) + "...";
-      }
-    }).join("\n");
-
-    return recap;
-  } catch (error) {
-    console.error("[MEMORY] Error:", error);
-    return language === "ar" 
-      ? "ما في محادثة سابقة."
-      : "No previous conversation.";
-  }
+async function buildLiiratToolResult(query: string, language: LanguageCode) {
+  const answer = await about_liirat_knowledge(query, language);
+  return { tool_result: { type: "liirat_info", answer } };
 }
 
-async function handleAboutLiirat(
-  query: string,
-  language: LanguageCode
-): Promise<string> {
-  try {
-    return await about_liirat_knowledge(query, language);
-  } catch (error) {
-    console.error("[ABOUT_LIIRAT] Error:", error);
-    return language === "ar" 
-      ? "البيانات غير متاحة حالياً."
-      : "Data not available right now.";
-  }
-}
-
-function handleChatIntent(text: string, language: LanguageCode): string {
-  const normalizedText = text.toLowerCase();
-  
-  // Check for insults
-  const insultPatterns = [
-    "غبي", "تافه", "خرس", "fuck", "stupid", "asshole", "shit", "يا زب", "احمق",
-    "ينعل أبو سماك", "انت غبي", "شو جحش"
-  ];
-  
-  const isInsult = insultPatterns.some(pattern => normalizedText.includes(pattern));
-  
-  if (isInsult) {
-    return language === "ar" 
-      ? "خلّينا نركّز على الصفقة أو السعر لحتى أساعدك بسرعة."
-      : "Let's stay on the trade or price so I can help fast.";
-  }
-  
-  // Check for clarification questions
-  if (normalizedText.includes("شو يعني") || normalizedText.includes("what does it mean")) {
-    return language === "ar" 
-      ? "يعني ما في اتجاه واضح شراء/بيع بهالفريم حالياً."
-      : "It means no clear buy/sell direction on that timeframe right now.";
-  }
-  
-  // Default chat response
-  return language === "ar" 
-    ? "خلّينا نركّز على الصفقة أو السعر لحتى أساعدك بسرعة."
-    : "Let's stay on the trade or price so I can help fast.";
-}
+// Chat/general handled by generator
 
 export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutput> {
-  const { phone, text, contactName } = input;
-  const normalizedText = normalizeText(text);
-  const language = detectLanguage(normalizedText);
-  
-  // Ensure conversation and load state-lite
+  const { phone, text } = input;
+  const normalizedText = normalizeText(text || "").trim();
+  // Ensure conversation exists
   let conversationId: string | null = null;
   try {
     conversationId = await getOrCreateConversationByTitle(phone);
   } catch (e) {
     console.warn("[SUPABASE] conv ensure failed (ignored)", e);
   }
-  const state = await (async () => {
-    try {
-      return await loadConversationState(phone);
-    } catch {
-      return { conversationId, lastSymbol: null, lastTimeframe: null };
-    }
-  })();
-  
-  // Parse intent
-  const intent = decideUserIntent(normalizedText, {
-    lastSymbol: state.lastSymbol,
-    lastTimeframe: state.lastTimeframe
-  });
-  
-  let reply = "";
-  
+
+  // Load recent history and append latest user turn for the generator
+  const recentHistory = conversationId ? await fetchRecentContext(conversationId, 8) : [];
+  const conversationHistory = [...recentHistory, { role: "user" as const, content: normalizedText }];
+
+  // Classify with context
+  let classified: ClassifiedIntent;
   try {
-    switch (intent.kind) {
-      case "signal": {
-        const result = await handleSignalIntent(intent.symbol, intent.timeframe, language, conversationId, normalizedText);
-        reply = result.reply;
-        break;
-      }
-      
-      case "price": {
-        const result = await handlePriceIntent(intent.symbol, intent.timeframe, language, conversationId, normalizedText);
-        reply = result.reply;
-        break;
-      }
-      
-      case "memory_question": {
-        const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
-        reply = await generateReply({
-          language,
-          lastUserMessage: normalizedText,
-          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-          toolResult: { type: "memory_question" },
-        });
-        break;
-      }
-      
-      case "about_liirat": {
-        try {
-          const text = await handleAboutLiirat(normalizedText, language);
-          const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
-          reply = await generateReply({
-            language,
-            lastUserMessage: normalizedText,
-            conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-            toolResult: { type: "liirat_info", text },
-          });
-        } catch {
-          reply = language === "ar" ? "البيانات غير متاحة حالياً." : "Data not available right now.";
-        }
-        break;
-      }
-      
-      case "chat": {
-        const context = conversationId ? await fetchRecentContext(conversationId, 10) : [];
-        reply = await generateReply({
-          language,
-          lastUserMessage: normalizedText,
-          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-          toolResult: null,
-        });
-        break;
-      }
-      
-      case "clarify_symbol": {
-        const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
-        reply = await generateReply({
-          language,
-          lastUserMessage: normalizedText,
-          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-          toolResult: { type: "clarify", missing: "symbol" },
-        });
-        break;
-      }
-      
-      case "clarify_timeframe": {
-        const context = conversationId ? await fetchRecentContext(conversationId, 6) : [];
-        reply = await generateReply({
-          language,
-          lastUserMessage: normalizedText,
-          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-          toolResult: { type: "clarify", missing: "timeframe", symbol: intent.symbol },
-        });
-        break;
-      }
-      
-      case "unsupported": {
-        const context = conversationId ? await fetchRecentContext(conversationId, 4) : [];
-        reply = await generateReply({
-          language,
-          lastUserMessage: normalizedText,
-          conversationContext: context.length ? context : [{ role: "user", content: normalizedText }],
-          toolResult: null,
-        });
-        break;
-      }
-    }
-  } catch (error) {
-    console.error("[SMART_REPLY] Error:", error);
-    reply = language === "ar" ? "البيانات غير متاحة حالياً." : "Data not available right now.";
+    classified = await classifyIntent(normalizedText, recentHistory);
+  } catch (e) {
+    const lang = detectLanguage(normalizedText);
+    classified = { intent: "general", symbol: null, timeframe: null, query: null, language: lang };
   }
-  
-  return {
-    replyText: reply,
-    language,
-    conversationId
-  };
+
+  const language = classified.language as LanguageCode;
+
+  // Execute tools pipeline per intent
+  let tool_result: Record<string, unknown> | null = null;
+  try {
+    if (classified.intent === "price" && classified.symbol) {
+      const tfInput = classified.timeframe === "day" ? "1day" : (classified.timeframe || "1min");
+      const { tool_result: tr } = await buildPriceToolResult(classified.symbol, tfInput);
+      tool_result = tr;
+    } else if (classified.intent === "trading_signal" && (classified.symbol || hardMapSymbol(normalizedText))) {
+      const symbol = classified.symbol || hardMapSymbol(normalizedText)!;
+      const tfCandidate = classified.timeframe === "day" ? "1day" : (classified.timeframe || "");
+      const timeframe = tfCandidate ? toTimeframe(tfCandidate) : "5min";
+      const { tool_result: tr } = await buildSignalToolResult(symbol, timeframe, language);
+      tool_result = tr;
+    } else if (classified.intent === "news") {
+      const query = classified.query && classified.query.trim() ? classified.query : (language === "ar" ? "أخبار السوق" : "market news");
+      try {
+        const news = await search_web_news(query, language, 3);
+        const items = (news.rows || []).slice(0, 3).map((row) => ({
+          date: String(row.date).slice(0, 10),
+          source: row.source,
+          title: row.title,
+          impact: (row as any).impact ?? undefined,
+        }));
+        tool_result = { type: "news", items } as any;
+      } catch (e) {
+        tool_result = { type: "news", items: [] } as any;
+      }
+    } else if (classified.intent === "liirat_info") {
+      const q = classified.query || normalizedText;
+      const { tool_result: tr } = await buildLiiratToolResult(q, language);
+      tool_result = tr;
+    } else {
+      tool_result = {
+        type: "general_followup",
+        symbol: classified.symbol ?? undefined,
+        timeframe: classified.timeframe ?? undefined,
+      } as any;
+    }
+  } catch (e) {
+    console.warn("[TOOLS] pipeline error", e);
+    tool_result = tool_result ?? { type: "general_followup" };
+  }
+
+  // Generate final reply always through model
+  const reply = await generateReply({
+    conversationHistory,
+    tool_result,
+    intentInfo: {
+      intent: classified.intent,
+      symbol: classified.symbol,
+      timeframe: classified.timeframe,
+      language,
+      query: classified.query ?? null,
+    },
+  });
+
+  return { replyText: reply, language, conversationId };
 }
