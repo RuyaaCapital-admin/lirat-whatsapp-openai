@@ -27,20 +27,16 @@ function normalizeText(text: string): string {
 }
 
 async function loadConversationState(phone: string): Promise<ConversationState & { conversationId: string | null }> {
-  const conversation = await createOrGetConversation(phone);
-  if (!conversation) {
+  try {
+    const conversationId = await getOrCreateConversationByTitle(phone);
     return {
-      conversationId: null,
+      conversationId: conversationId ?? null,
       lastSymbol: null,
-      lastTimeframe: null
+      lastTimeframe: null,
     };
+  } catch {
+    return { conversationId: null, lastSymbol: null, lastTimeframe: null };
   }
-  
-  return {
-    conversationId: conversation.conversation_id,
-    lastSymbol: conversation.last_symbol,
-    lastTimeframe: conversation.last_tf
-  };
 }
 
 async function handleSignalIntent(
