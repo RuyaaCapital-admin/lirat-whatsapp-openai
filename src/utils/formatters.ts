@@ -52,16 +52,13 @@ function formatPriceValue(value: number): string {
 export interface PriceFormatterInput {
   symbol: string;
   price: number;
-  timeISO: string;
+  ts_utc: string;
 }
 
-export function priceFormatter(input: PriceFormatterInput, lang: LanguageCode): string {
+export function priceFormatter(input: PriceFormatterInput, _lang: LanguageCode): string {
   assert(input.symbol, "symbol required");
-  const label = formatUtcLabel(input.timeISO);
+  const label = formatUtcLabel(input.ts_utc);
   const price = formatPriceValue(input.price);
-  if (lang === "ar") {
-    return [`الوقت (UTC): ${label}`, `الرمز: ${input.symbol}`, `السعر: ${price}`].join("\n");
-  }
   return [`time (UTC): ${label}`, `symbol: ${input.symbol}`, `price: ${price}`].join("\n");
 }
 
@@ -98,44 +95,39 @@ const REASON_MAP: Record<LanguageCode, Record<ReasonToken, string>> = {
   },
 };
 
+function isFresh(timeframe: string, ageMinutes: number): boolean {
+  const tf = String(timeframe).toLowerCase();
+  if (tf === "1min" || tf === "5min") return ageMinutes <= 5;
+  if (tf === "15min") return ageMinutes <= 10;
+  if (tf === "30min" || tf === "1hour") return ageMinutes <= 30;
+  if (tf === "4hour") return ageMinutes <= 120;
+  if (tf === "1day" || tf === "daily") return ageMinutes <= 1440;
+  return ageMinutes <= 60;
+}
+
 export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode): string {
   const age = Math.max(0, Math.round(input.ageMinutes));
   const reasonText = REASON_MAP[lang][input.reason] ?? REASON_MAP.en.no_clear_bias;
-  const staleSuffix = input.stale
-    ? lang === "ar"
-      ? " (إشارة قديمة، للمراجعة فقط)"
-      : " (stale review only)"
-    : "";
+  const fresh = isFresh(input.timeframe, age);
+  const staleNote = fresh
+    ? ""
+    : lang === "ar"
+      ? " (قديمة، راجع بنفسك)"
+      : " (stale, verify manually)";
+
   const lines: string[] = [];
-  if (input.stale) {
-    lines.push(
-      lang === "ar"
-        ? `تنبيه: البيانات متأخرة بحوالي ${age} دقيقة`
-        : `Warning: data is delayed by ~${age} minutes`,
-    );
-  }
-  if (lang === "ar") {
-    lines.push(`الوقت (UTC): ${input.timeUTC}`);
-    lines.push(`الرمز: ${input.symbol}`);
-    lines.push(`الإطار الزمني: ${input.timeframe}`);
-    lines.push(`الإشارة: ${input.decision}`);
-    lines.push(`السبب: ${reasonText}${staleSuffix}`);
-    lines.push("مناطق الدخول/الإدارة:");
+  lines.push(`time (UTC): ${input.timeUTC}`);
+  lines.push(`symbol: ${input.symbol}`);
+  lines.push(`SIGNAL: ${input.decision}`);
+  lines.push(`Reason: ${reasonText}${staleNote}`);
+  lines.push(`Data age: ${age}m ${fresh ? "(fresh)" : "(stale)"}`);
+
+  if (input.decision !== "NEUTRAL") {
     lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
     lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
     lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
     lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
-    return lines.join("\n");
   }
-  lines.push(`time (UTC): ${input.timeUTC}`);
-  lines.push(`symbol: ${input.symbol}`);
-  lines.push(`timeframe: ${input.timeframe}`);
-  lines.push(`SIGNAL: ${input.decision}`);
-  lines.push(`Reason: ${reasonText}${staleSuffix}`);
-  lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
-  lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
-  lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
-  lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
   return lines.join("\n");
 }
 

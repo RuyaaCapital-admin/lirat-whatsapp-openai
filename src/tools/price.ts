@@ -53,11 +53,11 @@ async function fcsLastClose(symbol: string) {
 export async function getCurrentPrice(symbol: string) {
   try {
     const { price, time, symbol: s } = await fcsLatest(symbol);
-    return { price, time, symbol: s, source: 'FCS latest' };
+    return { price, time, symbol: s, source: 'FCS' };
   } catch (e) {
     const err = e as any;
     console.log('[FCS] Latest failed, trying candle fallback:', err?.message);
     const { price, time, symbol: s, period } = await fcsLastClose(symbol);
-    return { price, time, symbol: s, source: `FCS ${period} candle` };
+    return { price, time, symbol: s, source: 'FCS' };
   }
 }

@@ -30,6 +30,7 @@ import {
   type LanguageCode,
   type SignalFormatterInput,
 } from "../../utils/formatters";
+import { decideUserIntent, type Intent } from "../../lib/intent";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -127,7 +128,7 @@ function isGreeting(text: string): boolean {
 function isInsult(text: string): boolean {
   const normalised = normalizeArabic(text.trim().toLowerCase());
   if (!normalised) return false;
-  const insults = ["غبي", "تافه", "خرس", "fuck", "stupid", "asshole", "shit", "يا زب", "احمق"];
+  const insults = ["غبي", "تافه", "خرس", "fuck", "stupid", "asshole", "shit", "يا زب", "احمق", "جحش", "ينعل"];
   return insults.some((word) => normalised.includes(word));
 }
 
@@ -136,8 +137,8 @@ function applyPoliteness(reply: string, language: LanguageCode, userText: string
     return reply;
   }
   return language === "ar"
-    ? "خلّينا نركّز على طلبك لنساعدك بأفضل شكل."
-    : "Let's stay focused on your request so I can help you.";
+    ? "خلّينا نركّز على الصفقة أو السعر لحتى أساعدك بسرعة."
+    : "Let's stay on the trade or price so I can help fast.";
 }
 
 const TIMEFRAME_PATTERNS: Array<{ tf: TF; regex: RegExp }> = [
@@ -283,43 +284,36 @@ async function loadConversationState(
   };
 }
 
-async function generateGeneralReply(
-  userText: string,
-  history: ConversationContextEntry[],
-  language: LanguageCode,
-): Promise<string> {
-  const trimmed = userText.trim();
-  if (!trimmed) {
-    return language === "ar" ? "كيف فيني ساعدك؟" : "How can I help?";
+function generateChatReply(userText: string, language: LanguageCode, lastSignal?: SignalFormatterInput | null): string {
+  const t = normalizeArabic(userText.trim().toLowerCase());
+  if (lastSignal && /شو يعني|what do(es)? it mean|meaning|شو قصدك/.test(t)) {
+    return language === "ar"
+      ? "يعني ما في اتجاه واضح شراء/بيع بهالفريم حالياً."
+      : "It means no clear buy/sell direction on that timeframe right now.";
   }
-  const historyMessages: ChatCompletionMessageParam[] = history.map((msg) => ({
-    role: msg.role,
-    content: msg.content,
-  }));
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: SYSTEM_PROMPT },
-    ...historyMessages,
-    { role: "user", content: trimmed },
-  ];
-  try {
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
-      temperature: 0.4,
-      max_tokens: 700,
-      messages,
-    });
-    const content = completion.choices?.[0]?.message?.content?.trim();
-    if (content) {
-      return content;
-    }
-  } catch (error) {
-    console.warn("[ASSISTANT] general reply error", error);
+  return language === "ar"
+    ? "خلّينا نركّز على الصفقة أو السعر لحتى أساعدك بسرعة."
+    : "Let's stay on the trade or price so I can help fast.";
+}
+
+function summarizeRecap(messages: ConversationContextEntry[], language: LanguageCode): string {
+  const texts = messages.map((m) => m.content);
+  const hadSignal = texts.find((t) => /SIGNAL:\s*(BUY|SELL|NEUTRAL)/i.test(t));
+  const hadPrice = texts.find((t) => /price:|السعر:/.test(t));
+  if (language === "ar") {
+    if (hadSignal && hadPrice) return "آخر شي طلبت صفقة، رجعتلك إشارة. بعدين سألت عن السعر، عطيتك آخر سعر.";
+    if (hadSignal) return "آخر شي طلبت صفقة ورجعتلك الإشارة حسب آخر بيانات.";
+    if (hadPrice) return "سألت عن السعر، عطيتك آخر سعر.";
+    return "طلبت معلومات، ورجّعتلك الرد حسب آخر رسالة.";
   }
-  return language === "ar" ? "البيانات غير متاحة حالياً. جرّب لاحقاً." : "Data not available right now. Try later.";
+  if (hadSignal && hadPrice) return "You asked for a signal, I returned one. Then you asked price and I gave the latest price.";
+  if (hadSignal) return "You requested a signal and I sent it based on the latest data.";
+  if (hadPrice) return "You asked price and I replied with the latest price.";
+  return "You asked a question and I replied accordingly.";
 }
 
 function buildPriceReply(result: PriceResult, lang: LanguageCode): string {
-  return priceFormatter({ symbol: result.symbol, price: result.price, timeISO: result.timeISO }, lang);
+  return priceFormatter({ symbol: result.symbol, price: result.price, ts_utc: result.ts_utc }, lang);
 }
 
 async function buildSignalReply(
@@ -452,75 +446,88 @@ export function createWebhookHandler(deps: WebhookDeps) {
     const history = state.id ? await deps.getRecentContext(state.id, 12) : [];
 
     const wantsIdentity = isIdentityQuestion(normalisedText || messageBody);
-    const wantsTimeframeFollowUp = detectTimeframeFollowUp(normalisedText || messageBody);
-    const wantsSignal = detectSignalIntent(normalisedText || messageBody);
-    const wantsPrice = detectPriceIntent(normalisedText || messageBody);
-    const wantsNews = detectNewsIntent(normalisedText || messageBody);
-    const wantsCompany = detectCompanyIntent(normalisedText || messageBody);
-
     const nowMs = Date.now();
     let reply = "";
     let metadataUpdates: { last_symbol?: string | null; last_tf?: string | null; last_signal?: StoredSignalRecord | null } | null = null;
 
     if (wantsIdentity) {
       reply = language === "ar" ? "مساعد ليرات" : "I'm Liirat assistant.";
-    } else if (wantsTimeframeFollowUp && state.lastSignal) {
-      reply = signalFormatter(state.lastSignal.payload, language);
-    } else if (wantsSignal) {
-      try {
-        const signalResult = await buildSignalReply(normalisedText || messageBody, language, state, nowMs);
-        reply = signalResult.reply;
-        if (signalResult.type === "SIGNAL") {
-          metadataUpdates = {
-            last_symbol: signalResult.updates.last_symbol,
-            last_tf: signalResult.updates.last_tf,
-            last_signal: signalResult.updates.last_signal,
-          };
-        } else if (signalResult.type === "NO_DATA") {
-          metadataUpdates = {
-            last_symbol: signalResult.updates.last_symbol,
-            last_tf: signalResult.updates.last_tf,
-            last_signal: state.lastSignal ?? null,
-          };
-        }
-      } catch (error) {
-        console.warn("[WEBHOOK] signal pipeline error", error);
-        reply = language === "ar" ? "ما عندي بيانات لهالرمز/الفريم حالياً." : "No data for that symbol/timeframe right now.";
-      }
-    } else if (wantsPrice) {
-      const symbol = normalizeSymbol(detectSymbolInText(normalisedText || messageBody));
-      if (!symbol) {
-        reply = language === "ar" ? "حدّد الرمز المطلوب." : "Please specify the instrument.";
-      } else {
-        try {
-          const price = await get_price(symbol);
-          reply = buildPriceReply(price, language);
-        } catch (error) {
-          console.warn("[WEBHOOK] price error", error);
-          reply = language === "ar" ? "البيانات غير متاحة حالياً. جرّب لاحقاً." : "Data not available right now. Try later.";
-        }
-      }
-    } else if (wantsNews) {
-      try {
-        const news = await search_web_news(normalisedText || messageBody, language, 3);
-        reply = newsFormatter(news.rows, language);
-      } catch (error) {
-        console.warn("[WEBHOOK] news error", error);
-        reply = language === "ar" ? "البيانات غير متاحة حالياً. جرّب لاحقاً." : "Data not available right now. Try later.";
-      }
-    } else if (wantsCompany) {
-      try {
-        reply = await about_liirat_knowledge(messageBody, language);
-      } catch (error) {
-        console.warn("[WEBHOOK] knowledge error", error);
-        reply = language === "ar" ? "البيانات غير متاحة حالياً. جرّب لاحقاً." : "Data not available right now. Try later.";
-      }
-    } else if (state.messageCount === 0 && isGreeting(messageBody)) {
-      reply = language === "ar" ? "كيف فيني ساعدك؟" : "How can I help?";
-    } else if (state.messageCount === 0 && !wantsSignal && !wantsPrice && !wantsNews && !wantsCompany) {
-      reply = language === "ar" ? "كيف فيني ساعدك؟" : "How can I help?";
     } else {
-      reply = await generateGeneralReply(normalisedText || messageBody, history, language);
+      try {
+        const intent: Intent = decideUserIntent({
+          text: normalisedText || messageBody,
+          conversationState: { last_symbol: state.lastSymbol, last_tf: state.lastTimeframe, language },
+        });
+        switch (intent.kind) {
+          case "signal": {
+            const ohlc = await get_ohlc(intent.symbol, intent.timeframe, 200, { nowMs });
+            if (!ohlc.ok) {
+              reply = language === "ar"
+                ? "ما عندي بيانات حديثة لهالإطار الزمني. جرّب فريم أعلى (5min أو 1hour)."
+                : "No recent data for that timeframe. Try 5min or 1hour.";
+              metadataUpdates = { last_symbol: intent.symbol, last_tf: intent.timeframe, last_signal: state.lastSignal ?? null };
+              break;
+            }
+            const signal = await compute_trading_signal({ ...ohlc });
+            const payload: SignalFormatterInput = {
+              symbol: signal.symbol,
+              timeframe: signal.timeframe,
+              timeUTC: signal.timeUTC,
+              decision: signal.decision,
+              reason: signal.reason,
+              levels: signal.levels,
+              stale: signal.stale,
+              ageMinutes: signal.ageMinutes,
+            };
+            reply = signalFormatter(payload, language);
+            metadataUpdates = { last_symbol: signal.symbol, last_tf: signal.timeframe, last_signal: { payload } };
+            break;
+          }
+          case "price": {
+            const price = await get_price(intent.symbol, intent.timeframe);
+            reply = buildPriceReply(price, language);
+            metadataUpdates = { last_symbol: intent.symbol, last_tf: intent.timeframe, last_signal: state.lastSignal ?? null };
+            break;
+          }
+          case "about_liirat": {
+            reply = await about_liirat_knowledge(messageBody, language);
+            break;
+          }
+          case "memory_question": {
+            const msgs = state.id ? await deps.getRecentContext(state.id, 20) : [];
+            reply = summarizeRecap(msgs, language);
+            break;
+          }
+          case "clarify_symbol": {
+            reply = language === "ar" ? "حدّد الأداة المطلوبة." : "Specify the instrument.";
+            break;
+          }
+          case "chat": {
+            const t = normalizeArabic((normalisedText || messageBody).toLowerCase());
+            if (state.messageCount === 0 && isGreeting(messageBody)) {
+              reply = language === "ar" ? "كيف فيني ساعدك؟" : "How can I help?";
+              break;
+            }
+            const askTf = /(timeframe|فريم|اي فريم|على اي فريم|which timeframe|what timeframe)/.test(t);
+            if (askTf && state.lastSignal) {
+              reply = signalFormatter(state.lastSignal.payload, language);
+            } else {
+              reply = generateChatReply(messageBody, language, state.lastSignal?.payload);
+            }
+            break;
+          }
+          default: {
+            if (state.messageCount === 0 && isGreeting(messageBody)) {
+              reply = language === "ar" ? "كيف فيني ساعدك؟" : "How can I help?";
+            } else {
+              reply = generateChatReply(messageBody, language, state.lastSignal?.payload);
+            }
+          }
+        }
+      } catch (error) {
+        console.warn("[WEBHOOK] intent pipeline error", error);
+        reply = language === "ar" ? "البيانات غير متاحة حالياً." : "Data unavailable right now.";
+      }
     }
 
     const finalReply = applyPoliteness(reply, language, messageBody);

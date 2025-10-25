@@ -18,24 +18,25 @@ async function runWhatsappFormatTests() {
 
   const english = signalFormatter(makeSignal(), "en");
   assert.ok(english.includes("SIGNAL: BUY"));
-  assert.ok(english.includes("timeframe: 5min"));
   assert.ok(english.includes("Reason: Buy pressure above short-term averages"));
+  assert.ok(english.includes("Data age:"));
 
   const arabicStale = signalFormatter(makeSignal({ stale: true, ageMinutes: 244 }), "ar");
-  assert.ok(arabicStale.startsWith("تنبيه: البيانات متأخرة بحوالي 244 دقيقة"));
-  assert.ok(arabicStale.includes("السبب: ضغط شراء فوق المتوسطات (إشارة قديمة، للمراجعة فقط)"));
+  assert.ok(arabicStale.includes("Reason:"));
+  assert.ok(arabicStale.includes("(قديمة، راجع بنفسك)"));
+  assert.ok(arabicStale.includes("(stale)"));
 
   const neutral = signalFormatter(
     makeSignal({ decision: "NEUTRAL", reason: "no_clear_bias", levels: { entry: null, sl: null, tp1: null, tp2: null } }),
     "en",
   );
   assert.ok(neutral.includes("SIGNAL: NEUTRAL"));
-  assert.ok(neutral.includes("Entry: -"));
+  assert.ok(!neutral.includes("Entry:"));
 
-  const priceEn = priceFormatter({ symbol: "XAUUSD", price: 2375.2, timeISO: "2025-10-25T12:59:00Z" }, "en");
+  const priceEn = priceFormatter({ symbol: "XAUUSD", price: 2375.2, ts_utc: "2025-10-25T12:59:00Z" }, "en");
   assert.ok(priceEn.includes("price: 2375.20"));
-  const priceAr = priceFormatter({ symbol: "XAGUSD", price: 48.61, timeISO: "2025-10-25T12:59:00Z" }, "ar");
-  assert.ok(priceAr.includes("السعر: 48.61"));
+  const priceAr = priceFormatter({ symbol: "XAGUSD", price: 48.61, ts_utc: "2025-10-25T12:59:00Z" }, "ar");
+  assert.ok(priceAr.includes("price: 48.61"));
 }
 
 runWhatsappFormatTests().catch((error) => {

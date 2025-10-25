@@ -9,7 +9,7 @@ import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 export interface PriceResult {
   symbol: string;
   price: number;
-  timeISO: string;
+  ts_utc: string;
   source: string;
 }
 
@@ -49,9 +49,9 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   }
   void timeframe;
   const price = await getCurrentPrice(mappedSymbol);
-  const timeISO = toUtcIso(price.time ?? null);
+  const ts_utc = toUtcIso(price.time ?? null);
   const source = price.source ?? "FCS";
-  return { symbol: mappedSymbol, price: price.price, timeISO, source };
+  return { symbol: mappedSymbol, price: price.price, ts_utc, source };
 }
 
 export async function get_ohlc(

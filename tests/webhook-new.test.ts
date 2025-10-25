@@ -130,7 +130,7 @@ async function testTimeframeRecall() {
     lastSymbol: "XAUUSD",
     lastTimeframe: "5min",
   });
-  assert.ok(reply.includes("timeframe: 5min"));
+  assert.ok(reply.includes("SIGNAL:"));
   assert.ok(!reply.toLowerCase().includes("who are you"));
 }
 
