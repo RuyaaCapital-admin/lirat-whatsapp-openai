@@ -79,7 +79,7 @@ export function toTimeframe(user?: string): TF {
   if (/(\b1\s*(hour|h)\b|\bساعة\b|\bساعه\b)/.test(t)) return "1hour";
   if (/(\b4\s*(hour|h)\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b)/.test(t)) return "4hour";
   if (/(\bdaily\b|\bيومي\b|\bيوم\b)/.test(t)) return "1day";
-  return "1hour";
+  return "5min";
 }
 
 export const TIMEFRAME_FALLBACKS: Record<TF, TF[]> = {
