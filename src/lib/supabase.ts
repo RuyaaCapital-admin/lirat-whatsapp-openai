@@ -231,16 +231,16 @@ export async function createOrGetConversation(waId: string): Promise<Conversatio
 
 attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
     const useMetadata = attempt === 0;
-    const selectColumns = useMetadata
-      ? "id, tenant_id, user_id, last_symbol, last_tf"
-      : "id, tenant_id, user_id";
+    const baseSelectColumns = "id, tenant_id, user_id" as const;
+    const metadataSelectColumns = "id, tenant_id, user_id, last_symbol, last_tf" as const;
+    const selectColumns = useMetadata ? metadataSelectColumns : baseSelectColumns;
     const insertColumns = selectColumns;
     let fallbackToTitle = false;
 
     try {
       const { data, error } = await supabase
         .from("conversations")
-        .select(selectColumns)
+        .select(selectColumns as any)
         .eq("user_id", userId)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -255,8 +255,9 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
           throw error;
         }
       }
-      if (!fallbackToTitle && data?.id && isUuid(data.id)) {
-        return mapConversationRow(data, userId, false);
+      const row = data as any;
+      if (!fallbackToTitle && row?.id && isUuid(row.id)) {
+        return mapConversationRow(row, userId, false);
       }
     } catch (error) {
       console.warn("[SUPABASE] select conversation error", error);
@@ -284,7 +285,7 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
           const { data: inserted, error: insertError } = await supabase
             .from("conversations")
             .insert(payload)
-            .select(insertColumns)
+            .select(insertColumns as any)
             .single();
           if (insertError) {
             if (useMetadata && (indicatesMissingColumn(insertError, "last_symbol") || indicatesMissingColumn(insertError, "last_tf"))) {
@@ -296,8 +297,9 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
             }
             throw insertError;
           }
-          if (inserted?.id && isUuid(inserted.id)) {
-            return mapConversationRow(inserted, userId, true);
+          const insertedRow = inserted as any;
+          if (insertedRow?.id && isUuid(insertedRow.id)) {
+            return mapConversationRow(insertedRow, userId, true);
           }
         } catch (error) {
           console.warn("[SUPABASE] insert conversation error", error);
@@ -308,7 +310,7 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const { data, error } = await supabase
         .from("conversations")
-        .select(selectColumns)
+        .select(selectColumns as any)
         .eq("title", waId)
         .order("created_at", { ascending: false })
         .limit(1)
@@ -319,8 +321,9 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
         }
         throw error;
       }
-      if (data?.id && isUuid(data.id)) {
-        return mapConversationRow(data, userId, false);
+      const fallbackRow = data as any;
+      if (fallbackRow?.id && isUuid(fallbackRow.id)) {
+        return mapConversationRow(fallbackRow, userId, false);
       }
       const fallbackPayload: Record<string, unknown> = {
         title: waId,
@@ -336,7 +339,7 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
       const { data: inserted, error: insertError } = await supabase
         .from("conversations")
         .insert(fallbackPayload)
-        .select(insertColumns)
+        .select(insertColumns as any)
         .single();
       if (insertError) {
         if (useMetadata && (indicatesMissingColumn(insertError, "last_symbol") || indicatesMissingColumn(insertError, "last_tf"))) {
@@ -344,8 +347,9 @@ attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
         }
         throw insertError;
       }
-      if (inserted?.id && isUuid(inserted.id)) {
-        return mapConversationRow(inserted, userId, true);
+      const insertedFallbackRow = inserted as any;
+      if (insertedFallbackRow?.id && isUuid(insertedFallbackRow.id)) {
+        return mapConversationRow(insertedFallbackRow, userId, true);
       }
     } catch (error) {
       console.warn("[SUPABASE] fallback conversation error", error);
