@@ -88,7 +88,7 @@ async function runSignalModuleTests() {
     }
     restoreHttp();
 
-    // Too old data should throw
+    // Too old data should still return marked stale
     {
       const staleRows = [1, 2, 3].map((offset) => {
         const base = fixedNow - offset * 36 * 60 * 60 * 1000;
@@ -103,11 +103,12 @@ async function runSignalModuleTests() {
       __setOhlcHttpClient({
         get: async () => ({ data: staleRows }),
       } as any);
-      await assert.rejects(
-        get_ohlc("XAUUSD", "1hour", 200),
-        (error: any) => error?.code === "NO_DATA",
-        "too old candles should raise NO_DATA",
-      );
+      const ohlc = await get_ohlc("XAUUSD", "1hour", 200);
+      assert.ok(ohlc.isStale, "stale dataset should be flagged");
+      const ageMinutes = ohlc.ageMinutes ?? Math.floor(ohlc.ageSeconds / 60);
+      assert.ok(ageMinutes >= 36 * 60, "ageMinutes should reflect stale age");
+      const signal = compute_trading_signal({ ...ohlc, lang: "en" });
+      assert.strictEqual(signal.status, "UNUSABLE");
     }
   } finally {
     restoreHttp();

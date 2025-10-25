@@ -14,6 +14,8 @@ export interface ConversationLookupResult {
   tenant_id: string | null;
   user_id: string | null;
   isNew: boolean;
+  last_symbol?: string | null;
+  last_tf?: string | null;
 }
 
 const SUPABASE_TENANT_ID = process.env.SUPABASE_TENANT_ID ?? process.env.DEFAULT_TENANT_ID ?? null;
@@ -49,6 +51,37 @@ function indicatesMissingColumn(error: any, column: string): boolean {
   return [message, details, hint].some((part) =>
     part?.includes(`column \"${column}`) || part?.includes(`column ${column}`),
   );
+}
+
+function normaliseSymbolValue(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim().toUpperCase();
+  return trimmed.length ? trimmed : null;
+}
+
+function normaliseTimeframeValue(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function mapConversationRow(
+  row: any,
+  fallbackUserId: string,
+  isNew: boolean,
+): ConversationLookupResult {
+  return {
+    conversation_id: row.id,
+    tenant_id: row.tenant_id ?? null,
+    user_id: row.user_id && isUuid(row.user_id) ? row.user_id : fallbackUserId,
+    isNew,
+    last_symbol: normaliseSymbolValue(row?.last_symbol),
+    last_tf: normaliseTimeframeValue(row?.last_tf),
+  };
 }
 
 async function ensureProfileUsingProfilesTable(
@@ -195,123 +228,180 @@ export async function createOrGetConversation(waId: string): Promise<Conversatio
   }
 
   const timestamp = new Date().toISOString();
-  let fallbackToTitle = false;
 
-  try {
-    const { data, error } = await supabase
-      .from("conversations")
-      .select("id, tenant_id, user_id")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error && error.code !== "PGRST116") {
-      if (indicatesMissingColumn(error, "user_id")) {
-        fallbackToTitle = true;
-      } else {
+attemptLoop: for (let attempt = 0; attempt < 2; attempt += 1) {
+    const useMetadata = attempt === 0;
+    const baseSelectColumns = "id, tenant_id, user_id" as const;
+    const metadataSelectColumns = "id, tenant_id, user_id, last_symbol, last_tf" as const;
+    const selectColumns = useMetadata ? metadataSelectColumns : baseSelectColumns;
+    const insertColumns = selectColumns;
+    let fallbackToTitle = false;
+
+    try {
+      const { data, error } = await supabase
+        .from("conversations")
+        .select(selectColumns as any)
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error && error.code !== "PGRST116") {
+        if (useMetadata && (indicatesMissingColumn(error, "last_symbol") || indicatesMissingColumn(error, "last_tf"))) {
+          continue attemptLoop;
+        }
+        if (indicatesMissingColumn(error, "user_id")) {
+          fallbackToTitle = true;
+        } else {
+          throw error;
+        }
+      }
+      const row = data as any;
+      if (!fallbackToTitle && row?.id && isUuid(row.id)) {
+        return mapConversationRow(row, userId, false);
+      }
+    } catch (error) {
+      console.warn("[SUPABASE] select conversation error", error);
+    }
+
+    if (!fallbackToTitle) {
+      const basePayload: Record<string, unknown> = {
+        user_id: userId,
+        title: waId,
+        created_at: timestamp,
+      };
+      if (SUPABASE_TENANT_ID) {
+        basePayload.tenant_id = SUPABASE_TENANT_ID;
+      }
+      if (useMetadata) {
+        basePayload.last_symbol = null;
+        basePayload.last_tf = null;
+      }
+      const payloads: Record<string, unknown>[] = [
+        { ...basePayload, channel: "whatsapp" },
+        { ...basePayload },
+      ];
+      for (const payload of payloads) {
+        try {
+          const { data: inserted, error: insertError } = await supabase
+            .from("conversations")
+            .insert(payload)
+            .select(insertColumns as any)
+            .single();
+          if (insertError) {
+            if (useMetadata && (indicatesMissingColumn(insertError, "last_symbol") || indicatesMissingColumn(insertError, "last_tf"))) {
+              continue attemptLoop;
+            }
+            if (indicatesMissingColumn(insertError, "channel") || indicatesMissingColumn(insertError, "user_id")) {
+              fallbackToTitle = fallbackToTitle || indicatesMissingColumn(insertError, "user_id");
+              continue;
+            }
+            throw insertError;
+          }
+          const insertedRow = inserted as any;
+          if (insertedRow?.id && isUuid(insertedRow.id)) {
+            return mapConversationRow(insertedRow, userId, true);
+          }
+        } catch (error) {
+          console.warn("[SUPABASE] insert conversation error", error);
+        }
+      }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from("conversations")
+        .select(selectColumns as any)
+        .eq("title", waId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error && error.code !== "PGRST116") {
+        if (useMetadata && (indicatesMissingColumn(error, "last_symbol") || indicatesMissingColumn(error, "last_tf"))) {
+          continue attemptLoop;
+        }
         throw error;
       }
-    }
-    if (!fallbackToTitle && data?.id && isUuid(data.id)) {
-      return {
-        conversation_id: data.id,
-        tenant_id: data.tenant_id ?? null,
-        user_id: data.user_id && isUuid(data.user_id) ? data.user_id : userId,
-        isNew: false,
-      };
-    }
-  } catch (error) {
-    console.warn("[SUPABASE] select conversation error", error);
-  }
-
-  if (!fallbackToTitle) {
-    const basePayload: Record<string, unknown> = {
-      user_id: userId,
-      title: waId,
-      created_at: timestamp,
-    };
-    if (SUPABASE_TENANT_ID) {
-      basePayload.tenant_id = SUPABASE_TENANT_ID;
-    }
-    const payloads: Record<string, unknown>[] = [
-      { ...basePayload, channel: "whatsapp" },
-      { ...basePayload },
-    ];
-    for (const payload of payloads) {
-      try {
-        const { data: inserted, error: insertError } = await supabase
-          .from("conversations")
-          .insert(payload)
-          .select("id, tenant_id, user_id")
-          .single();
-        if (insertError) {
-          if (indicatesMissingColumn(insertError, "channel") || indicatesMissingColumn(insertError, "user_id")) {
-            fallbackToTitle = fallbackToTitle || indicatesMissingColumn(insertError, "user_id");
-            continue;
-          }
-          throw insertError;
-        }
-        if (inserted?.id && isUuid(inserted.id)) {
-          return {
-            conversation_id: inserted.id,
-            tenant_id: inserted.tenant_id ?? null,
-            user_id: inserted.user_id && isUuid(inserted.user_id) ? inserted.user_id : userId,
-            isNew: true,
-          };
-        }
-      } catch (error) {
-        console.warn("[SUPABASE] insert conversation error", error);
+      const fallbackRow = data as any;
+      if (fallbackRow?.id && isUuid(fallbackRow.id)) {
+        return mapConversationRow(fallbackRow, userId, false);
       }
+      const fallbackPayload: Record<string, unknown> = {
+        title: waId,
+        created_at: timestamp,
+      };
+      if (SUPABASE_TENANT_ID) {
+        fallbackPayload.tenant_id = SUPABASE_TENANT_ID;
+      }
+      if (useMetadata) {
+        fallbackPayload.last_symbol = null;
+        fallbackPayload.last_tf = null;
+      }
+      const { data: inserted, error: insertError } = await supabase
+        .from("conversations")
+        .insert(fallbackPayload)
+        .select(insertColumns as any)
+        .single();
+      if (insertError) {
+        if (useMetadata && (indicatesMissingColumn(insertError, "last_symbol") || indicatesMissingColumn(insertError, "last_tf"))) {
+          continue attemptLoop;
+        }
+        throw insertError;
+      }
+      const insertedFallbackRow = inserted as any;
+      if (insertedFallbackRow?.id && isUuid(insertedFallbackRow.id)) {
+        return mapConversationRow(insertedFallbackRow, userId, true);
+      }
+    } catch (error) {
+      console.warn("[SUPABASE] fallback conversation error", error);
     }
   }
 
+  return { conversation_id: waId, tenant_id: null, user_id: userId, isNew: false };
+}
+
+export interface ConversationMetadataUpdate {
+  last_symbol?: string | null;
+  last_tf?: string | null;
+}
+
+export async function updateConversationMetadata(
+  conversationId: string,
+  updates: ConversationMetadataUpdate,
+): Promise<void> {
+  if (!conversationId || !isUuid(conversationId)) {
+    return;
+  }
+  if (!updates || typeof updates !== "object") {
+    return;
+  }
+  const supabase = getClient();
+  if (!supabase) {
+    return;
+  }
+  const payload: Record<string, unknown> = {};
+  if (Object.prototype.hasOwnProperty.call(updates, "last_symbol")) {
+    payload.last_symbol = normaliseSymbolValue(updates.last_symbol) ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "last_tf")) {
+    payload.last_tf = normaliseTimeframeValue(updates.last_tf) ?? null;
+  }
+  if (!Object.keys(payload).length) {
+    return;
+  }
   try {
-    const { data, error } = await supabase
-      .from("conversations")
-      .select("id, tenant_id, user_id")
-      .eq("title", waId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error && error.code !== "PGRST116") {
+    const { error } = await supabase.from("conversations").update(payload).eq("id", conversationId);
+    if (error) {
+      if (
+        indicatesMissingColumn(error, "last_symbol") ||
+        indicatesMissingColumn(error, "last_tf")
+      ) {
+        return;
+      }
       throw error;
     }
-    if (data?.id && isUuid(data.id)) {
-      return {
-        conversation_id: data.id,
-        tenant_id: data.tenant_id ?? null,
-        user_id: data.user_id && isUuid(data.user_id) ? data.user_id : userId,
-        isNew: false,
-      };
-    }
-    const fallbackPayload: Record<string, unknown> = {
-      title: waId,
-      created_at: timestamp,
-    };
-    if (SUPABASE_TENANT_ID) {
-      fallbackPayload.tenant_id = SUPABASE_TENANT_ID;
-    }
-    const { data: inserted, error: insertError } = await supabase
-      .from("conversations")
-      .insert(fallbackPayload)
-      .select("id, tenant_id, user_id")
-      .single();
-    if (insertError) {
-      throw insertError;
-    }
-    if (inserted?.id && isUuid(inserted.id)) {
-      return {
-        conversation_id: inserted.id,
-        tenant_id: inserted.tenant_id ?? null,
-        user_id: inserted.user_id && isUuid(inserted.user_id) ? inserted.user_id : userId,
-        isNew: true,
-      };
-    }
   } catch (error) {
-    console.warn("[SUPABASE] fallback conversation error", error);
+    console.warn("[SUPABASE] updateConversationMetadata error", error);
   }
-
-  return { conversation_id: waId, tenant_id: null, user_id: null, isNew: false };
 }
 
 export async function logMessage(

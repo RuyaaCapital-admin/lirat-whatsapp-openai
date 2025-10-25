@@ -55,11 +55,10 @@ async function runOhlcTests() {
     axiosInstance.get = async () => ({
       data: [makeCandle(30 * 24, 1)],
     });
-    await assert.rejects(
-      ohlcModule.get_ohlc("XAUUSD", "1hour", 100),
-      (error: any) => error?.code === "NO_DATA",
-      "too old data should reject with NO_DATA",
-    );
+    const veryOld = await ohlcModule.get_ohlc("XAUUSD", "1hour", 100);
+    assert.ok(veryOld.isStale, "very old data should still be marked stale");
+    const minutes = veryOld.ageMinutes ?? Math.floor(veryOld.ageSeconds / 60);
+    assert.ok(minutes >= 30 * 24 * 60, "ageMinutes should reflect actual age in minutes");
   } finally {
     ohlcModule.__setOhlcHttpClient?.(null);
     axiosInstance.get = originalGet;

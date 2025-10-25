@@ -67,10 +67,17 @@ async function runCase({
     sendText: async (_to, body) => {
       sentBody = body;
     },
-    createOrGetConversation: async () => ({ conversation_id: "conv-1", tenant_id: null, isNew }),
+    createOrGetConversation: async () => ({
+      conversation_id: "conv-1",
+      tenant_id: null,
+      isNew,
+      last_symbol: null,
+      last_tf: null,
+    }),
     logMessage: async () => {},
     getRecentContext: async () => [],
     getConversationMessageCount: async () => (isNew ? 0 : 2),
+    updateConversationMetadata: async () => {},
     smartToolLoop: async ({ identityQuestion, language }) =>
       identityQuestion
         ? { text: language === "ar" ? "مساعد ليرات" : "Liirat assistant." }
@@ -113,7 +120,7 @@ async function testFirstContactGreeting() {
     from: "97156",
     id: "seed-2",
   });
-  assert.strictEqual(body.trim(), "شكراً لتواصلك");
+  assert.strictEqual(body.trim(), "مرحباً، أنا مساعد ليرات.\nشكراً لتواصلك");
 }
 
 export async function runWebhookGreetingTests() {

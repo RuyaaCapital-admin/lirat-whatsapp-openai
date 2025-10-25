@@ -201,16 +201,38 @@ function formatSignalPrice(value: number | null | undefined, symbol: string): st
   return value.toFixed(decimals);
 }
 
-function formatDataAge(ageSeconds: number, delayed: boolean): string {
-  const minutes = Math.max(0, Math.floor(ageSeconds / 60));
-  return `${minutes}m (${delayed ? "delayed" : "live"})`;
+const STALE_SUFFIX = {
+  ar: " (إشارة قديمة، للمراجعة فقط).",
+  en: " (stale, for review only).",
+} as const;
+
+function pickReason(signal: "BUY" | "SELL" | "NEUTRAL", lang: LanguageCode, stale: boolean): string {
+  const base = (() => {
+    if (lang === "ar") {
+      if (signal === "BUY") return "ضغط شراء فوق المتوسطات";
+      if (signal === "SELL") return "ضغط بيع تحت المتوسطات";
+      return "السوق بدون اتجاه واضح حالياً";
+    }
+    if (signal === "BUY") return "Buy pressure above key averages";
+    if (signal === "SELL") return "Sell pressure below key averages";
+    return "Market is currently sideways";
+  })();
+  if (stale) {
+    return `${base}${lang === "ar" ? STALE_SUFFIX.ar : STALE_SUFFIX.en}`;
+  }
+  return base;
 }
 
 function formatSignalBlock(result: TradingSignalOk): string {
+  const ageMinutes = Math.max(0, Math.floor(result.ageSeconds / 60));
+  const stale = Boolean(result.isDelayed);
+  const reason = pickReason(result.signal, result.lang, stale);
   const lines: string[] = [
     `time (UTC): ${formatUtcLabel(result.lastISO)}`,
     `symbol: ${result.symbol}`,
     `SIGNAL: ${result.signal}`,
+    `Reason: ${reason}`,
+    `Data age: ${ageMinutes}m (${stale ? "stale" : "fresh"})`,
   ];
   if (result.signal !== "NEUTRAL") {
     lines.push(`Entry: ${formatSignalPrice(result.entry, result.symbol)}`);
@@ -218,11 +240,6 @@ function formatSignalBlock(result: TradingSignalOk): string {
     lines.push(`TP1: ${formatSignalPrice(result.tp1, result.symbol)}`);
     lines.push(`TP2: ${formatSignalPrice(result.tp2, result.symbol)}`);
   }
-  const reason = typeof result.reason === "string" && result.reason.trim() ? result.reason.trim() : "";
-  if (reason) {
-    lines.push(`Reason: ${reason}`);
-  }
-  lines.push(`Data age: ${formatDataAge(result.ageSeconds, result.isDelayed)}`);
   return lines.join("\n");
 }
 
