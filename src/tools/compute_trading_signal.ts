@@ -1,3 +1,4 @@
+import { formatSignalMsg } from "../utils/formatters";
 import { TF, timeframeToLabel } from "./normalize";
 import { get_ohlc, Candle, OhlcResult, OhlcSource } from "./ohlc";
 
@@ -89,9 +90,8 @@ function atr14(highs: number[], lows: number[], closes: number[]) {
   return { value: avg };
 }
 
-function toUtcString(timestamp: number) {
-  const iso = new Date(timestamp).toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+function toUtcIso(timestamp: number) {
+  return new Date(timestamp).toISOString();
 }
 
 function round(value: number) {
@@ -192,7 +192,7 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
     sl: decision === "NEUTRAL" ? null : stopLoss,
     tp1: decision === "NEUTRAL" ? null : takeProfit1,
     tp2: decision === "NEUTRAL" ? null : takeProfit2,
-    timeUTC: toUtcString(series.lastClosed.t),
+    timeUTC: toUtcIso(series.lastClosed.t),
     symbol: normaliseSymbol(symbol),
     interval: timeframe,
   };
@@ -222,19 +222,16 @@ export async function computeSignal(symbol: string, timeframe: TF, candles?: Can
 }
 
 export function formatSignalPayload(signal: SignalPayload): string {
-  const intervalLabel = timeframeToLabel(signal.interval);
-  if (signal.signal === "NEUTRAL") {
-    return `- SIGNAL: NEUTRAL — Time: ${signal.timeUTC} (${intervalLabel}) — Symbol: ${signal.symbol}`;
-  }
-  return [
-    `- Time: ${signal.timeUTC} (${intervalLabel})`,
-    `- Symbol: ${signal.symbol}`,
-    `- SIGNAL: ${signal.signal}`,
-    `- Entry: ${signal.entry}`,
-    `- SL: ${signal.sl}`,
-    `- TP1: ${signal.tp1} (R 1.0)`,
-    `- TP2: ${signal.tp2} (R 2.0)`,
-  ].join("\n");
+  return formatSignalMsg({
+    decision: signal.signal,
+    entry: signal.entry,
+    sl: signal.sl,
+    tp1: signal.tp1,
+    tp2: signal.tp2,
+    time: signal.timeUTC,
+    symbol: signal.symbol,
+    interval: timeframeToLabel(signal.interval),
+  });
 }
 
 export async function compute_trading_signal(

@@ -1,40 +1,66 @@
 // src/tools/agentTools.ts
 import { openai } from "../lib/openai";
+import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
 import { Candle, get_ohlc as loadOhlc } from "./ohlc";
-import { computeSignal, formatSignalPayload } from "./compute_trading_signal";
+import { computeSignal } from "./compute_trading_signal";
 import { fetchNews } from "./news";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
-function detectLang(text?: string) {
-  if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
-  return "en";
+export interface PriceResult {
+  symbol: string;
+  price: number;
+  timeUTC: string;
+  formatted: string;
 }
 
-function toUtcString(input: number | string | null): string {
+export interface OhlcResultPayload {
+  symbol: string;
+  interval: TF;
+  candles: Candle[];
+  lastClosedUTC: string;
+}
+
+export interface TradingSignalResult {
+  decision: "BUY" | "SELL" | "NEUTRAL";
+  entry: number | null;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  time: string;
+  symbol: string;
+  interval: TF;
+  formatted: string;
+}
+
+export interface NewsRow {
+  date: string;
+  source: string;
+  title: string;
+}
+
+export interface NewsResult {
+  rows: NewsRow[];
+  formatted: string;
+}
+
+function toUtcIso(input: number | string | null | undefined): string {
   if (typeof input === "number") {
-    const epochMs = input > 10_000_000_000 ? input : input * 1000;
-    const iso = new Date(epochMs).toISOString();
-    return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+    const ms = input > 10_000_000_000 ? input : input * 1000;
+    return new Date(ms).toISOString();
   }
   if (typeof input === "string" && input.trim()) {
-    const parsed = new Date(input);
-    if (!Number.isNaN(parsed.getTime())) {
-      const iso = parsed.toISOString();
-      return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+    const candidate = new Date(input.trim());
+    if (!Number.isNaN(candidate.getTime())) {
+      return candidate.toISOString();
+    }
+    const patched = `${input.trim().replace(/\s+/, "T")}Z`;
+    const alt = new Date(patched);
+    if (!Number.isNaN(alt.getTime())) {
+      return alt.toISOString();
     }
   }
-  const nowIso = new Date().toISOString();
-  return `${nowIso.slice(0, 10)} ${nowIso.slice(11, 16)} UTC`;
-}
-
-function formatPriceOutput(symbol: string, price: number, time: number | string | null, source: string) {
-  return [
-    `Time (UTC): ${toUtcString(time)}`,
-    `Symbol: ${symbol}`,
-    `Price: ${price}`,
-    `Source: ${source}`,
-  ].join("\n");
+  return new Date().toISOString();
 }
 
 function normalizeCandles(candles: Candle[]): Candle[] {
@@ -56,16 +82,19 @@ function normalizeCandles(candles: Candle[]): Candle[] {
     .sort((a, b) => a.t - b.t);
 }
 
-export async function get_price(symbol: string, timeframe?: string): Promise<string> {
+export async function get_price(symbol: string, timeframe?: string): Promise<PriceResult> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
+  void timeframe;
   const price = await getCurrentPrice(mappedSymbol);
-  return formatPriceOutput(mappedSymbol, price.price, price.time ?? null, price.source);
+  const timeUTC = toUtcIso(price.time ?? null);
+  const formatted = formatPriceMsg({ symbol: mappedSymbol, price: price.price, timeUTC });
+  return { symbol: mappedSymbol, price: price.price, timeUTC, formatted };
 }
 
-export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<string> {
+export async function get_ohlc(symbol: string, timeframe: string, limit = 200): Promise<OhlcResultPayload> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -74,19 +103,15 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
   const safeLimit = Math.max(50, Math.min(limit, 400));
   const series = await loadOhlc(mappedSymbol, tf, safeLimit);
   const candles = normalizeCandles(series.candles);
-  const payload = {
-    symbol: mappedSymbol,
-    timeframe: tf,
-    candles,
-  };
-  return JSON.stringify({ text: JSON.stringify(payload) });
+  const lastClosedUTC = toUtcIso(series.lastClosed?.t ?? candles.at(-1)?.t ?? null);
+  return { symbol: mappedSymbol, interval: tf, candles, lastClosedUTC };
 }
 
 export async function compute_trading_signal(
   symbol: string,
   timeframe: string,
   candles?: Candle[],
-): Promise<string> {
+): Promise<TradingSignalResult> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
@@ -94,22 +119,36 @@ export async function compute_trading_signal(
   const tf = toTimeframe(timeframe) as TF;
   let hydrated = Array.isArray(candles) ? normalizeCandles(candles) : undefined;
   if (!hydrated || hydrated.length < 50) {
-    const raw = await get_ohlc(mappedSymbol, tf, 200);
-    try {
-      const outer = JSON.parse(raw);
-      if (outer && typeof outer.text === "string") {
-        const inner = JSON.parse(outer.text);
-        if (inner && Array.isArray(inner.candles)) {
-          hydrated = normalizeCandles(inner.candles as Candle[]);
-        }
-      }
-    } catch (error) {
-      console.warn("[TOOLS] failed to hydrate candles", { error });
-      hydrated = undefined;
-    }
+    const snapshot = await get_ohlc(mappedSymbol, tf, 200);
+    hydrated = snapshot.candles;
   }
   const payload = await computeSignal(mappedSymbol, tf, hydrated);
-  return formatSignalPayload(payload);
+  const formatted = formatSignalMsg({
+    decision: payload.signal,
+    entry: payload.entry,
+    sl: payload.sl,
+    tp1: payload.tp1,
+    tp2: payload.tp2,
+    time: payload.timeUTC,
+    symbol: payload.symbol,
+    interval: payload.interval,
+  });
+  return {
+    decision: payload.signal,
+    entry: payload.entry,
+    sl: payload.sl,
+    tp1: payload.tp1,
+    tp2: payload.tp2,
+    time: payload.timeUTC,
+    symbol: payload.symbol,
+    interval: payload.interval,
+    formatted,
+  };
+}
+
+function detectLang(text?: string) {
+  if (text && /[\u0600-\u06FF]/.test(text)) return "ar";
+  return "en";
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<string> {
@@ -160,16 +199,15 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
   return text;
 }
 
-export async function search_web_news(query: string, lang = "en", count = 3): Promise<string> {
+export async function search_web_news(query: string, lang = "en", count = 3): Promise<NewsResult> {
   const language = lang === "ar" ? "ar" : "en";
   const safeCount = Math.max(1, Math.min(count, 5));
-  const rows = await fetchNews(query, safeCount, language);
-  if (!rows.length) {
-    return "";
-  }
-  const lines = rows.slice(0, safeCount).map((item) => {
-    const impact = item.impact && item.impact.trim() ? item.impact.trim() : "-";
-    return `${item.date} — ${item.source} — ${item.title} — ${impact}`;
-  });
-  return lines.join("\n");
+  const rowsRaw = await fetchNews(query, safeCount, language);
+  const rows: NewsRow[] = rowsRaw.slice(0, safeCount).map((item) => ({
+    date: toUtcIso(item.date ?? Date.now()),
+    source: item.source ?? "",
+    title: item.title ?? "",
+  }));
+  const formatted = formatNewsMsg(rows);
+  return { rows, formatted };
 }

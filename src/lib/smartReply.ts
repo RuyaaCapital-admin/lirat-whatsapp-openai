@@ -13,15 +13,9 @@ import {
   compute_trading_signal,
   search_web_news,
   about_liirat_knowledge,
+  type OhlcResultPayload,
 } from "../tools/agentTools";
-import {
-  detectLanguage,
-  normaliseDigits,
-  normaliseSymbolKey,
-  parseOhlcPayload,
-  type LanguageCode,
-  type ToolCandle,
-} from "../utils/webhookHelpers";
+import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 
@@ -236,8 +230,10 @@ function applyGreeting(text: string, shouldGreet: boolean, language: LanguageCod
   return `${greeting}\n${base}`;
 }
 
+type CandleSeries = OhlcResultPayload["candles"];
+
 interface ToolContext {
-  lastCandlesBySymbolTimeframe: Record<string, ToolCandle[]>;
+  lastCandlesBySymbolTimeframe: Record<string, CandleSeries>;
 }
 
 function keyFor(symbol: string, timeframe: string) {
@@ -334,27 +330,31 @@ export function createSmartReply(deps: SmartReplyDeps) {
               if (toolName === "get_price") {
                 const symbol = String(parsed.symbol ?? "").trim();
                 const timeframe = typeof parsed.timeframe === "string" ? parsed.timeframe : undefined;
-                const content = await tools.get_price(symbol, timeframe);
-                console.log("[TOOL] get_price -> ok");
-                messages.push({ role: "tool", tool_call_id: call.id, content });
+                const price = await tools.get_price(symbol, timeframe);
+                console.log("[TOOL] get_price -> ok", { symbol: price.symbol });
+                messages.push({ role: "tool", tool_call_id: call.id, content: price.formatted });
               } else if (toolName === "get_ohlc") {
                 const symbol = String(parsed.symbol ?? normalisedText).trim();
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
                 const limit = typeof parsed.limit === "number" ? parsed.limit : 200;
-                const content = await tools.get_ohlc(symbol, timeframeInput, limit);
-                const snapshot = parseOhlcPayload(content);
-                if (snapshot) {
-                  const key = keyFor(snapshot.symbol, snapshot.timeframe);
-                  toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
-                  console.log("[TOOL] get_ohlc -> ok", {
+                const snapshot = await tools.get_ohlc(symbol, timeframeInput, limit);
+                const key = keyFor(snapshot.symbol, snapshot.interval);
+                toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
+                console.log("[TOOL] get_ohlc -> ok", {
+                  symbol: snapshot.symbol,
+                  timeframe: snapshot.interval,
+                  candles: snapshot.candles.length,
+                });
+                messages.push({
+                  role: "tool",
+                  tool_call_id: call.id,
+                  content: JSON.stringify({
                     symbol: snapshot.symbol,
-                    timeframe: snapshot.timeframe,
-                    candles: snapshot.candles.length,
-                  });
-                } else {
-                  console.log("[TOOL] get_ohlc -> ok", { symbol, timeframe: timeframeInput, candles: 0 });
-                }
-                messages.push({ role: "tool", tool_call_id: call.id, content });
+                    interval: snapshot.interval,
+                    lastClosedUTC: snapshot.lastClosedUTC,
+                    candles: snapshot.candles,
+                  }),
+                });
               } else if (toolName === "compute_trading_signal") {
                 const symbolInput = String(parsed.symbol ?? normalisedText).trim();
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
@@ -363,35 +363,34 @@ export function createSmartReply(deps: SmartReplyDeps) {
                   throw new Error("invalid_symbol");
                 }
                 const resolvedTimeframe = toTimeframe(timeframeInput);
-                const ohlcRaw = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
-                const snapshot = parseOhlcPayload(ohlcRaw);
-                if (!snapshot) {
-                  throw new Error("missing_ohlc");
+                const key = keyFor(resolvedSymbol, resolvedTimeframe);
+                let candles = toolContext.lastCandlesBySymbolTimeframe[key];
+                if (!candles || candles.length === 0) {
+                  const snapshot = await tools.get_ohlc(resolvedSymbol, resolvedTimeframe, 200);
+                  candles = snapshot.candles;
+                  toolContext.lastCandlesBySymbolTimeframe[key] = candles;
                 }
-                const key = keyFor(snapshot.symbol, snapshot.timeframe);
-                toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
-                const signalText = await tools.compute_trading_signal(snapshot.symbol, snapshot.timeframe, snapshot.candles);
-                const trimmed = signalText.trim();
+                const signal = await tools.compute_trading_signal(resolvedSymbol, resolvedTimeframe, candles);
+                const trimmed = signal.formatted.trim();
                 if (!trimmed) {
                   throw new Error("empty_signal");
                 }
                 console.log("[TOOL] compute_trading_signal -> ok", {
-                  symbol: snapshot.symbol,
-                  timeframe: snapshot.timeframe,
+                  symbol: resolvedSymbol,
+                  timeframe: resolvedTimeframe,
                 });
                 const ensured = await ensureConversation();
                 const replyText = applyGreeting(trimmed, isNewConversation, language);
                 return { replyText, language, conversationId: ensured };
               } else if (toolName === "search_web_news") {
                 const query = String(parsed.query ?? normalisedText).trim();
-                const contentRaw = await tools.search_web_news(query, language === "ar" ? "ar" : "en", 3);
-                const lines = contentRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-                if (lines.length < 3) {
+                const news = await tools.search_web_news(query, language === "ar" ? "ar" : "en", 3);
+                const formatted = news.formatted.trim();
+                if (!formatted) {
                   throw new Error("insufficient_news");
                 }
-                const content = lines.slice(0, 3).join("\n");
                 console.log("[TOOL] search_web_news -> ok", { query, lang: language === "ar" ? "ar" : "en" });
-                messages.push({ role: "tool", tool_call_id: call.id, content });
+                messages.push({ role: "tool", tool_call_id: call.id, content: formatted });
               } else if (toolName === "about_liirat_knowledge") {
                 const query = String(parsed.query ?? normalisedText).trim();
                 const content = await tools.about_liirat_knowledge(query, language);
