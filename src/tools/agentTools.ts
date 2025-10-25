@@ -2,7 +2,7 @@
 import { openai } from "../lib/openai";
 import { formatNewsMsg } from "../utils/formatters";
 import { getCurrentPrice } from "./price";
-import { get_ohlc as loadOhlc, OhlcResult } from "./ohlc";
+import { get_ohlc as loadOhlc, OhlcResult, type GetOhlcOptions } from "./ohlc";
 import {
   compute_trading_signal as computeSignal,
   type TradingSignalResult,
@@ -59,14 +59,19 @@ export async function get_price(symbol: string, timeframe?: string): Promise<Pri
   return { symbol: mappedSymbol, price: price.price, timeUTC, source };
 }
 
-export async function get_ohlc(symbol: string, timeframe: string, limit = 60): Promise<OhlcResult> {
+export async function get_ohlc(
+  symbol: string,
+  timeframe: string,
+  limit = 60,
+  options: GetOhlcOptions = {},
+): Promise<OhlcResult> {
   const mappedSymbol = hardMapSymbol(symbol);
   if (!mappedSymbol) {
     throw new Error(`invalid_symbol:${symbol}`);
   }
   const tf = toTimeframe(timeframe) as TF;
   const requestedLimit = typeof limit === "number" && Number.isFinite(limit) ? limit : 60;
-  return loadOhlc(mappedSymbol, tf, requestedLimit);
+  return loadOhlc(mappedSymbol, tf, requestedLimit, options);
 }
 
 export async function compute_trading_signal(input: OhlcResult & { lang?: string }): Promise<TradingSignalResult> {

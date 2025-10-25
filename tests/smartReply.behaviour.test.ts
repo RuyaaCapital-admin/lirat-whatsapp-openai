@@ -152,16 +152,17 @@ async function testTradingSignalFlow() {
     provider: "TEST",
   };
 
+  const expectedReason = "ضغط بيع تحت المتوسطات";
   const expectedBlock = [
     `time (UTC): ${signalResult.lastISO.slice(0, 10)} ${signalResult.lastISO.slice(11, 16)}`,
     "symbol: XAUUSD",
     "SIGNAL: SELL",
+    `Reason: ${expectedReason}`,
+    "Data age: 2m (fresh)",
     "Entry: 2350.20",
     "SL: 2355.80",
     "TP1: 2345.00",
     "TP2: 2340.00",
-    `Reason: ${signalResult.reason}`,
-    "Data age: 2m (live)",
   ].join("\n");
 
   const responses = [

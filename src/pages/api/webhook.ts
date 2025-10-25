@@ -9,6 +9,7 @@ import {
   logMessage,
   getRecentContext,
   getConversationMessageCount,
+  updateConversationMetadata,
   type ConversationContextEntry,
 } from "../../lib/supabase";
 import {
@@ -20,9 +21,10 @@ import {
   type PriceResult,
   type TradingSignalResult,
 } from "../../tools/agentTools";
+import type { OhlcResult } from "../../tools/ohlc";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
-import { formatNewsMsg, formatPriceMsg, formatUtcLabel } from "../../utils/formatters";
-import { hardMapSymbol, toTimeframe } from "../../tools/normalize";
+import { formatNewsMsg, formatPriceMsg } from "../../utils/formatters";
+import { hardMapSymbol, toTimeframe, normalizeArabic, type TF } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -159,32 +161,145 @@ function formatSignalPrice(value: number | null | undefined, symbol: string): st
   return formatPriceLike(value, symbol);
 }
 
-function formatDataAge(ageSeconds: number, delayed: boolean): string {
-  const minutes = Math.max(0, Math.floor(ageSeconds / 60));
-  return `${minutes}m (${delayed ? "delayed" : "live"})`;
+function formatUtcTimestampFromUnix(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
+    return new Date().toISOString().replace("T", " ").slice(0, 16);
+  }
+  const ms = Math.floor(seconds) * 1000;
+  const iso = new Date(ms).toISOString();
+  return iso.replace("T", " ").slice(0, 16);
 }
 
-function formatSignalBlock(result: TradingSignalOk): string {
-  const timeLabel = formatUtcLabel(result.lastISO);
+const STALE_SUFFIX = {
+  ar: " (إشارة قديمة، للمراجعة فقط).",
+  en: " (stale, for review only).",
+} as const;
+
+function pickReason(signal: "BUY" | "SELL" | "NEUTRAL", lang: LanguageCode, isStale: boolean): string {
+  const base = (() => {
+    if (lang === "ar") {
+      if (signal === "BUY") return "ضغط شراء فوق المتوسطات";
+      if (signal === "SELL") return "ضغط بيع تحت المتوسطات";
+      return "السوق بدون اتجاه واضح حالياً";
+    }
+    if (signal === "BUY") return "Buy pressure above key averages";
+    if (signal === "SELL") return "Sell pressure below key averages";
+    return "Market is currently sideways";
+  })();
+  if (isStale) {
+    return `${base}${lang === "ar" ? STALE_SUFFIX.ar : STALE_SUFFIX.en}`;
+  }
+  return base;
+}
+
+const TIMEFRAME_PATTERNS: Array<{ tf: TF; regex: RegExp }> = [
+  { tf: "1min", regex: /(\b1\s*(?:m|min|minute)\b|\bدقيقة\b|\bعال?دقيقة\b)/i },
+  { tf: "5min", regex: /(\b5\s*(?:m|min)\b|\b5\s*(?:دق(?:ايق|ائق))\b|\bخمس دقائق\b)/i },
+  { tf: "15min", regex: /(\b15\s*(?:m|min)?\b|\b١٥\s*(?:دقيقة|دقايق)\b|\bربع ساعة\b)/i },
+  { tf: "30min", regex: /(\b30\s*(?:m|min)?\b|\b٣٠\s*(?:دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/i },
+  { tf: "1hour", regex: /(\b1\s*(?:h|hour)\b|\bساعة\b|\bساعه\b|\bعالساعة\b)/i },
+  { tf: "4hour", regex: /(\b4\s*(?:h|hour)\b|\b٤\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b)/i },
+  { tf: "1day", regex: /(\bdaily\b|\bيومي\b|\bعلى اليومي\b|\bعلى اليوم\b|\bيوم\b)/i },
+];
+
+function detectTimeframeMention(text: string): { timeframe: TF | null; explicit: boolean } {
+  if (!text.trim()) {
+    return { timeframe: null, explicit: false };
+  }
+  const normalised = normalizeArabic(text.toLowerCase());
+  for (const entry of TIMEFRAME_PATTERNS) {
+    if (entry.regex.test(normalised)) {
+      return { timeframe: entry.tf, explicit: true };
+    }
+  }
+  return { timeframe: null, explicit: false };
+}
+
+function detectSymbolInText(text: string): string | null {
+  const direct = hardMapSymbol(text);
+  if (direct) {
+    return direct;
+  }
+  const normalised = normalizeArabic(text).toLowerCase();
+  const tokens = normalised.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    const mapped = hardMapSymbol(token);
+    if (mapped) {
+      return mapped;
+    }
+    if (i < tokens.length - 1) {
+      const combined = `${token} ${tokens[i + 1]}`;
+      const mappedCombined = hardMapSymbol(combined);
+      if (mappedCombined) {
+        return mappedCombined;
+      }
+    }
+  }
+  return null;
+}
+
+function normaliseSymbolInput(input: string | null | undefined): string | null {
+  if (!input) {
+    return null;
+  }
+  return hardMapSymbol(input);
+}
+
+interface ResolveSignalParamsArgs {
+  userText: string;
+  planSymbol?: string | null;
+  planTimeframe?: string | null;
+  lastSymbol?: string | null;
+  lastTimeframe?: string | null;
+}
+
+interface ResolvedSignalParams {
+  symbol: string | null;
+  timeframe: TF | null;
+  timeframeExplicit: boolean;
+}
+
+function resolveSignalParams(args: ResolveSignalParamsArgs): ResolvedSignalParams {
+  const symbolFromPlan = normaliseSymbolInput(args.planSymbol);
+  const symbolFromText = normaliseSymbolInput(detectSymbolInText(args.userText));
+  const symbolFromContext = normaliseSymbolInput(args.lastSymbol);
+  const symbol = symbolFromPlan ?? symbolFromText ?? symbolFromContext ?? null;
+
+  const planTf = args.planTimeframe ? toTimeframe(args.planTimeframe) : null;
+  const fromText = detectTimeframeMention(args.userText);
+  const contextTf = args.lastTimeframe ? toTimeframe(args.lastTimeframe) : null;
+
+  let timeframe: TF | null = planTf ?? fromText.timeframe ?? contextTf ?? null;
+  if (!timeframe && symbol) {
+    timeframe = "5min";
+  }
+  return { symbol, timeframe, timeframeExplicit: fromText.explicit || Boolean(planTf) };
+}
+
+interface BuildSignalMessageArgs {
+  ohlc: OhlcResult;
+  signal: TradingSignalOk;
+  lang: LanguageCode;
+}
+
+function buildSignalMessage({ ohlc, signal, lang }: BuildSignalMessageArgs): string {
+  const ageMinutes = ohlc.ageMinutes ?? Math.max(0, Math.floor(ohlc.ageSeconds / 60));
+  const timeLabel = formatUtcTimestampFromUnix(ohlc.lastCandleUnix);
+  const reason = pickReason(signal.signal, lang, ohlc.isStale);
   const lines: string[] = [
     `time (UTC): ${timeLabel}`,
-    `symbol: ${result.symbol}`,
-    `SIGNAL: ${result.signal}`,
+    `symbol: ${ohlc.symbol}`,
+    `SIGNAL: ${signal.signal}`,
+    `Reason: ${reason}`,
+    `Data age: ${ageMinutes}m (${ohlc.isStale ? "stale" : "fresh"})`,
   ];
-
-  if (result.signal !== "NEUTRAL") {
-    lines.push(`Entry: ${formatSignalPrice(result.entry, result.symbol)}`);
-    lines.push(`SL: ${formatSignalPrice(result.sl, result.symbol)}`);
-    lines.push(`TP1: ${formatSignalPrice(result.tp1, result.symbol)}`);
-    lines.push(`TP2: ${formatSignalPrice(result.tp2, result.symbol)}`);
+  if (signal.signal !== "NEUTRAL") {
+    lines.push(`Entry: ${formatSignalPrice(signal.entry, ohlc.symbol)}`);
+    lines.push(`SL: ${formatSignalPrice(signal.sl, ohlc.symbol)}`);
+    lines.push(`TP1: ${formatSignalPrice(signal.tp1, ohlc.symbol)}`);
+    lines.push(`TP2: ${formatSignalPrice(signal.tp2, ohlc.symbol)}`);
   }
-
-  const reason = typeof result.reason === "string" && result.reason.trim() ? result.reason.trim() : "";
-  if (reason) {
-    lines.push(`Reason: ${reason}`);
-  }
-  lines.push(`Data age: ${formatDataAge(result.ageSeconds, result.isDelayed)}`);
-
   return lines.join("\n");
 }
 
@@ -287,11 +402,15 @@ interface SmartToolArgs {
   language: LanguageCode;
   history: ConversationContextEntry[];
   identityQuestion: boolean;
+  nowMs: number;
+  lastSymbol?: string | null;
+  lastTimeframe?: string | null;
 }
 
 interface SmartToolResult {
   text: string;
   skipGreeting?: boolean;
+  contextUpdate?: { last_symbol?: string | null; last_tf?: string | null };
 }
 
 function normaliseSymbol(symbol: string | null | undefined): string | null {
@@ -305,6 +424,9 @@ async function smartToolLoop({
   language,
   history,
   identityQuestion,
+  nowMs,
+  lastSymbol,
+  lastTimeframe,
 }: SmartToolArgs): Promise<SmartToolResult> {
   const trimmed = userText.trim();
   if (!trimmed) {
@@ -364,7 +486,14 @@ async function smartToolLoop({
   }
 
   if (plan.intent === "trading_signal") {
-    const symbol = normaliseSymbol(plan.symbol ?? trimmed);
+    const resolved = resolveSignalParams({
+      userText: trimmed,
+      planSymbol: plan.symbol,
+      planTimeframe: plan.timeframe,
+      lastSymbol,
+      lastTimeframe,
+    });
+    const symbol = normaliseSymbol(resolved.symbol);
     if (!symbol) {
       const clarification =
         language === "ar"
@@ -372,26 +501,31 @@ async function smartToolLoop({
           : "Specify the instrument (gold, silver, euro, bitcoin...).";
       return { text: clarification, skipGreeting: true };
     }
-    const timeframe = toTimeframe(plan.timeframe ?? trimmed);
+    const timeframe = resolved.timeframe ?? "5min";
     try {
       console.log("[TOOL] invoke get_ohlc", { symbol, timeframe, limit: 60 });
-      const ohlc = await get_ohlc(symbol, timeframe, 60);
+      const ohlc = await get_ohlc(symbol, timeframe, 60, { nowMs });
       const signal = await compute_trading_signal({ ...ohlc, lang: language });
       if (signal.status !== "OK") {
         return { text: signalUnavailable(language), skipGreeting: true };
       }
 
       console.log("[SIGNAL_PIPELINE]", {
-        symbol: signal.symbol,
-        timeframe: signal.timeframe,
+        symbol: ohlc.symbol,
+        timeframe: ohlc.timeframe,
         candles: ohlc.candles.length,
         decision: signal.signal,
-        delayed: signal.isDelayed,
-        last_iso: signal.lastISO,
+        stale: ohlc.isStale,
+        age_min: ohlc.ageMinutes ?? Math.floor(ohlc.ageSeconds / 60),
+        last_iso: ohlc.lastCandleISO,
       });
 
-      const reply = formatSignalBlock(signal);
-      return { text: reply, skipGreeting: true };
+      const reply = buildSignalMessage({ ohlc, signal, lang: language });
+      return {
+        text: reply,
+        skipGreeting: true,
+        contextUpdate: { last_symbol: ohlc.symbol, last_tf: ohlc.timeframe },
+      };
     } catch (error) {
       const code = (error as any)?.code;
       if (code === "NO_DATA") {
@@ -421,8 +555,16 @@ function removeLatestUserDuplicate(
   return history;
 }
 
-function prependGreeting(reply: string): string {
-  return reply;
+function prependGreeting(reply: string, language: LanguageCode, shouldGreet: boolean): string {
+  if (!shouldGreet) {
+    return reply;
+  }
+  const greeting =
+    language === "ar" ? "مرحباً، أنا مساعد ليرات." : "Hi, I'm the Liirat assistant.";
+  if (!reply.trim()) {
+    return greeting;
+  }
+  return `${greeting}\n${reply}`;
 }
 
 function hasSeenUser(phone: string): boolean {
@@ -446,6 +588,7 @@ interface WebhookDeps {
   logMessage: typeof logMessage;
   getRecentContext: typeof getRecentContext;
   getConversationMessageCount: typeof getConversationMessageCount;
+  updateConversationMetadata: typeof updateConversationMetadata;
   smartToolLoop?: typeof smartToolLoop;
 }
 
@@ -538,20 +681,25 @@ export function createWebhookHandler(deps: WebhookDeps) {
       markUserSeen(inbound.from);
     }
 
+    const nowMs = Date.now();
+
     const runSmartToolLoop = deps.smartToolLoop ?? smartToolLoop;
     const assistantOutcome = await runSmartToolLoop({
       userText: normalisedText || messageBody,
       language,
       history: trimmedHistory,
       identityQuestion,
+      nowMs,
+      lastSymbol: conversation?.last_symbol ?? null,
+      lastTimeframe: conversation?.last_tf ?? null,
     });
 
     const assistantReply = assistantOutcome.text;
     const skipGreeting = Boolean(assistantOutcome.skipGreeting);
 
     const shouldGreet =
-      !skipGreeting && existingCount === 0 && !identityQuestion && !hasSeenUser(inbound.from);
-    const replyWithIntro = prependGreeting(assistantReply);
+      !skipGreeting && !identityQuestion && (conversation?.isNew ?? existingCount === 0) && !hasSeenUser(inbound.from);
+    const replyWithIntro = prependGreeting(assistantReply, preferredLang, shouldGreet);
     const finalReply = replyWithIntro.trim() ? replyWithIntro : dataUnavailable(preferredLang);
 
     console.log("[WEBHOOK] sending reply", {
@@ -566,6 +714,10 @@ export function createWebhookHandler(deps: WebhookDeps) {
 
     if (conversationId) {
       await deps.logMessage(conversationId, "assistant", finalReply, conversationUserId);
+    }
+
+    if (conversationId && assistantOutcome.contextUpdate) {
+      await deps.updateConversationMetadata(conversationId, assistantOutcome.contextUpdate);
     }
 
     if (shouldGreet) {
@@ -583,6 +735,7 @@ export const webhookHandler = createWebhookHandler({
   logMessage,
   getRecentContext,
   getConversationMessageCount,
+  updateConversationMetadata,
 });
 
 export default webhookHandler;
