@@ -6,8 +6,9 @@ const DIGIT_MAP: Record<string, string> = {
 };
 
 const SYMBOL_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
-  { canonical: 'BTCUSDT', aliases: ['btc', 'btcusdt', 'bitcoin', 'بيتكوين', 'بتكوين'] },
-  { canonical: 'ETHUSDT', aliases: ['eth', 'ethusdt', 'ethereum', 'إيثيريوم', 'اثيريوم'] },
+  { canonical: 'BTCUSDT', aliases: ['btc', 'btcusdt', 'bitcoin', 'بيتكوين', 'بتكوين', 'btcusd', 'btc/usd'] },
+  { canonical: 'ETHUSDT', aliases: ['eth', 'ethusdt', 'ethereum', 'إيثيريوم', 'اثيريوم', 'ethusd', 'eth/usd'] },
+  { canonical: 'XRPUSDT', aliases: ['xrp', 'ripple', 'ريبل', 'اكس ار بي', 'إكس آر بي', 'xrpusd', 'xrp/usd'] },
   { canonical: 'XAUUSD', aliases: ['xauusd', 'xau', 'gold', 'ذهب', 'الذهب', 'دهب'] },
   { canonical: 'XAGUSD', aliases: ['xagusd', 'xag', 'silver', 'فضة', 'الفضة', 'سيلفر'] },
   { canonical: 'XTIUSD', aliases: ['xtiusd', 'wti', 'نفط', 'خام'] },
@@ -86,13 +87,16 @@ export function hardMapSymbol(input: string): string | null {
 }
 
 export function isCrypto(sym: string) {
-  return sym.toUpperCase().endsWith('USDT');
+  const upper = sym.toUpperCase();
+  const CRYPTO_USD = new Set(['BTCUSD','ETHUSD','XRPUSD','LTCUSD','ADAUSD','SOLUSD','DOGEUSD','BNBUSD']);
+  return upper.endsWith('USDT') || CRYPTO_USD.has(upper);
 }
 
 export function mapToFmpSymbol(sym: string): string {
   const upper = sym.toUpperCase();
   if (upper === "BTCUSDT") return "BTCUSD";
   if (upper === "ETHUSDT") return "ETHUSD";
+  if (upper === "XRPUSDT") return "XRPUSD";
   return upper;
 }
 

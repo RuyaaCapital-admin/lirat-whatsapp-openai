@@ -90,6 +90,60 @@ function readMessageContent(message: ChatCompletion["choices"][0]["message"]): s
   return "";
 }
 
+function detectLanguage(text: string): "ar" | "en" {
+  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
+}
+
+function formatFromPossibleJson(raw: string, userText: string): string {
+  const text = (raw || "").trim();
+  if (!text) return text;
+  const first = text[0];
+  if (first !== "{" && first !== "[") return text;
+  try {
+    const parsed = JSON.parse(text);
+    const lang = detectLanguage(userText);
+    const isArabic = lang === "ar";
+    const lines: string[] = [];
+    if (parsed && typeof parsed === "object") {
+      if (parsed.timeUtc && parsed.symbol && typeof parsed.price === "number") {
+        // Price payload
+        lines.push(isArabic ? `الوقت (UTC): ${parsed.timeUtc}` : `time (UTC): ${parsed.timeUtc}`);
+        lines.push(isArabic ? `الرمز: ${parsed.symbol}` : `symbol: ${parsed.symbol}`);
+        lines.push(isArabic ? `السعر: ${parsed.price}` : `price: ${parsed.price}`);
+        return lines.join("\n");
+      }
+      if (parsed.timeframe && parsed.signal && parsed.timeUtc && parsed.symbol) {
+        // Signal payload
+        const reasonKey = String(parsed.reason || "no_clear_bias");
+        const reasonMap = isArabic
+          ? { bullish_pressure: "ضغط شراء فوق المتوسطات", bearish_pressure: "ضغط بيع تحت المتوسطات", no_clear_bias: "السوق بدون اتجاه واضح حالياً" }
+          : { bullish_pressure: "Buy pressure above short-term averages", bearish_pressure: "Bearish momentum below resistance", no_clear_bias: "No clear directional bias right now" };
+        const reasonText = (reasonMap as any)[reasonKey] || reasonMap.no_clear_bias;
+        lines.push(isArabic ? `الوقت (UTC): ${parsed.timeUtc}` : `time (UTC): ${parsed.timeUtc}`);
+        lines.push(isArabic ? `الرمز: ${parsed.symbol}` : `symbol: ${parsed.symbol}`);
+        lines.push(isArabic ? `الإطار الزمني: ${parsed.timeframe}` : `timeframe: ${parsed.timeframe}`);
+        lines.push(`SIGNAL: ${parsed.signal}`);
+        lines.push((isArabic ? "السبب" : "Reason") + ": " + reasonText);
+        if (String(parsed.signal).toUpperCase() !== "NEUTRAL") {
+          lines.push(`Entry: ${parsed.entry ?? "-"}`);
+          lines.push(`SL: ${parsed.sl ?? "-"}`);
+          lines.push(`TP1: ${parsed.tp1 ?? "-"}`);
+          lines.push(`TP2: ${parsed.tp2 ?? "-"}`);
+        } else {
+          lines.push(`Entry: -`);
+          lines.push(`SL: -`);
+          lines.push(`TP1: -`);
+          lines.push(`TP2: -`);
+        }
+        return lines.join("\n");
+      }
+    }
+    return text;
+  } catch {
+    return text;
+  }
+}
+
 export function createSmartReply(deps: SmartReplyDeps) {
   const {
     chat,
@@ -133,7 +187,8 @@ export function createSmartReply(deps: SmartReplyDeps) {
 
       if (!toolCalls.length) {
         const finalText = readMessageContent(message).trim();
-        const output = finalText || fallbackUnavailableMessage(trimmed);
+        const coerced = formatFromPossibleJson(finalText, trimmed);
+        const output = coerced || fallbackUnavailableMessage(trimmed);
         await memory.appendHistory(userId, [
           { role: "user", content: trimmed },
           { role: "assistant", content: output },
@@ -151,7 +206,14 @@ export function createSmartReply(deps: SmartReplyDeps) {
         const name = call.function?.name ?? "";
         let args: Record<string, unknown> = {};
         try {
-          args = call.function?.arguments ? JSON.parse(call.function.arguments) : {};
+          const rawArgs: any = call.function?.arguments as any;
+          if (typeof rawArgs === "string") {
+            args = rawArgs ? JSON.parse(rawArgs) : {};
+          } else if (rawArgs && typeof rawArgs === "object") {
+            args = rawArgs;
+          } else {
+            args = {};
+          }
         } catch (error) {
           messages.push({
             role: "tool",
@@ -180,6 +242,15 @@ export function createSmartReply(deps: SmartReplyDeps) {
             ) {
               args.ohlc = lastOhlcResult;
               console.info(`[CANDLE_INJECTION] Auto-injecting OHLC for ${symbol} ${timeframe}`);
+            }
+            // If still missing candles but we have symbol/timeframe, fetch directly
+            if (!args.ohlc && symbol && timeframe) {
+              try {
+                const fetched = await toolHandlers["get_ohlc"]({ symbol, timeframe, limit: 60 });
+                if (fetched && (fetched as any).ok) {
+                  args.ohlc = fetched;
+                }
+              } catch {}
             }
           }
 
