@@ -23,7 +23,7 @@ import {
 } from "../../tools/agentTools";
 import { detectLanguage, normaliseDigits } from "../../utils/webhookHelpers";
 import { formatNewsMsg, formatPriceMsg, formatSignalMsg } from "../../utils/formatters";
-import { hardMapSymbol, toTimeframe, type TF } from "../../tools/normalize";
+import { hardMapSymbol, toTimeframe } from "../../tools/normalize";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
@@ -53,16 +53,6 @@ type InboundMessage = {
   from: string;
   text: string;
   contactName?: string;
-};
-
-const TIMEFRAME_TO_MS: Record<TF, number> = {
-  "1min": 60_000,
-  "5min": 5 * 60_000,
-  "15min": 15 * 60_000,
-  "30min": 30 * 60_000,
-  "1hour": 60 * 60_000,
-  "4hour": 4 * 60 * 60_000,
-  "1day": 24 * 60 * 60_000,
 };
 
 function normaliseInboundText(message: any): string {
@@ -332,14 +322,12 @@ async function smartToolLoop({
     }
     try {
       const snapshot: OhlcResultPayload = await get_ohlc(symbol, timeframe, 200);
-      const intervalMs = TIMEFRAME_TO_MS[snapshot.interval] ?? 60 * 60_000;
-      const lastClosedMs = Date.parse(snapshot.lastClosedUTC);
-      if (!Number.isFinite(lastClosedMs) || Date.now() - lastClosedMs > intervalMs * 3) {
+      if (snapshot.stale) {
         return dataUnavailable(language);
       }
       const signal: TradingSignalResult = await compute_trading_signal(symbol, timeframe, snapshot.candles);
-      if (signal.decision === "NEUTRAL") {
-        return "SIGNAL: NEUTRAL";
+      if (signal.stale) {
+        return dataUnavailable(language);
       }
       return buildSignalReply(signal);
     } catch (error) {
@@ -469,6 +457,7 @@ export function createWebhookHandler(deps: WebhookDeps) {
 
     const conversation = await deps.createOrGetConversation(inbound.from);
     const conversationId = conversation?.conversation_id ?? null;
+    const conversationUserId = conversation?.user_id ?? null;
     let existingCount = 0;
     if (conversationId) {
       const count = await deps.getConversationMessageCount(conversationId);
@@ -476,7 +465,7 @@ export function createWebhookHandler(deps: WebhookDeps) {
     }
 
     if (conversationId) {
-      await deps.logMessage(conversationId, "user", messageBody);
+      await deps.logMessage(conversationId, "user", messageBody, conversationUserId);
     }
 
     let history: ConversationContextEntry[] = [];
@@ -512,7 +501,7 @@ export function createWebhookHandler(deps: WebhookDeps) {
     }
 
     if (conversationId) {
-      await deps.logMessage(conversationId, "assistant", finalReply);
+      await deps.logMessage(conversationId, "assistant", finalReply, conversationUserId);
     }
 
     if (shouldGreet) {

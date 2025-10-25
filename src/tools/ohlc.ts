@@ -10,6 +10,7 @@ export interface OhlcResult {
   lastClosed: Candle;
   timeframe: TF;
   source: OhlcSource;
+  stale: boolean;
 }
 
 export class OhlcError extends Error {
@@ -17,7 +18,6 @@ export class OhlcError extends Error {
     public readonly code:
       | "NO_DATA_FOR_INTERVAL"
       | "NO_CLOSED_BAR"
-      | "STALE_DATA"
       | "HTTP_ERROR"
       | "INVALID_CANDLES",
     public readonly timeframe: TF,
@@ -89,7 +89,7 @@ function ensureSorted(candles: Candle[]): Candle[] {
     }));
 }
 
-function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
+function deriveLastClosed(candles: Candle[], timeframe: TF): { lastClosed: Candle; stale: boolean } {
   const sorted = ensureSorted(candles);
   const tfMs = TF_TO_MS[timeframe] ?? 60 * 60_000;
   const now = Date.now();
@@ -102,10 +102,8 @@ function deriveLastClosed(candles: Candle[], timeframe: TF): Candle {
   if (!candidate || !isFiniteCandle(candidate)) {
     throw new OhlcError("NO_CLOSED_BAR", timeframe);
   }
-  if (now - candidate.t > tfMs * 6) {
-    throw new OhlcError("STALE_DATA", timeframe);
-  }
-  return candidate;
+  const stale = now - candidate.t > tfMs * 3;
+  return { lastClosed: candidate, stale };
 }
 
 async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promise<OhlcResult> {
@@ -121,8 +119,8 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number): Promi
       throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FMP");
     }
     const sorted = ensureSorted(candles);
-    const lastClosed = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FMP" };
+    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FMP", stale };
   } catch (error) {
     if (error instanceof OhlcError) {
       throw error;
@@ -154,8 +152,8 @@ async function fetchFromFcs(symbol: string, timeframe: TF, limit: number): Promi
       throw new OhlcError("NO_DATA_FOR_INTERVAL", timeframe, "FCS");
     }
     const sorted = ensureSorted(candles);
-    const lastClosed = deriveLastClosed(sorted, timeframe);
-    return { candles: sorted, lastClosed, timeframe, source: "FCS" };
+    const { lastClosed, stale } = deriveLastClosed(sorted, timeframe);
+    return { candles: sorted, lastClosed, timeframe, source: "FCS", stale };
   } catch (error) {
     if (error instanceof OhlcError) {
       throw error;

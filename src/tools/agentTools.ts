@@ -16,9 +16,11 @@ export interface PriceResult {
 
 export interface OhlcResultPayload {
   symbol: string;
-  interval: TF;
+  timeframe: TF;
   candles: Candle[];
-  lastClosedUTC: string;
+  last_closed_utc: string;
+  source: string;
+  stale: boolean;
 }
 
 export interface TradingSignalResult {
@@ -29,7 +31,8 @@ export interface TradingSignalResult {
   tp2: number;
   time: string;
   symbol: string;
-  interval: TF;
+  timeframe: TF;
+  source: string;
   stale: boolean;
 }
 
@@ -105,7 +108,14 @@ export async function get_ohlc(symbol: string, timeframe: string, limit = 200): 
   const series = await loadOhlc(mappedSymbol, tf, safeLimit);
   const candles = normalizeCandles(series.candles);
   const lastClosedUTC = toUtcIso(series.lastClosed?.t ?? candles.at(-1)?.t ?? null);
-  return { symbol: mappedSymbol, interval: tf, candles, lastClosedUTC };
+  return {
+    symbol: mappedSymbol,
+    timeframe: tf,
+    candles,
+    last_closed_utc: lastClosedUTC,
+    source: series.source ?? "FMP",
+    stale: Boolean(series.stale),
+  };
 }
 
 export async function compute_trading_signal(
@@ -132,8 +142,9 @@ export async function compute_trading_signal(
     tp2: payload.tp2,
     time: payload.timeUTC,
     symbol: payload.symbol,
-    interval: payload.interval,
-    stale: false,
+    timeframe: payload.interval,
+    source: payload.source ?? "FMP",
+    stale: Boolean(payload.stale),
   };
 }
 

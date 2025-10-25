@@ -11,6 +11,8 @@ export interface SignalPayload extends Record<string, unknown> {
   timeUTC: string;
   symbol: string;
   interval: TF;
+  source: OhlcSource;
+  stale: boolean;
 }
 
 function ema(values: number[], period: number) {
@@ -195,6 +197,8 @@ export function buildSignalFromSeries(symbol: string, timeframe: TF, series: Ohl
     timeUTC: toUtcIso(series.lastClosed.t),
     symbol: normaliseSymbol(symbol),
     interval: timeframe,
+    source: series.source,
+    stale: Boolean(series.stale),
   };
 }
 
@@ -210,6 +214,7 @@ export async function computeSignal(symbol: string, timeframe: TF, candles?: Can
       lastClosed,
       timeframe,
       source: "PROVIDED" as OhlcSource,
+      stale: false,
     };
     return buildSignalFromSeries(symbol, timeframe, data);
   }
@@ -239,5 +244,5 @@ export async function compute_trading_signal(
   candles?: Candle[],
 ): Promise<{ text: string }> {
   const payload = await computeSignal(symbol, timeframe, candles);
-  return { text: formatSignalPayload(payload) };
+  return { text: JSON.stringify(payload) };
 }

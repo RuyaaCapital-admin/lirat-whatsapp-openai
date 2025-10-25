@@ -345,11 +345,11 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const timeframeInput = String(parsed.timeframe ?? normalisedText).trim();
                 const limit = typeof parsed.limit === "number" ? parsed.limit : 200;
                 const snapshot = await tools.get_ohlc(symbol, timeframeInput, limit);
-                const key = keyFor(snapshot.symbol, snapshot.interval);
+                const key = keyFor(snapshot.symbol, snapshot.timeframe);
                 toolContext.lastCandlesBySymbolTimeframe[key] = snapshot.candles;
                 console.log("[TOOL] get_ohlc -> ok", {
                   symbol: snapshot.symbol,
-                  timeframe: snapshot.interval,
+                  timeframe: snapshot.timeframe,
                   candles: snapshot.candles.length,
                 });
                 messages.push({
@@ -357,9 +357,11 @@ export function createSmartReply(deps: SmartReplyDeps) {
                   tool_call_id: call.id,
                   content: JSON.stringify({
                     symbol: snapshot.symbol,
-                    interval: snapshot.interval,
-                    lastClosedUTC: snapshot.lastClosedUTC,
+                    timeframe: snapshot.timeframe,
+                    last_closed_utc: snapshot.last_closed_utc,
                     candles: snapshot.candles,
+                    source: snapshot.source,
+                    stale: snapshot.stale,
                   }),
                 });
               } else if (toolName === "compute_trading_signal") {
