@@ -1,8 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { markReadAndShowTyping, sendText } from "../../lib/waba";
+import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
 import { runWorkflowMessage } from "../../lib/workflowRunner";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
+import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
@@ -103,9 +104,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  const rawText = normaliseInboundText(req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0] ?? {}) || inbound.text;
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value ?? {};
+  const msg = (Array.isArray(value.messages) ? value.messages[0] : undefined) ?? {};
+  const isImage = msg?.type === "image" && typeof msg?.image?.id === "string";
+  const rawText = normaliseInboundText(msg) || inbound.text;
   const messageBody = typeof rawText === "string" ? rawText.trim() : "";
-  if (!messageBody) {
+  if (!messageBody && !isImage) {
     res.status(200).json({ received: true });
     return;
   }
@@ -120,25 +124,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const workflowId = process.env.OPENAI_WORKFLOW_ID || "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
     const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
 
-    // Log user message (non-blocking)
-    void logMessageAsync(conversationId, "user", messageBody);
+    // Log user message (non-blocking) — include placeholder for image caption if any
+    void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
 
     let replyText: string | null = null;
-    try {
-      // Preferred: full agent workflow runner (tools + memory)
-      replyText = await runWorkflowMessage({
-        sessionId,
-        workflowId,
-        version: 56,
-        userText: messageBody,
-      });
-    } catch (err: any) {
-      const msg = String(err?.message || err);
-      const isToolRoleError = /messages with role 'tool'/i.test(msg) || /invalid_request_error/i.test(String(err?.type));
-      console.error("[WEBHOOK] Agent error, falling back:", err);
-      // Fallback: stable smart reply path to guarantee a response
-      const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
-      replyText = result.replyText;
+    if (isImage && msg?.image?.id) {
+      try {
+        const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
+        replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
+      } catch (err) {
+        console.warn("[WEBHOOK] image handling error", err);
+        const hasArabic = /[\u0600-\u06FF]/.test(messageBody || "");
+        replyText = hasArabic ? "تعذر قراءة الصورة حالياً." : "Couldn't read the image right now.";
+      }
+    } else {
+      try {
+        // Preferred: full agent workflow runner (tools + memory)
+        replyText = await runWorkflowMessage({
+          sessionId,
+          workflowId,
+          version: 56,
+          userText: messageBody,
+        });
+      } catch (err: any) {
+        const msgErr = String(err?.message || err);
+        const isToolRoleError = /messages with role 'tool'/i.test(msgErr) || /invalid_request_error/i.test(String(err?.type));
+        console.error("[WEBHOOK] Agent error, falling back:", err);
+        // Fallback: stable smart reply path to guarantee a response
+        const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
+        replyText = result.replyText;
+      }
     }
 
     const finalText = (replyText || "").trim();

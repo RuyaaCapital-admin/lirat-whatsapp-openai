@@ -1,6 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { markReadAndShowTyping, sendText } from "../../lib/waba";
+import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { smartReply } from "../../lib/smartReplyNew";
+import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
@@ -101,9 +102,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
   }
 
-  const rawText = normaliseInboundText(req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0] ?? {}) || inbound.text;
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value ?? {};
+  const msg = (Array.isArray(value.messages) ? value.messages[0] : undefined) ?? {};
+  const isImage = msg?.type === "image" && typeof msg?.image?.id === "string";
+  const rawText = normaliseInboundText(msg) || inbound.text;
   const messageBody = typeof rawText === "string" ? rawText.trim() : "";
-  if (!messageBody) {
+  if (!messageBody && !isImage) {
     res.status(200).json({ received: true });
     return;
   }
@@ -115,14 +119,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    // Use the new smart reply system
-    const result = await smartReply({
-      phone: inbound.from,
-      text: messageBody,
-      contactName: undefined
-    });
-
-    await sendText(inbound.from, result.replyText);
+    if (isImage && msg?.image?.id) {
+      try {
+        const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
+        const reply = await generateImageReply({ base64, mimeType, caption: messageBody });
+        await sendText(inbound.from, reply);
+      } catch (err) {
+        const hasArabic = /[\u0600-\u06FF]/.test(messageBody || "");
+        const fallback = hasArabic ? "تعذر قراءة الصورة حالياً." : "Couldn't read the image right now.";
+        console.warn("[WEBHOOK] image handling error", err);
+        await sendText(inbound.from, fallback);
+      }
+    } else {
+      // Use the new smart reply system
+      const result = await smartReply({
+        phone: inbound.from,
+        text: messageBody,
+        contactName: undefined
+      });
+      await sendText(inbound.from, result.replyText);
+    }
   } catch (error) {
     console.error("[WEBHOOK] Error:", error);
   }
