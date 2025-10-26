@@ -65,7 +65,7 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           content: [
             {
               type: "input_text",
-              text: `Use the web_search tool to find up to ${safeCount} recent economic or market-moving events only (macro data, central banks, major political/financial developments). DO NOT include sports, entertainment, tech gadget, or unrelated topics. Respond ONLY with valid JSON matching {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]} (impact optional). Write title and impact in ${language} when possible.`,
+              text: `Use the web_search tool to find up to ${safeCount} recent economic or market-moving events only (macro releases like CPI/PPI/GDP/NFP/PMI, central bank decisions/speeches, major political/financial developments). Exclude sports/entertainment/tech gadgets. Return STRICT JSON: {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]}. If uncertain or not applicable, use an empty array. Reply with JSON only in ${language}.`,
             },
           ],
         },
@@ -77,25 +77,46 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
       tools: [{ type: "web_search" as any }],
       tool_choice: "auto",
       max_output_tokens: 800,
+      response_format: { type: "json_object" } as any,
     });
 
     const text = extractText(response);
-    if (!text) {
-      return [];
+    let parsed: any = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        console.warn("[NEWS] failed to parse response", error, { text });
+      }
     }
 
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch (error) {
-      console.warn("[NEWS] failed to parse response", error, { text });
-      return [];
+    // Fallback: try to repair into JSON structure
+    if (!parsed) {
+      try {
+        const repair = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages: [
+            {
+              role: "system",
+              content:
+                `Convert the provided content into up to ${safeCount} market/economic EVENTS only. Use STRICT JSON {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]}. If none, return {"items":[]}. Titles in ${language}. Ignore price summaries; keep macro/central bank/political events only.`,
+            },
+            { role: "user", content: text || "" },
+          ],
+        });
+        const repaired = repair?.choices?.[0]?.message?.content || "";
+        parsed = repaired ? JSON.parse(repaired) : null;
+      } catch (e) {
+        console.warn("[NEWS] repair parse failed", e);
+        parsed = null;
+      }
     }
 
+    if (!parsed) return [];
     const itemsSource = Array.isArray(parsed?.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
-    if (!Array.isArray(itemsSource)) {
-      return [];
-    }
+    if (!Array.isArray(itemsSource)) return [];
 
     const mapped = itemsSource
       .map(mapItem)
