@@ -39,6 +39,31 @@ function normaliseDate(value: unknown): string {
   return new Date(parsed).toISOString().slice(0, 10);
 }
 
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function inferImpactFromTitle(title: string): string | undefined {
+  const t = title.toLowerCase();
+  if (/(cpi|ppi|gdp|nfp|payrolls|fomc|rate|inflation|employment|jobless|unemployment|fed|فيدرال|التضخم|البطالة)/i.test(t)) return "high";
+  if (/(pmi|ism|confidence|housing|claims)/i.test(t)) return "medium";
+  return undefined;
+}
+
+function salvageItemsFromText(text: string, count: number): NewsItem[] {
+  if (!text || typeof text !== "string") return [];
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const bullets = lines.filter((l) => /^[-•\d+\.\)]/.test(l) || /^[\*\-]/.test(l));
+  const take = (bullets.length ? bullets : lines).slice(0, Math.max(1, Math.min(count, 5)));
+  const date = todayISO();
+  return take.map((t) => {
+    const title = t.replace(/^[-•\d+\.\)]\s*/, "").replace(/^\*\s*/, "").trim();
+    const sourceMatch = t.match(/\b([a-zA-Z]+\.(com|net|org|ae|uk|sa|kw))\b/i);
+    const source = sourceMatch ? sourceMatch[1] : "Market";
+    return { date, source, title, url: "", impact: inferImpactFromTitle(title) };
+  });
+}
+
 function mapItem(raw: any): NewsItem | null {
   const date = normaliseDate(raw?.date ?? raw?.published_at ?? raw?.publishedDate);
   const source = typeof raw?.source === "string" ? raw.source.trim() : typeof raw?.site === "string" ? raw.site.trim() : "";
@@ -116,7 +141,11 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
       }
     }
 
-    if (!parsed) return [];
+    if (!parsed) {
+      // Last-resort salvage from plain text into heuristic items
+      const salvaged = salvageItemsFromText(text || "", safeCount);
+      return salvaged;
+    }
     const itemsSource = Array.isArray(parsed?.items) ? parsed.items : Array.isArray(parsed) ? parsed : [];
     if (!Array.isArray(itemsSource)) return [];
 
