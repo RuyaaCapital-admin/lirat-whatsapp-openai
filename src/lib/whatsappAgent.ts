@@ -144,6 +144,14 @@ function formatFromPossibleJson(raw: string, userText: string): string {
   }
 }
 
+function salvageArgs(raw: string): Record<string, any> | null {
+  if (typeof raw !== "string" || !raw) return null;
+  const sym = raw.match(/"symbol"\s*:\s*"([A-Za-z0-9/_-]+)"/);
+  const tf = raw.match(/"timeframe"\s*:\s*"([A-Za-z0-9]+)"/);
+  if (sym && tf) return { symbol: sym[1], timeframe: tf[1] };
+  return null;
+}
+
 export function createSmartReply(deps: SmartReplyDeps) {
   const {
     chat,
@@ -215,12 +223,17 @@ export function createSmartReply(deps: SmartReplyDeps) {
             args = {};
           }
         } catch (error) {
+          const raw = call.function?.arguments as any;
+          const rescued = typeof raw === "string" ? salvageArgs(raw) : null;
+          args = rescued || {};
           messages.push({
             role: "tool",
             tool_call_id: call.id,
             content: JSON.stringify({ error: "invalid_arguments" }),
           });
-          continue;
+          if (!Object.keys(args).length) {
+            continue;
+          }
         }
 
         let result: ToolResult;

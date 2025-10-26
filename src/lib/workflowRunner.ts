@@ -104,6 +104,16 @@ function coerceTextIfJson(raw: string, userText: string): string {
   }
 }
 
+function salvageArgs(raw: string): Record<string, any> | null {
+  if (typeof raw !== "string" || !raw) return null;
+  const sym = raw.match(/"symbol"\s*:\s*"([A-Za-z0-9/_-]+)"/);
+  const tf = raw.match(/"timeframe"\s*:\s*"([A-Za-z0-9]+)"/);
+  if (sym && tf) {
+    return { symbol: sym[1], timeframe: tf[1] };
+  }
+  return null;
+}
+
 const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolResult>> = {
   async get_price(args) {
     const symbol = String(args.symbol || "").trim();
@@ -257,7 +267,12 @@ export async function runWorkflowMessage(
           } else {
             args = {};
           }
-        } catch {}
+        } catch (e) {
+          // Attempt salvage for truncated JSON: extract symbol/timeframe and proceed
+          const raw = (call as any)?.function?.arguments;
+          const rescued = typeof raw === "string" ? salvageArgs(raw) : null;
+          args = rescued || {};
+        }
         try {
           const handler = toolHandlers[name];
           const result = handler ? await handler(args) : { error: `unknown_tool:${name}` };
