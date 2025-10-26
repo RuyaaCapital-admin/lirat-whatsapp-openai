@@ -86,6 +86,81 @@ export async function sendText(to: string, body: string): Promise<void> {
   }
 }
 
+// --- Media helpers (WhatsApp Cloud API) ---
+// Docs: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/
+
+type MediaMeta = { url: string; mimeType: string; sha256?: string };
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function getMediaMeta(mediaId: string): Promise<MediaMeta> {
+  const id = String(mediaId || "").trim();
+  if (!id) throw new Error("invalid_media_id");
+  const url = `${baseUrl}/${id}`;
+  const res = await fetchWithTimeout(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const error: any = new Error(`media_meta_error:${res.status}`);
+    error.status = res.status;
+    error.responseBody = text;
+    throw error;
+  }
+  const data: any = await res.json();
+  const directUrl = data?.url;
+  const mime = data?.mime_type;
+  if (typeof directUrl !== 'string' || !directUrl || typeof mime !== 'string' || !mime) {
+    throw new Error('invalid_media_meta');
+  }
+  const out: MediaMeta = { url: directUrl, mimeType: mime };
+  if (typeof data?.sha256 === 'string' && data.sha256) out.sha256 = data.sha256;
+  return out;
+}
+
+const DEFAULT_ALLOWED_MIME = (process.env.WABA_MEDIA_ALLOWED_MIME || 'image/jpeg,image/png,image/webp')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+export async function downloadMediaBase64(mediaId: string, maxBytes = Number(process.env.WABA_MEDIA_MAX_BYTES || 8_000_000)) {
+  const meta = await getMediaMeta(mediaId);
+  if (!DEFAULT_ALLOWED_MIME.includes(meta.mimeType)) {
+    throw new Error(`unsupported_mime:${meta.mimeType}`);
+  }
+
+  const res = await fetchWithTimeout(meta.url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const error: any = new Error(`media_download_error:${res.status}`);
+    error.status = res.status;
+    error.responseBody = text;
+    throw error;
+  }
+  const lenHeader = res.headers.get('content-length');
+  if (lenHeader && Number(lenHeader) > 0 && Number(lenHeader) > maxBytes) {
+    throw new Error('media_too_large');
+  }
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > maxBytes) {
+    throw new Error('media_too_large');
+  }
+  const base64 = buffer.toString('base64');
+  return { base64, mimeType: meta.mimeType } as const;
+}
+
 export async function sendTyping(messageId: string): Promise<void> {
   try {
     const payload = {
