@@ -32,8 +32,8 @@ export interface TradingSignal {
   ageMinutes: number;
 }
 
-// Require a reasonable history but not too strict; 30 gives ~2.5h on 5min
-const MIN_CANDLES = 30;
+// Require a reasonable history but not too strict; 25 gives ~2h on 5min
+const MIN_CANDLES = 25;
 
 function ensureSorted(candles: Candle[]): Candle[] {
   return candles
@@ -192,16 +192,16 @@ function deriveDecision(
   // Price location vs fast EMA
   if (lastClose > fastEma) buyScore += 1; else sellScore += 1;
 
-  // RSI zones (slightly permissive midzones)
-  if (rsiValue >= 62) buyScore += 2; else if (rsiValue >= 55) buyScore += 1;
-  if (rsiValue <= 38) sellScore += 2; else if (rsiValue <= 45) sellScore += 1;
+  // RSI zones (more permissive)
+  if (rsiValue >= 60) buyScore += 2; else if (rsiValue >= 55) buyScore += 1;
+  if (rsiValue <= 40) sellScore += 2; else if (rsiValue <= 45) sellScore += 1;
 
   // Momentum direction
   if (momentum > 0) buyScore += 1; else if (momentum < 0) sellScore += 1;
 
   const diff = buyScore - sellScore;
-  if (diff >= 2) return "BUY";
-  if (diff <= -2) return "SELL";
+  if (diff >= 1) return "BUY";
+  if (diff <= -1) return "SELL";
   return "NEUTRAL";
 }
 
