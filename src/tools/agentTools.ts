@@ -4,6 +4,7 @@ import { getCurrentPrice } from "./price";
 import { get_ohlc as loadOhlc, type GetOhlcOptions, type GetOhlcResponse } from "./ohlc";
 import { compute_trading_signal as computeSignal, type TradingSignal } from "./compute_trading_signal";
 import { fetchNews } from "./news";
+import axios from "axios";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
 export interface PriceResult {
@@ -150,4 +151,18 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
     impact: (item as any).impact || undefined,
   }));
   return { rows };
+}
+
+export async function get_time_now(timezone?: string): Promise<{ tz: string; iso: string; unixtime: number; source: string }> {
+  const tz = timezone && typeof timezone === "string" && timezone.trim() ? timezone.trim() : "Etc/UTC";
+  const url = `https://worldtimeapi.org/api/timezone/${encodeURIComponent(tz)}`;
+  try {
+    const { data } = await axios.get(url, { timeout: 5000 });
+    const iso: string = data?.utc_datetime || data?.datetime || new Date().toISOString();
+    const unixtime: number = Number(data?.unixtime ?? Math.floor(Date.now() / 1000));
+    return { tz, iso, unixtime, source: "worldtimeapi" };
+  } catch {
+    const now = new Date();
+    return { tz, iso: now.toISOString(), unixtime: Math.floor(now.getTime() / 1000), source: "system" };
+  }
 }

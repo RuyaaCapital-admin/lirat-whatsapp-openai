@@ -106,6 +106,21 @@ export const TOOL_SCHEMAS = [
   {
     type: "function",
     function: {
+      name: "get_time_now",
+      description: "Get current date/time, default UTC or given timezone.",
+      parameters: {
+        type: "object",
+        properties: {
+          timezone: { type: "string", description: "IANA timezone like Etc/UTC or Asia/Dubai" },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "search_web_news",
       description: "Search top market/economic headlines.",
       parameters: {

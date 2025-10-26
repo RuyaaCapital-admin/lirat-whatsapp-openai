@@ -1,5 +1,5 @@
 // src/lib/smartReplyNew.ts
-import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from "../tools/agentTools";
+import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge, get_time_now } from "../tools/agentTools";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
@@ -171,6 +171,11 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       const q = classified.query || normalizedText;
       const { tool_result: tr } = await buildLiiratToolResult(q, language);
       tool_result = tr;
+    } else if (/(كم\s*تاريخ\s*اليوم|ما\s*(هو\s*)?التاريخ|what\s+date|what\s+time|utc\s*time|الساعة\s*كم)/i.test(normalizedText)) {
+      const now = await get_time_now("Etc/UTC");
+      const dateLabel = now.iso.slice(0, 10);
+      const timeLabel = `${now.iso.slice(0, 10)} ${now.iso.slice(11, 16)}`;
+      tool_result = { type: "time_now", tz: now.tz, date: dateLabel, time_utc: timeLabel } as any;
     } else {
       tool_result = {
         type: "general_followup",

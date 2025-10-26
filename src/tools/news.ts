@@ -65,7 +65,7 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           content: [
             {
               type: "input_text",
-              text: `Use the web_search tool to find up to ${safeCount} recent market or economic headlines relevant to the user's query. Respond ONLY with valid JSON matching {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"...","url":"..."}]}. Write title and impact in ${language} when possible. If impact is unknown, omit it or use null.`,
+              text: `Use the web_search tool to find up to ${safeCount} recent economic or market-moving events only (macro data, central banks, major political/financial developments). DO NOT include sports, entertainment, tech gadget, or unrelated topics. Respond ONLY with valid JSON matching {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]} (impact optional). Write title and impact in ${language} when possible.`,
             },
           ],
         },
