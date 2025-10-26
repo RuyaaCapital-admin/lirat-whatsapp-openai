@@ -7,6 +7,7 @@ const DIGIT_MAP: Record<string, string> = {
 
 const SYMBOL_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: 'BTCUSDT', aliases: ['btc', 'btcusdt', 'bitcoin', 'بيتكوين', 'بتكوين', 'btcusd', 'btc/usd'] },
+  { canonical: 'ADAUSDT', aliases: ['ada', 'cardano', 'كاردانو', 'أدا', 'adausd', 'ada/usd', 'adausdt'] },
   { canonical: 'ETHUSDT', aliases: ['eth', 'ethusdt', 'ethereum', 'إيثيريوم', 'اثيريوم', 'ethusd', 'eth/usd'] },
   { canonical: 'XRPUSDT', aliases: ['xrp', 'ripple', 'ريبل', 'اكس ار بي', 'إكس آر بي', 'xrpusd', 'xrp/usd'] },
   { canonical: 'XAUUSD', aliases: ['xauusd', 'xau', 'gold', 'ذهب', 'الذهب', 'دهب'] },

@@ -126,7 +126,8 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
     lines.push(`TP2: -`);
   } else {
     lines.push(`SIGNAL: ${input.decision}`);
-    const reasonLine = `${lang === "ar" ? "السبب" : "Reason"}: ${reasonText}` + (lang === "ar" && input.stale ? " (إشارة قديمة، للمراجعة فقط)" : "");
+    // Do not append stale tag within the reason; keep it clean. A separate delay note is shown above.
+    const reasonLine = `${lang === "ar" ? "السبب" : "Reason"}: ${reasonText}`;
     lines.push(reasonLine);
     lines.push(`Entry: ${formatLevel(input.levels.entry, input.symbol)}`);
     lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);

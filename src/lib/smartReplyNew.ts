@@ -3,7 +3,7 @@ import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_lii
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
-import { getOrCreateConversationByTitle, fetchRecentContext } from "./supabaseLite";
+import { getOrCreateConversationByTitle, fetchRecentContext, insertMessage } from "./supabaseLite";
 import { classifyIntent, type ClassifiedIntent } from "./intentClassifier";
 
 export interface SmartReplyInput {
@@ -26,7 +26,25 @@ function normalizeText(text: string): string {
   return text.replace(/[٠-٩]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 1632));
 }
 
-// No persistent state used; classifier will leverage history for context
+// Helpers to salvage last seen symbol/timeframe from text history
+function parseLastFromHistory(history: Array<{ role: "user" | "assistant"; content: string }>): { symbol?: string; timeframe?: string } {
+  const result: { symbol?: string; timeframe?: string } = {};
+  const lines = history.flatMap((m) => (m.content || "").split(/\n+/));
+  for (const raw of lines) {
+    const line = String(raw || "").trim();
+    const symEn = line.match(/^symbol:\s*([A-Za-z0-9/_-]{3,12})$/i);
+    const symAr = line.match(/^الرمز:\s*([A-Za-z0-9/_-]{3,12})$/i);
+    const tfEn = line.match(/^timeframe:\s*([A-Za-z0-9]+)$/i);
+    const tfAr = line.match(/^الإطار\s+الزمني:\s*([A-Za-z0-9]+)$/i);
+    if (symEn || symAr) {
+      result.symbol = (symEn?.[1] || symAr?.[1] || "").toUpperCase();
+    }
+    if (tfEn || tfAr) {
+      result.timeframe = (tfEn?.[1] || tfAr?.[1] || "").toLowerCase();
+    }
+  }
+  return result;
+}
 
 async function buildSignalToolResult(symbol: string, timeframe: string, language: LanguageCode) {
   const ohlc = await get_ohlc(symbol, timeframe, 150);
@@ -100,6 +118,7 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
   // Load recent history and append latest user turn for the generator
   const recentHistory = conversationId ? await fetchRecentContext(conversationId, 8) : [];
   const conversationHistory = [...recentHistory, { role: "user" as const, content: normalizedText }];
+  const lastSeen = parseLastFromHistory(recentHistory);
 
   // Classify with context
   let classified: ClassifiedIntent;
@@ -115,16 +134,25 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
   // Execute tools pipeline per intent
   let tool_result: Record<string, unknown> | null = null;
   try {
-    if (classified.intent === "price" && classified.symbol) {
-      const tfInput = classified.timeframe === "day" ? "1day" : (classified.timeframe || "1min");
-      const { tool_result: tr } = await buildPriceToolResult(classified.symbol, tfInput);
-      tool_result = tr;
-    } else if (classified.intent === "trading_signal" && (classified.symbol || hardMapSymbol(normalizedText))) {
-      const symbol = classified.symbol || hardMapSymbol(normalizedText)!;
-      const tfCandidate = classified.timeframe === "day" ? "1day" : (classified.timeframe || "");
+    if (classified.intent === "price") {
+      const symbol = classified.symbol || hardMapSymbol(normalizedText) || lastSeen.symbol;
+      if (symbol) {
+        const tfInput = classified.timeframe === "day" ? "1day" : (classified.timeframe || "1min");
+        const { tool_result: tr } = await buildPriceToolResult(symbol, tfInput);
+        tool_result = tr;
+      } else {
+        tool_result = { type: "general_followup", symbol: null } as any;
+      }
+    } else if (classified.intent === "trading_signal") {
+      const symbol = classified.symbol || hardMapSymbol(normalizedText) || lastSeen.symbol;
+      const tfCandidate = classified.timeframe === "day" ? "1day" : (classified.timeframe || lastSeen.timeframe || "");
       const timeframe = tfCandidate ? toTimeframe(tfCandidate) : "5min";
-      const { tool_result: tr } = await buildSignalToolResult(symbol, timeframe, language);
-      tool_result = tr;
+      if (symbol) {
+        const { tool_result: tr } = await buildSignalToolResult(symbol, timeframe, language);
+        tool_result = tr;
+      } else {
+        tool_result = { type: "signal_error", symbol: null, timeframe } as any;
+      }
     } else if (classified.intent === "news") {
       const query = classified.query && classified.query.trim() ? classified.query : (language === "ar" ? "أخبار السوق" : "market news");
       try {
@@ -167,6 +195,22 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       query: classified.query ?? null,
     },
   });
+
+  // Persist user and assistant messages when a conversation is available
+  try {
+    if (conversationId) {
+      const userTurn = normalizedText || " ";
+      if (userTurn.trim()) {
+        await insertMessage(conversationId, "user", userTurn);
+      }
+      const assistantTurn = (reply || "").trim();
+      if (assistantTurn) {
+        await insertMessage(conversationId, "assistant", assistantTurn);
+      }
+    }
+  } catch (e) {
+    console.warn("[SUPABASE] persist messages failed (ignored)", e);
+  }
 
   return { replyText: reply, language, conversationId };
 }
