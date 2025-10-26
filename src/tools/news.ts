@@ -77,7 +77,6 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
       tools: [{ type: "web_search" as any }],
       tool_choice: "auto",
       max_output_tokens: 800,
-      response_format: { type: "json_object" } as any,
     });
 
     const text = extractText(response);
@@ -96,7 +95,6 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
         const repair = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           temperature: 0,
-          response_format: { type: "json_object" },
           messages: [
             {
               role: "system",
@@ -107,7 +105,10 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           ],
         });
         const repaired = repair?.choices?.[0]?.message?.content || "";
-        parsed = repaired ? JSON.parse(repaired) : null;
+        // Attempt to extract JSON block from the response
+        const jsonMatch = repaired.match(/\{[\s\S]*\}/);
+        const jsonText = jsonMatch ? jsonMatch[0] : repaired;
+        parsed = jsonText ? JSON.parse(jsonText) : null;
       } catch (e) {
         console.warn("[NEWS] repair parse failed", e);
         parsed = null;
