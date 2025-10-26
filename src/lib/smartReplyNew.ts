@@ -52,7 +52,8 @@ async function buildSignalToolResult(symbol: string, timeframe: string, language
     return { tool_result: { type: "signal_error", symbol, timeframe, error: "NO_DATA" as const } };
   }
   const signal = await compute_trading_signal({ ...ohlc, lang: language });
-  const staleMinutes = Math.max(0, Math.round(ohlc.ageMinutes));
+  // Display analysis time as "now" to align with price responses
+  const nowISO = new Date().toISOString();
   const reasonText = language === "ar"
     ? (signal.reason === "bullish_pressure" ? "ضغط شراء فوق المتوسطات"
       : signal.reason === "bearish_pressure" ? "ضغط بيع تحت المتوسطات" : "السوق بدون اتجاه واضح حالياً.")
@@ -63,8 +64,7 @@ async function buildSignalToolResult(symbol: string, timeframe: string, language
     type: "signal",
     symbol: signal.symbol,
     timeframe: signal.timeframe,
-    utc_candle_time: ohlc.lastISO,
-    stale_minutes: staleMinutes,
+    utc_candle_time: nowISO,
     decision: signal.decision,
     reason: reasonText,
   };
@@ -83,14 +83,12 @@ async function buildPriceToolResult(symbol: string, timeframe: string) {
   const price = await get_price(symbol, timeframe);
   const now = Date.now();
   const tsMs = Date.parse(price.ts_utc);
-  const staleMinutes = Number.isFinite(tsMs) ? Math.max(0, Math.round((now - tsMs) / 60000)) : 0;
   const tool_result = {
     type: "price",
     symbol: price.symbol,
     utc_time: price.ts_utc,
     price: price.price,
     source: price.source,
-    stale_minutes: staleMinutes,
   } as const;
   return { tool_result };
 }
