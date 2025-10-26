@@ -32,7 +32,8 @@ export interface TradingSignal {
   ageMinutes: number;
 }
 
-const MIN_CANDLES = 40;
+// Require a reasonable history but not too strict; 25 gives ~2h on 5min
+const MIN_CANDLES = 25;
 
 function ensureSorted(candles: Candle[]): Candle[] {
   return candles
@@ -140,7 +141,8 @@ function computeTargets(
   if (decision === "NEUTRAL") {
     return { entry: null, sl: null, tp1: null, tp2: null };
   }
-  const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || lastClose * 0.0008);
+  // Use ATR for risk; fallback to price change or 0.15%
+  const fallbackRisk = Math.max(lastClose * 0.0015, Math.abs(lastClose - previousClose) || lastClose * 0.001);
   const risk = Number.isFinite(atrValue) && atrValue > 0 ? atrValue : fallbackRisk;
   const entry = roundPrice(lastClose);
   const riskRounded = roundPrice(risk);
@@ -148,42 +150,58 @@ function computeTargets(
     return { entry: null, sl: null, tp1: null, tp2: null };
   }
   if (decision === "BUY") {
-    const sl = roundPrice(entry - riskRounded);
+    const sl = roundPrice(entry - 0.9 * riskRounded);
     return {
       entry,
       sl,
-      tp1: roundPrice(entry + riskRounded),
-      tp2: roundPrice(entry + 2 * riskRounded),
+      tp1: roundPrice(entry + 1.2 * riskRounded),
+      tp2: roundPrice(entry + 2.4 * riskRounded),
     };
   }
-  const sl = roundPrice(entry + riskRounded);
+  const sl = roundPrice(entry + 0.9 * riskRounded);
   return {
     entry,
     sl,
-    tp1: roundPrice(entry - riskRounded),
-    tp2: roundPrice(entry - 2 * riskRounded),
+    tp1: roundPrice(entry - 1.2 * riskRounded),
+    tp2: roundPrice(entry - 2.4 * riskRounded),
   };
 }
 
 function deriveDecision(
+  lastClose: number,
   fastEma: number,
   slowEma: number,
   momentum: number,
   rsiValue: number,
 ): SignalDecision {
-  if (!Number.isFinite(fastEma) || !Number.isFinite(slowEma) || !Number.isFinite(rsiValue)) {
+  if (
+    !Number.isFinite(lastClose) ||
+    !Number.isFinite(fastEma) ||
+    !Number.isFinite(slowEma) ||
+    !Number.isFinite(rsiValue)
+  ) {
     return "NEUTRAL";
   }
-  const trendUp = fastEma > slowEma;
-  const trendDown = fastEma < slowEma;
-  const momentumUp = momentum >= 0;
-  const momentumDown = momentum <= 0;
-  if (trendUp && momentumUp && rsiValue < 70) {
-    return "BUY";
-  }
-  if (trendDown && momentumDown && rsiValue > 30) {
-    return "SELL";
-  }
+
+  let buyScore = 0;
+  let sellScore = 0;
+
+  // Trend bias via EMAs
+  if (fastEma > slowEma) buyScore += 2; else if (fastEma < slowEma) sellScore += 2;
+
+  // Price location vs fast EMA
+  if (lastClose > fastEma) buyScore += 1; else sellScore += 1;
+
+  // RSI zones (more permissive)
+  if (rsiValue >= 60) buyScore += 2; else if (rsiValue >= 55) buyScore += 1;
+  if (rsiValue <= 40) sellScore += 2; else if (rsiValue <= 45) sellScore += 1;
+
+  // Momentum direction
+  if (momentum > 0) buyScore += 1; else if (momentum < 0) sellScore += 1;
+
+  const diff = buyScore - sellScore;
+  if (diff >= 1) return "BUY";
+  if (diff <= -1) return "SELL";
   return "NEUTRAL";
 }
 
@@ -235,7 +253,9 @@ export function compute_trading_signal(input: TradingSignalInput): TradingSignal
   const slowEma = ema(closes, 50);
   const rsiValue = rsi(closes, 14);
   const atrValue = atr(highs, lows, closes, 14);
-  const decision = candles.length < MIN_CANDLES ? "NEUTRAL" : deriveDecision(fastEma, slowEma, momentum, rsiValue);
+  const decision = candles.length < MIN_CANDLES
+    ? "NEUTRAL"
+    : deriveDecision(lastClose, fastEma, slowEma, momentum, rsiValue);
   const targets = computeTargets(decision, lastClose, previousClose, atrValue);
 
   const timeUTC = formatUtcLabel(input.lastISO);

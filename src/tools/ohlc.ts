@@ -181,11 +181,12 @@ export interface GetOhlcOptions {
   nowMs?: number;
 }
 
+// Allow slightly older data for crypto to avoid too many stale neutrals
 const STALE_LIMIT_MINUTES: Partial<Record<TF, number>> = {
-  "1min": 10,
-  "5min": 10,
-  "1hour": 90,
-  "4hour": 360,
+  "1min": 12,
+  "5min": 20,
+  "1hour": 120,
+  "4hour": 480,
   "1day": 1440,
 };
 

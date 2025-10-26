@@ -75,22 +75,14 @@ export const TOOL_SCHEMAS = [
               tooOld: { type: "boolean" },
               provider: { type: "string" },
             },
-            required: [
-              "symbol",
-              "timeframe",
-              "candles",
-              "lastCandleUnix",
-              "lastCandleISO",
-              "ageSeconds",
-              "isStale",
-              "tooOld",
-              "provider",
-            ],
+            // Be permissive: allow the model to provide just symbol/timeframe and rely on tool to fetch candles
+            required: ["symbol", "timeframe", "candles"],
             additionalProperties: false,
           },
           lang: { type: "string", enum: ["ar", "en"] },
         },
-        required: ["ohlc"],
+        // Allow either ohlc payload or top-level symbol/timeframe; the handler will cope
+        required: [],
         additionalProperties: false
       }
     }
