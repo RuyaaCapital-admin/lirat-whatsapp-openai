@@ -3,7 +3,7 @@ import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_lii
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
-import { getOrCreateConversationByTitle, fetchRecentContext } from "./supabaseLite";
+import { getOrCreateConversationByTitle, fetchRecentContext, insertMessage } from "./supabaseLite";
 import { classifyIntent, type ClassifiedIntent } from "./intentClassifier";
 
 export interface SmartReplyInput {
@@ -167,6 +167,22 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       query: classified.query ?? null,
     },
   });
+
+  // Persist user and assistant messages when a conversation is available
+  try {
+    if (conversationId) {
+      const userTurn = normalizedText || " ";
+      if (userTurn.trim()) {
+        await insertMessage(conversationId, "user", userTurn);
+      }
+      const assistantTurn = (reply || "").trim();
+      if (assistantTurn) {
+        await insertMessage(conversationId, "assistant", assistantTurn);
+      }
+    }
+  } catch (e) {
+    console.warn("[SUPABASE] persist messages failed (ignored)", e);
+  }
 
   return { replyText: reply, language, conversationId };
 }

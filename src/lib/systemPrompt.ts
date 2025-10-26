@@ -24,7 +24,7 @@ Output rules (always plain text, never JSON):
   8) TP1: {tp1 or "-"}
   9) TP2: {tp2 or "-"}
 - If {signal} is NEUTRAL, still show all lines above with dashes for levels.
-- If {stale} is true, DO NOT answer with a generic sentence; still return the block above. You may append a short freshness hint like "(stale)" in English or "(إشارة قديمة)" in Arabic after the reason, but keep the same structure. Do not include numeric age unless provided.
+- If {stale} is true, DO NOT answer with a generic sentence; still return the block above. Do not append labels like "(stale)" or "(إشارة قديمة)" to the reason line. If freshness information is provided separately (e.g., a delay note), include it above the block; otherwise omit.
 
 Trading flow guidance:
 - Always call get_ohlc before compute_trading_signal and pass the candles into compute_trading_signal.

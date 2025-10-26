@@ -23,7 +23,7 @@ async function runWhatsappFormatTests() {
 
   const arabicStale = signalFormatter(makeSignal({ stale: true, ageMinutes: 244 }), "ar");
   assert.ok(arabicStale.startsWith("تنبيه: البيانات متأخرة بحوالي 244 دقيقة"));
-  assert.ok(arabicStale.includes("السبب: ضغط شراء فوق المتوسطات (إشارة قديمة، للمراجعة فقط)"));
+  assert.ok(arabicStale.includes("السبب: ضغط شراء فوق المتوسطات"));
 
   const neutral = signalFormatter(
     makeSignal({ decision: "NEUTRAL", reason: "no_clear_bias", levels: { entry: null, sl: null, tp1: null, tp2: null } }),

@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText } from "../../lib/waba";
-import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { runWorkflowMessage } from "../../lib/workflowRunner";
+// Switch default handler to the stable smartReplyNew pipeline to avoid Chat Completions tool message errors
+import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
@@ -116,23 +116,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const workflowId = process.env.OPENAI_WORKFLOW_ID || "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
-    const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
-
-    // Log user message (non-blocking)
-    void logMessageAsync(conversationId, "user", messageBody);
-
-    const replyText = await runWorkflowMessage({
-      sessionId,
-      workflowId,
-      version: 56,
-      userText: messageBody,
-    });
-
-    await sendText(inbound.from, replyText);
-
-    // Log assistant message (non-blocking)
-    void logMessageAsync(conversationId, "assistant", replyText);
+    // Use the new smart reply system (persists history internally when possible)
+    const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
+    await sendText(inbound.from, result.replyText);
   } catch (error) {
     console.error("[WEBHOOK] Error:", error);
   }
