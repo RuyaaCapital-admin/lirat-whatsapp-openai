@@ -12,6 +12,7 @@ import {
   type TradingSignal,
   search_web_news,
   about_liirat_knowledge,
+  get_time_now,
 } from "../tools/agentTools";
 
 export type ToolResult = any;
@@ -177,6 +178,10 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
     const lang = typeof args.lang === "string" ? args.lang : undefined;
     const answer = await about_liirat_knowledge(query, lang);
     return { answer };
+  },
+  async get_time_now(args) {
+    const tz = typeof args.timezone === "string" ? args.timezone : undefined;
+    return await get_time_now(tz);
   },
 };
 

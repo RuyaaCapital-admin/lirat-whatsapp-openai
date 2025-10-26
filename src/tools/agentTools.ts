@@ -93,7 +93,7 @@ function detectLang(text?: string) {
 }
 
 export async function about_liirat_knowledge(query: string, lang?: string): Promise<string> {
-  const vectorStore = process.env.OPENAI_VECTOR_STORE_ID;
+  const vectorStore = process.env.OPENAI_VECTOR_STORE_ID || process.env.VECTOR_STORE_ID || "vs_68fe94c31728819191ea31ebe6c06fbc";
   if (!vectorStore) {
     throw new Error("missing_vector_store");
   }

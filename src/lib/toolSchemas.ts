@@ -107,7 +107,7 @@ export const TOOL_SCHEMAS = [
     type: "function",
     function: {
       name: "get_time_now",
-      description: "Get current date/time, default UTC or given timezone.",
+      description: "Get current date/time from MCP time server, default UTC or given timezone.",
       parameters: {
         type: "object",
         properties: {
