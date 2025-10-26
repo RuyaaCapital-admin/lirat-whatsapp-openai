@@ -105,7 +105,8 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
   const reasonText = REASON_MAP[lang][input.reason] ?? REASON_MAP.en.no_clear_bias;
   const lines: string[] = [];
 
-  if (lang === "ar" && input.stale) {
+  // Reduce noise: only mention delay in Arabic if data is very old (> 60 minutes)
+  if (lang === "ar" && input.stale && age > 60) {
     lines.push(`تنبيه: البيانات متأخرة بحوالي ${age} دقيقة`);
   }
 
@@ -137,8 +138,10 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
 
   // Age line (English only as per prior expectations)
   if (lang !== "ar") {
-    const freshness = input.stale ? "stale" : "fresh";
-    lines.splice(4, 0, `Data age: ${age}m ${freshness}`);
+    // Only show age line if very old; otherwise omit to avoid confusion
+    if (input.stale && age > 60) {
+      lines.splice(4, 0, `Data age: ${age}m stale`);
+    }
   }
 
   return lines.join("\n");

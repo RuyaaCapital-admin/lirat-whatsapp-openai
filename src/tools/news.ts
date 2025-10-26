@@ -65,7 +65,8 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           content: [
             {
               type: "input_text",
-              text: `Use the web_search tool to find up to ${safeCount} recent economic or market-moving events only (macro releases like CPI/PPI/GDP/NFP/PMI, central bank decisions/speeches, major political/financial developments). Exclude sports/entertainment/tech gadgets. Return STRICT JSON: {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]}. If uncertain or not applicable, use an empty array. Reply with JSON only in ${language}.`,
+              text: `Use the web_search tool to find up to ${safeCount} recent US economic or market-moving EVENTS ONLY for today (±48h): macro releases (CPI, PPI, GDP, NFP, PMI), FOMC/central bank decisions/speeches, major political/financial developments affecting markets. EXCLUDE non-US unless the query specifies otherwise, and exclude sports/entertainment/tech gadgets. Return STRICT JSON: {"items":[{"date":"YYYY-MM-DD","source":"...","title":"...","impact":"high|medium|low","url":"..."}]}. If uncertain or none, return {"items":[]}.
+              Focus sources like Reuters, Bloomberg, CNBC, WSJ, investing.com, forexfactory, financialtimes. Reply with JSON only in ${language}.`,
             },
           ],
         },
@@ -124,7 +125,16 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
       .filter((item): item is NewsItem => Boolean(item))
       .slice(0, safeCount);
 
-    return mapped;
+    // Post-filter by recency (<= 3 days) and limit to safeCount
+    const now = Date.now();
+    const recent = mapped.filter((it) => {
+      const ms = Date.parse(it.date);
+      if (!Number.isFinite(ms)) return false;
+      const days = (now - ms) / (1000 * 60 * 60 * 24);
+      return days <= 3.1; // allow slight skew
+    }).slice(0, safeCount);
+
+    return recent;
   } catch (error) {
     console.warn("[NEWS] search failed", error);
     return [];
