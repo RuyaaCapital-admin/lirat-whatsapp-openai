@@ -17,6 +17,7 @@ export interface NewsRow {
   date: string;
   source: string;
   title: string;
+  impact?: string;
 }
 
 export interface NewsResult {
@@ -146,6 +147,7 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
     date: toUtcIso(item.date ?? Date.now()),
     source: item.source ?? "",
     title: item.title ?? "",
+    impact: (item as any).impact || undefined,
   }));
   return { rows };
 }
