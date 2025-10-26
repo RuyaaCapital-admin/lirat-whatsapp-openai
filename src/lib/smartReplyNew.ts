@@ -1,5 +1,5 @@
 // src/lib/smartReplyNew.ts
-import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge } from "../tools/agentTools";
+import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge, get_time_now } from "../tools/agentTools";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
@@ -52,7 +52,8 @@ async function buildSignalToolResult(symbol: string, timeframe: string, language
     return { tool_result: { type: "signal_error", symbol, timeframe, error: "NO_DATA" as const } };
   }
   const signal = await compute_trading_signal({ ...ohlc, lang: language });
-  const staleMinutes = Math.max(0, Math.round(ohlc.ageMinutes));
+  // Display analysis time as "now" to align with price responses
+  const nowISO = new Date().toISOString();
   const reasonText = language === "ar"
     ? (signal.reason === "bullish_pressure" ? "ضغط شراء فوق المتوسطات"
       : signal.reason === "bearish_pressure" ? "ضغط بيع تحت المتوسطات" : "السوق بدون اتجاه واضح حالياً.")
@@ -63,8 +64,7 @@ async function buildSignalToolResult(symbol: string, timeframe: string, language
     type: "signal",
     symbol: signal.symbol,
     timeframe: signal.timeframe,
-    utc_candle_time: ohlc.lastISO,
-    stale_minutes: staleMinutes,
+    utc_candle_time: nowISO,
     decision: signal.decision,
     reason: reasonText,
   };
@@ -83,14 +83,12 @@ async function buildPriceToolResult(symbol: string, timeframe: string) {
   const price = await get_price(symbol, timeframe);
   const now = Date.now();
   const tsMs = Date.parse(price.ts_utc);
-  const staleMinutes = Number.isFinite(tsMs) ? Math.max(0, Math.round((now - tsMs) / 60000)) : 0;
   const tool_result = {
     type: "price",
     symbol: price.symbol,
     utc_time: price.ts_utc,
     price: price.price,
     source: price.source,
-    stale_minutes: staleMinutes,
   } as const;
   return { tool_result };
 }
@@ -171,6 +169,11 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       const q = classified.query || normalizedText;
       const { tool_result: tr } = await buildLiiratToolResult(q, language);
       tool_result = tr;
+    } else if (/(كم\s*تاريخ\s*اليوم|ما\s*(هو\s*)?التاريخ|what\s+date|what\s+time|utc\s*time|الساعة\s*كم)/i.test(normalizedText)) {
+      const now = await get_time_now("Etc/UTC");
+      const dateLabel = now.iso.slice(0, 10);
+      const timeLabel = `${now.iso.slice(0, 10)} ${now.iso.slice(11, 16)}`;
+      tool_result = { type: "time_now", tz: now.tz, date: dateLabel, time_utc: timeLabel } as any;
     } else {
       tool_result = {
         type: "general_followup",
