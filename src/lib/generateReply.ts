@@ -1,4 +1,5 @@
 import { openai } from "./openai";
+import { sanitizeNewsLinks } from "../utils/replySanitizer";
 
 export type ConversationEntry = { role: "user" | "assistant"; content: string };
 
@@ -69,8 +70,14 @@ export async function generateReply(args: GenerateReplyArgs): Promise<string> {
       ],
     });
     const content = completion?.choices?.[0]?.message?.content;
-    const text = typeof content === "string" ? content.trim() : "";
-    if (text) return text;
+    let text = typeof content === "string" ? content.trim() : "";
+    if (text) {
+      // Final safety: scrub any URLs/domains in news-style outputs
+      if (/\d{4}-\d{2}-\d{2}\s+—/.test(text) || /\bnews\b|أخبار/.test(String(args.intentInfo.intent))) {
+        text = sanitizeNewsLinks(text);
+      }
+      return text;
+    }
   } catch (error) {
     console.warn("[generateReply] error", error);
   }

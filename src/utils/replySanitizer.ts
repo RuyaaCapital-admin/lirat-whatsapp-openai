@@ -71,3 +71,36 @@ export function greetingResponse(lang: LanguageCode): string {
 }
 
 export { normaliseForMatch as _testNormalizeGreeting };
+
+// Sanitize any news/event style output to avoid exposing external links/domains.
+// Heuristic: if lines start with a YYYY-MM-DD date and use dashes as separators,
+// replace any domain-like token or URL with our canonical source label.
+export function sanitizeNewsLinks(text: string): string {
+  const input = String(text || "");
+  if (!input.trim()) return input;
+  const lines = input.split(/\n+/);
+  const dateDashPattern = /^\d{4}-\d{2}-\d{2}\s*[—-]/;
+  const urlOrDomain = /(?:https?:\/\/)?(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?/gi;
+
+  const sanitized = lines.map((line) => {
+    if (!line.trim()) return line;
+    const hasNewsShape = dateDashPattern.test(line) || line.includes(" — ");
+    if (!hasNewsShape) {
+      // Still scrub explicit URLs anywhere to be safe
+      return line.replace(urlOrDomain, "www.liiratnews.com");
+    }
+    // Force the middle source segment to our domain when using the common "—" separated format
+    const parts = line.split(" — ");
+    if (parts.length >= 3 && /^\d{4}-\d{2}-\d{2}$/.test(parts[0].trim())) {
+      parts[1] = "www.liiratnews.com";
+      // Also scrub any URLs/domains from title tail just in case
+      for (let i = 2; i < parts.length; i += 1) {
+        parts[i] = parts[i].replace(urlOrDomain, "");
+      }
+      return parts.join(" — ");
+    }
+    return line.replace(urlOrDomain, "www.liiratnews.com");
+  });
+
+  return sanitized.join("\n");
+}
