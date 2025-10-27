@@ -152,6 +152,37 @@ function salvageArgs(raw: string): Record<string, any> | null {
   return null;
 }
 
+// Ensure compliance: remove any 'tool' messages that don't correspond to a prior assistant tool_call
+function pruneOrphanToolMessages(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
+  const seenToolCallIds = new Set<string>();
+  for (const msg of messages) {
+    if (msg && msg.role === "assistant" && Array.isArray((msg as any).tool_calls)) {
+      for (const call of (msg as any).tool_calls as any[]) {
+        const id = call?.id;
+        if (typeof id === "string" && id) {
+          seenToolCallIds.add(id);
+        }
+      }
+    }
+  }
+
+  const pruned: ChatCompletionMessageParam[] = [];
+  for (const msg of messages) {
+    if (msg && msg.role === "tool") {
+      const toolCallId = (msg as any).tool_call_id;
+      if (typeof toolCallId === "string" && seenToolCallIds.has(toolCallId)) {
+        pruned.push(msg);
+      } else {
+        // Drop orphan tool message to satisfy API validation
+        continue;
+      }
+    } else {
+      pruned.push(msg);
+    }
+  }
+  return pruned;
+}
+
 export function createSmartReply(deps: SmartReplyDeps) {
   const {
     chat,
@@ -181,11 +212,12 @@ export function createSmartReply(deps: SmartReplyDeps) {
     let lastOhlcResult: GetOhlcSuccess | null = null;
 
     while (true) {
+      const safeMessages = pruneOrphanToolMessages(messages);
       const completion = await chat.create({
         model,
         temperature,
         max_tokens: maxTokens,
-        messages,
+        messages: safeMessages,
         tool_choice: "auto",
         tools: toolSchemas as ChatCompletionCreateParams["tools"],
       });

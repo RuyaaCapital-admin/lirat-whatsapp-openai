@@ -257,6 +257,33 @@ function readMessageContent(message: ChatCompletion["choices"][0]["message"]): s
   return "";
 }
 
+// Remove any 'tool' messages that are not preceded by an assistant message with matching tool_calls
+function pruneOrphanToolMessages(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (m && m.role === "assistant" && Array.isArray((m as any).tool_calls)) {
+      for (const call of (m as any).tool_calls as any[]) {
+        const id = call?.id;
+        if (typeof id === "string" && id) seen.add(id);
+      }
+    }
+  }
+  const pruned: ChatCompletionMessageParam[] = [];
+  for (const m of messages) {
+    if (m && m.role === "tool") {
+      const id = (m as any).tool_call_id;
+      if (typeof id === "string" && seen.has(id)) {
+        pruned.push(m);
+      } else {
+        continue;
+      }
+    } else {
+      pruned.push(m);
+    }
+  }
+  return pruned;
+}
+
 function sanitiseArgs(args: Record<string, unknown>) {
   const clone: Record<string, unknown> = { ...args };
   if (Array.isArray(clone.candles)) {
@@ -340,11 +367,12 @@ export function createSmartReply(deps: SmartReplyDeps) {
 
     try {
       for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+        const safeMessages = pruneOrphanToolMessages(messages);
         const completion = await chat.create({
           model,
           temperature: 0,
           max_tokens: 700,
-          messages,
+          messages: safeMessages,
           tools: TOOL_SCHEMAS as ChatCompletionCreateParamsNonStreaming["tools"],
           tool_choice: "auto",
         });

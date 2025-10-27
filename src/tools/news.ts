@@ -27,6 +27,27 @@ function extractText(response: any): string {
   return "";
 }
 
+// Try to extract a JSON block from free-form text (handles code fences and inline prose)
+function extractJsonCandidate(raw: string): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const text = raw.trim().replace(/^\uFEFF/, ""); // strip BOM if present
+  // Prefer fenced code blocks first
+  const fence = text.match(/```(?:json|JSON)?\s*([\s\S]*?)```/);
+  if (fence && fence[1] && fence[1].trim()) {
+    return fence[1].trim();
+  }
+  // If it already looks like JSON, return as-is
+  if (/^[\[{]/.test(text)) {
+    return text;
+  }
+  // Fallback: find the first JSON-looking block
+  const block = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  if (block && block[0]) {
+    return block[0];
+  }
+  return null;
+}
+
 function normaliseDate(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {
     return "";
@@ -108,10 +129,20 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
     const text = extractText(response);
     let parsed: any = null;
     if (text) {
+      // First try a direct parse; if it fails, try to extract a JSON block
       try {
         parsed = JSON.parse(text);
       } catch (error) {
-        console.warn("[NEWS] failed to parse response", error, { text });
+        const candidate = extractJsonCandidate(text);
+        if (candidate) {
+          try {
+            parsed = JSON.parse(candidate);
+          } catch (e2) {
+            console.warn("[NEWS] failed to parse response", e2, { text });
+          }
+        } else {
+          console.warn("[NEWS] failed to parse response", error, { text });
+        }
       }
     }
 
@@ -131,10 +162,9 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           ],
         });
         const repaired = repair?.choices?.[0]?.message?.content || "";
-        // Attempt to extract JSON block from the response
-        const jsonMatch = repaired.match(/\{[\s\S]*\}/);
-        const jsonText = jsonMatch ? jsonMatch[0] : repaired;
-        parsed = jsonText ? JSON.parse(jsonText) : null;
+        // Attempt to extract JSON block from the response (handles fences and inline)
+        const candidate = extractJsonCandidate(repaired) ?? repaired;
+        parsed = candidate ? JSON.parse(candidate) : null;
       } catch (e) {
         console.warn("[NEWS] repair parse failed", e);
         parsed = null;
