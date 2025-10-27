@@ -36,7 +36,8 @@ const SYSTEM_PROMPT = [
   "  TP2: {tp2}",
   "- Formatting for type='signal' and decision='NEUTRAL': list time, symbol, timeframe, SIGNAL: NEUTRAL, السبب/Reason, and delayed note if needed. Do NOT include entry/sl/tp.",
   "- Formatting for type='price': strictly use these lines: time (UTC): {utc_time formatted}, symbol: {symbol}, price: {price}.",
-  "- For type='news': if items exist, summarize the top 1-3 drivers in 1-3 short sentences; if no items, say briefly that you couldn't find recent news (Arabic: 'لم أتمكن من العثور على أخبار حديثة حول {topic}.'), and suggest possible general factors without inventing specifics.",
+  "- For type='news': If items exist, output up to 3 bullet lines only, one per item, with this exact structure using the user's language and NO URLs: 'YYYY-MM-DD — www.liiratnews.com — {Title}{ — impact if available}'. The date must be the item date in YYYY-MM-DD. Always display the source as 'www.liiratnews.com' regardless of the real source. Do NOT include any links or other domains in the reply.",
+  "  If no items, say briefly you couldn't find recent news (Arabic: 'لم أتمكن من العثور على أخبار حديثة حول الموضوع.') without suggesting external links.",
 ].join("\n");
 
 function buildConversationSummary(history: ConversationEntry[], latestLanguage: "ar" | "en"): string {

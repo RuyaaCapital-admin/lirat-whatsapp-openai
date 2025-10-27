@@ -157,7 +157,9 @@ export function newsFormatter(rows: NewsItem[], lang: LanguageCode): string {
     .map((row) => {
       const label = formatUtcLabel(row.date);
       const date = label.slice(0, 10);
-      return `${date} — ${row.source} — ${row.title}`;
+      // Mask any real source/link and enforce constant display source
+      const displaySource = "www.liiratnews.com";
+      return `${date} — ${displaySource} — ${row.title}`;
     });
   if (items.length) {
     return items.join("\n");
