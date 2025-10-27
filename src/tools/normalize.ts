@@ -11,10 +11,10 @@ const SYMBOL_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: 'ETHUSDT', aliases: ['eth', 'ethusdt', 'ethereum', 'إيثيريوم', 'اثيريوم', 'ethusd', 'eth/usd'] },
   { canonical: 'XRPUSDT', aliases: ['xrp', 'ripple', 'ريبل', 'اكس ار بي', 'إكس آر بي', 'xrpusd', 'xrp/usd'] },
   { canonical: 'XAUUSD', aliases: ['xauusd', 'xau', 'gold', 'ذهب', 'الذهب', 'دهب'] },
-  { canonical: 'XAGUSD', aliases: ['xagusd', 'xag', 'silver', 'فضة', 'الفضة', 'سيلفر'] },
+  { canonical: 'XAGUSD', aliases: ['xagusd', 'xag', 'silver', 'فضة', 'فضه', 'الفضة', 'سيلفر'] },
   { canonical: 'XTIUSD', aliases: ['xtiusd', 'wti', 'نفط', 'خام'] },
   { canonical: 'XBRUSD', aliases: ['xbrusd', 'برنت', 'brent'] },
-  { canonical: 'EURUSD', aliases: ['eurusd', 'eur/usd', 'eur', 'يورو'] },
+  { canonical: 'EURUSD', aliases: ['eurusd', 'eur/usd', 'eur', 'يورو', 'يورو دولار', 'يورو/دولار'] },
   { canonical: 'GBPUSD', aliases: ['gbpusd', 'gbp/usd', 'gbp', 'استرليني', 'باوند', 'جنيه'] },
   { canonical: 'USDJPY', aliases: ['usdjpy', 'usd/jpy', 'jpy', 'ين', 'ين ياباني'] },
   { canonical: 'USDCHF', aliases: ['usdchf', 'usd/chf', 'chf', 'فرنك', 'فرنك سويسري'] },
@@ -81,9 +81,49 @@ export function normalizeArabic(text: string) {
 
 export function hardMapSymbol(input: string): string | null {
   const t = normalizeArabic(input).toLowerCase();
+  // 1) Exact match of the whole string
   if (HARD_MAP[t]) return HARD_MAP[t];
-  const ticker = t.replace(/[^a-z]/g, '').toUpperCase();
-  if (/^[A-Z]{6,10}$/.test(ticker)) return ticker;
+
+  // 2) N-gram scan (prefer longer phrases) within the sentence
+  // Split on whitespace only to keep tokens like eur/usd intact
+  const words = t.split(/\s+/).filter(Boolean);
+  // Create base form of words by stripping common Arabic clitics/prefixes
+  const baseWords = words.map((w) => w
+    .replace(/^(لل)/, "") // for-the -> remove
+    .replace(/^(ال)/, "") // the-
+    .replace(/^[لبوف]/, "") // leading single-letter prepositions/conjunctions: l, b, w, f
+  );
+  for (let n = Math.min(3, words.length); n >= 1; n -= 1) {
+    for (let i = 0; i <= words.length - n; i += 1) {
+      // Try original slice
+      const sliceOrig = words.slice(i, i + n).join(" ");
+      let mapped = HARD_MAP[sliceOrig];
+      if (!mapped) {
+        // Try base-words slice (without clitics)
+        const sliceBase = baseWords.slice(i, i + n).join(" ");
+        mapped = HARD_MAP[sliceBase];
+      }
+      if (mapped) return mapped;
+    }
+  }
+
+  // 3) English pair patterns inside the text (eur/usd, eur usd, xauusd, btcusdt)
+  const slashPair = t.match(/\b([a-z]{3})\s*\/\s*([a-z]{3,4})\b/);
+  if (slashPair) {
+    const lhs = slashPair[1].toUpperCase();
+    const rhs = slashPair[2].toUpperCase();
+    const combined = `${lhs}${rhs}`;
+    if (/^[A-Z]{6,10}$/.test(combined)) return combined;
+  }
+  const compactPair = t.match(/\b([a-z]{6,10})\b/);
+  if (compactPair) {
+    const comp = compactPair[1].toUpperCase();
+    if (/^[A-Z]{6,10}$/.test(comp)) return comp;
+  }
+  // 4) Last resort: strip non-letters and look for a 6-10 uppercase run inside
+  const lettersOnly = t.replace(/[^a-z]/g, '').toUpperCase();
+  const run = lettersOnly.match(/[A-Z]{6,10}/);
+  if (run) return run[0];
   return null;
 }
 

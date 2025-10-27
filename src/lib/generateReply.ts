@@ -36,6 +36,7 @@ const SYSTEM_PROMPT = [
   "  TP2: {tp2}",
   "- Formatting for type='signal' and decision='NEUTRAL': list time, symbol, timeframe, SIGNAL: NEUTRAL, السبب/Reason, and delayed note if needed. Do NOT include entry/sl/tp.",
   "- Formatting for type='price': strictly use these lines: time (UTC): {utc_time formatted}, symbol: {symbol}, price: {price}.",
+  "- For type='news': if items exist, summarize the top 1-3 drivers in 1-3 short sentences; if no items, say briefly that you couldn't find recent news (Arabic: 'لم أتمكن من العثور على أخبار حديثة حول {topic}.'), and suggest possible general factors without inventing specifics.",
 ].join("\n");
 
 function buildConversationSummary(history: ConversationEntry[], latestLanguage: "ar" | "en"): string {
