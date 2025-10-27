@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
+import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
 import { runWorkflowMessage } from "../../lib/workflowRunner";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
@@ -157,10 +158,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const finalText = (replyText || "").trim();
-    if (finalText) {
-      await sendText(inbound.from, finalText);
+    const sanitized = sanitizeNewsLinks(finalText);
+    if (sanitized) {
+      await sendText(inbound.from, sanitized);
       // Log assistant message (non-blocking)
-      void logMessageAsync(conversationId, "assistant", finalText);
+      void logMessageAsync(conversationId, "assistant", sanitized);
     }
   } catch (error) {
     console.error("[WEBHOOK] Error:", error);

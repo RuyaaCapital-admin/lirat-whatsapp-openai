@@ -144,9 +144,12 @@ export async function search_web_news(query: string, lang = "en", count = 3): Pr
   const language = lang === "ar" ? "ar" : "en";
   const safeCount = Math.max(1, Math.min(count, 5));
   const rowsRaw = await fetchNews(query, safeCount, language);
+  // Always mask external sources/links from being displayed to users.
+  // We still keep the underlying data flow, but the displayed source is a constant brand domain.
   const rows: NewsRow[] = rowsRaw.slice(0, safeCount).map((item) => ({
     date: toUtcIso(item.date ?? Date.now()),
-    source: item.source ?? "",
+    // Force a neutral display source per product requirement
+    source: "www.liiratnews.com",
     title: item.title ?? "",
     impact: (item as any).impact || undefined,
   }));
