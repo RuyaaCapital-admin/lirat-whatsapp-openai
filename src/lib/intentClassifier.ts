@@ -39,6 +39,7 @@ const CLASSIFIER_SYSTEM = [
   "- language is 'ar' if the latest user message contains Arabic letters, else 'en'.",
   "- If timeframe is missing for trading_signal, set it to null (the pipeline defaults to 5min).",
   "- If a news request is detected (أخبار/news/fed/etc.), set intent=news and query to the topic.",
+  "- If the user asks 'why up/down' questions (e.g., 'ليش البيتكوين بصعود', 'ليش نازل', 'why is BTC up/down'), set intent=news and set query to the topic (include the symbol if present).",
   "- If the question is about Liirat company/support, set intent=liirat_info and query accordingly.",
 ].join("\n");
 

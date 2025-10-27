@@ -46,6 +46,19 @@ function parseLastFromHistory(history: Array<{ role: "user" | "assistant"; conte
   return result;
 }
 
+function mentionsTimeframe(text: string): boolean {
+  const t = (text || "").toLowerCase();
+  return (
+    /(\b1\s*(m|min|minute)\b|\b1m\b|\b1\s*min\b|دقيقة|عال?دقيقة)/i.test(t) ||
+    /(\b5\s*(m|min)\b|\b5m\b|5\s*(دقايق|دقائق)|خمس\s*دقائق)/i.test(t) ||
+    /(\b15\s*(m|min)?\b|\b15m\b|15\s*(دقيقة|دقايق)|ربع\s*ساعة)/i.test(t) ||
+    /(\b30\s*(m|min)?\b|\b30m\b|30\s*(دقيقة|دقايق)|نص\s*ساعة|نصف\s*ساعة)/i.test(t) ||
+    /(\b1\s*(hour|h)\b|\b1h\b|ساعة|ساعه)/i.test(t) ||
+    /(\b4\s*(hour|h)\b|\b4h\b|اربع\s*ساعات|٤\s*ساعات)/i.test(t) ||
+    /(\b1d\b|\b1\s*day\b|يومي|يوم|على\s*اليومي|على\s*اليوم)/i.test(t)
+  );
+}
+
 async function buildSignalToolResult(symbol: string, timeframe: string, language: LanguageCode) {
   const ohlc = await get_ohlc(symbol, timeframe, 150);
   if (!ohlc.ok) {
@@ -129,6 +142,19 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
 
   const language = classified.language as LanguageCode;
 
+  // Heuristic: timeframe-only follow-up should trigger a trading signal using last symbol
+  if (classified.intent === "general" && lastSeen.symbol && mentionsTimeframe(normalizedText)) {
+    const tf = toTimeframe(normalizedText);
+    // Convert to classifier timeframe domain ("day" instead of "1day")
+    const tfForClassifier = tf === "1day" ? ("day" as const) : (tf as any);
+    classified = {
+      ...classified,
+      intent: "trading_signal",
+      symbol: lastSeen.symbol,
+      timeframe: tfForClassifier,
+    };
+  }
+
   // Execute tools pipeline per intent
   let tool_result: Record<string, unknown> | null = null;
   try {
@@ -151,8 +177,13 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       } else {
         tool_result = { type: "signal_error", symbol: null, timeframe } as any;
       }
-    } else if (classified.intent === "news") {
-      const query = classified.query && classified.query.trim() ? classified.query : (language === "ar" ? "أخبار السوق" : "market news");
+  } else if (classified.intent === "news") {
+      // Prefer explicit query; else build from symbol if available; else generic
+      const query = (classified.query && classified.query.trim())
+        ? classified.query
+        : (classified.symbol
+            ? (language === "ar" ? `أخبار ${classified.symbol}` : `${classified.symbol} news`)
+            : (language === "ar" ? "أخبار السوق" : "market news"));
       try {
         const news = await search_web_news(query, language, 3);
         const items = (news.rows || []).slice(0, 3).map((row) => ({
