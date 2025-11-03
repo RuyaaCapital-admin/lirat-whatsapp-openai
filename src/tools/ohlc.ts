@@ -271,25 +271,6 @@ function pickNewestByLastTs(snapshots: ProviderSnapshot[]): ProviderSnapshot | n
   return [...snapshots].sort((a, b) => b.lastTs - a.lastTs)[0] ?? null;
 }
 
-function fasterTimeframe(tf: TF): TF | null {
-  switch (tf) {
-    case "1day":
-      return "4hour";
-    case "4hour":
-      return "1hour";
-    case "1hour":
-      return "30min";
-    case "30min":
-      return "15min";
-    case "15min":
-      return "5min";
-    case "5min":
-      return "1min";
-    default:
-      return null;
-  }
-}
-
 async function fetchOhlcFromSources(
   symbol: string,
   timeframe: TF,
@@ -328,33 +309,16 @@ export async function get_ohlc(
 ): Promise<GetOhlcResponse> {
   const safeLimit = Math.max(20, Math.min(limit, 120));
   const nowMs = resolveNowMs(opts.nowMs);
-  let activeTf: TF = timeframe;
-  let chosen = await fetchOhlcFromSources(symbol, activeTf, safeLimit, nowMs);
+  const chosen = await fetchOhlcFromSources(symbol, timeframe, safeLimit, nowMs);
 
   if (!chosen) {
     return { ok: false, reason: "NO_DATA" };
   }
 
-  const tfSeconds = TF_SECONDS[activeTf];
-  if (typeof tfSeconds === "number" && Number.isFinite(tfSeconds)) {
-    const nowSeconds = Math.floor(nowMs / 1000);
-    const ageSeconds = nowSeconds - chosen.lastTs;
-    if (ageSeconds > 1.5 * tfSeconds) {
-      const fallbackTf = fasterTimeframe(activeTf);
-      if (fallbackTf && fallbackTf !== activeTf) {
-        const fallback = await fetchOhlcFromSources(symbol, fallbackTf, safeLimit, nowMs);
-        if (fallback && fallback.candles.length) {
-          activeTf = fallbackTf;
-          chosen = fallback;
-        }
-      }
-    }
-  }
-
   return {
     ok: true,
     symbol,
-    timeframe: activeTf,
+    timeframe,
     candles: chosen.candles,
     lastISO: chosen.lastISO,
     ageMinutes: chosen.ageMinutes,

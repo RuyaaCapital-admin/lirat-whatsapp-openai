@@ -183,6 +183,20 @@ function pruneOrphanToolMessages(messages: ChatCompletionMessageParam[]): ChatCo
   return pruned;
 }
 
+function pushToolOrAssistantMessage(
+  messages: ChatCompletionMessageParam[],
+  callId: string,
+  content: string,
+) {
+  const payload = typeof content === "string" ? content : JSON.stringify(content);
+  const last = messages[messages.length - 1];
+  if (last && last.role === "assistant" && Array.isArray((last as any).tool_calls) && last.tool_calls?.length) {
+    messages.push({ role: "tool", tool_call_id: callId, content: payload } as ChatCompletionMessageParam);
+  } else {
+    messages.push({ role: "assistant", content: payload } as ChatCompletionMessageParam);
+  }
+}
+
 export function createSmartReply(deps: SmartReplyDeps) {
   const {
     chat,
@@ -258,11 +272,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
           const raw = call.function?.arguments as any;
           const rescued = typeof raw === "string" ? salvageArgs(raw) : null;
           args = rescued || {};
-          messages.push({
-            role: "tool",
-            tool_call_id: call.id,
-            content: JSON.stringify({ error: "invalid_arguments" }),
-          });
+          pushToolOrAssistantMessage(messages, call.id, JSON.stringify({ error: "invalid_arguments" }));
           if (!Object.keys(args).length) {
             continue;
           }
@@ -314,11 +324,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
           result = { error: err?.message || String(error) };
         }
 
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: serialiseToolResult(result),
-        });
+        pushToolOrAssistantMessage(messages, call.id, serialiseToolResult(result));
       }
     }
   };
