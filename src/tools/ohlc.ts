@@ -16,6 +16,10 @@ type HttpClient = Pick<typeof axios, "get">;
 
 let httpClient: HttpClient = axios;
 
+const FMP_UNAUTHORIZED_COOLDOWN_MS = 10 * 60 * 1000;
+let fmpDisabledUntilMs = 0;
+let fmpMissingKeyLogged = false;
+
 export function __setOhlcHttpClient(client?: HttpClient | null) {
   httpClient = client ?? axios;
 }
@@ -77,9 +81,22 @@ function ensureSorted(candles: Candle[]): Candle[] {
 }
 
 async function fetchFromFmp(symbol: string, timeframe: TF, limit: number) {
+  const apiKey = process.env.FMP_API_KEY?.trim();
+  if (!apiKey) {
+    if (!fmpMissingKeyLogged) {
+      console.info("[OHLC] Skipping FMP fetch: FMP_API_KEY is not configured");
+      fmpMissingKeyLogged = true;
+    }
+    return null;
+  }
+
+  if (Date.now() < fmpDisabledUntilMs) {
+    return null;
+  }
+
   const mappedSymbol = mapToFmpSymbol(symbol);
   const interval = toProviderInterval("FMP", timeframe);
-  const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${mappedSymbol}?apikey=${process.env.FMP_API_KEY}`;
+  const url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${mappedSymbol}?apikey=${apiKey}`;
   try {
     const { data } = await httpClient.get(url, { timeout: 9000 });
     const rows = Array.isArray(data) ? data : [];
@@ -94,13 +111,24 @@ async function fetchFromFmp(symbol: string, timeframe: TF, limit: number) {
     return { provider: "FMP" as const, rawSymbol: mappedSymbol, candles: sorted };
   } catch (error) {
     if (error instanceof AxiosError) {
-      if (error.response?.status === 404) {
+      const status = error.response?.status;
+      if (status === 404) {
+        return null;
+      }
+      if (status === 401 || status === 403) {
+        fmpDisabledUntilMs = Date.now() + FMP_UNAUTHORIZED_COOLDOWN_MS;
+        console.info("[OHLC] FMP disabled after unauthorized response", {
+          symbol,
+          timeframe,
+          status,
+          retryInMinutes: Math.round(FMP_UNAUTHORIZED_COOLDOWN_MS / 60000),
+        });
         return null;
       }
       console.warn("[OHLC] FMP HTTP error", {
         symbol,
         timeframe,
-        status: error.response?.status,
+        status,
         message: error.message,
       });
       return { provider: "FMP" as const, rawSymbol: mappedSymbol, candles: [] };
