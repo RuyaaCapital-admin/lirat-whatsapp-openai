@@ -1,3 +1,4 @@
+// pages/api/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
@@ -6,20 +7,13 @@ import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
-// ---- Hard guarantees ----
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
-const FALLBACK_CHAT_MODEL = process.env.FALLBACK_CHAT_MODEL || "gpt-4o-mini-2024-07-18";
-
 const processedMessageCache = new Set<string>();
 
-// ---- Types ----
-type InboundMessage = {
-  id: string;
-  from: string;
-  text: string;
-};
+type InboundMessage = { id: string; from: string; text: string };
 
-// ---- Utilities ----
+// ----------------------------- utils -----------------------------
+
 function normaliseInboundText(message: any): string {
   if (!message || typeof message !== "object") return "";
   const candidates = [
@@ -34,12 +28,8 @@ function normaliseInboundText(message: any): string {
     message?.audio?.caption,
     message?.document?.caption,
   ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-  if (typeof message?.type === "string" && message.type.trim()) {
-    return `[${message.type.trim()}]`;
-  }
+  for (const c of candidates) if (typeof c === "string" && c.trim()) return c;
+  if (typeof message?.type === "string" && message.type.trim()) return `[${message.type.trim()}]`;
   return "";
 }
 
@@ -50,18 +40,21 @@ function extractMessage(payload: any): InboundMessage {
   const message = (Array.isArray(value.messages) ? value.messages[0] : undefined) ?? {};
   const contact = Array.isArray(value.contacts) ? value.contacts[0] : undefined;
   const waId = typeof contact?.wa_id === "string" ? contact.wa_id : undefined;
+
   const idCandidate =
     typeof message.id === "string" && message.id.trim()
       ? message.id.trim()
       : typeof value?.statuses?.[0]?.id === "string" && value.statuses[0].id.trim()
-        ? value.statuses[0].id.trim()
-        : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      ? value.statuses[0].id.trim()
+      : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
   const fromCandidate =
     typeof message.from === "string" && message.from.trim()
       ? message.from.trim()
       : typeof waId === "string" && waId.trim()
-        ? waId.trim()
-        : "";
+      ? waId.trim()
+      : "";
+
   const text = normaliseInboundText(message);
   return { id: idCandidate, from: fromCandidate, text };
 }
@@ -70,25 +63,14 @@ function detectLanguage(text: string): "ar" | "en" {
   return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
 }
 
-function isExactIdentityQuery(text: string): boolean {
-  const t = (text || "").trim().replace(/[.!؟?]+$/u, "").toLowerCase();
-  return (
-    t === "who are you" ||
-    t === "who r you" ||
-    t === "what are you" ||
-    t === "مين انت" || t === "مين أنت" || t === "مين إنت"
-  );
-}
-
 function formatPriceFromJson(obj: any, lang: "ar" | "en"): string | null {
   if (!obj || typeof obj !== "object") return null;
   if (!obj.timeUtc || !obj.symbol || typeof obj.price !== "number") return null;
   const time = String(obj.timeUtc);
   const symbol = String(obj.symbol);
   const price = Number(obj.price);
-  return lang === "ar"
-    ? [`الوقت (UTC): ${time}`, `الرمز: ${symbol}`, `السعر: ${price}`].join("\n")
-    : [`time (UTC): ${time}`, `symbol: ${symbol}`, `price: ${price}`].join("\n");
+  if (lang === "ar") return [`الوقت (UTC): ${time}`, `الرمز: ${symbol}`, `السعر: ${price}`].join("\n");
+  return [`time (UTC): ${time}`, `symbol: ${symbol}`, `price: ${price}`].join("\n");
 }
 
 const SIGNAL_REASON_MAP = {
@@ -108,28 +90,28 @@ function formatSignalFromJson(obj: any, lang: "ar" | "en"): string | null {
   if (!obj || typeof obj !== "object") return null;
   const required = obj.timeUtc && obj.symbol && obj.timeframe && obj.signal;
   if (!required) return null;
+
   const time = String(obj.timeUtc);
   const symbol = String(obj.symbol);
   const timeframe = String(obj.timeframe);
   const decision = String(obj.signal);
   const reasonKey = String(obj.reason || "no_clear_bias") as keyof typeof SIGNAL_REASON_MAP.en;
   const reasonText = (SIGNAL_REASON_MAP as any)[lang]?.[reasonKey] || SIGNAL_REASON_MAP.en.no_clear_bias;
+
   const lines: string[] = [];
   lines.push(lang === "ar" ? `الوقت (UTC): ${time}` : `time (UTC): ${time}`);
   lines.push(lang === "ar" ? `الرمز: ${symbol}` : `symbol: ${symbol}`);
   lines.push(lang === "ar" ? `الإطار الزمني: ${timeframe}` : `timeframe: ${timeframe}`);
   lines.push(`SIGNAL: ${decision}`);
   lines.push((lang === "ar" ? "السبب" : "Reason") + ": " + reasonText);
+
   if (decision.toUpperCase() !== "NEUTRAL") {
     lines.push(`Entry: ${obj.entry ?? "-"}`);
     lines.push(`SL: ${obj.sl ?? "-"}`);
     lines.push(`TP1: ${obj.tp1 ?? "-"}`);
     lines.push(`TP2: ${obj.tp2 ?? "-"}`);
   } else {
-    lines.push(`Entry: -`);
-    lines.push(`SL: -`);
-    lines.push(`TP1: -`);
-    lines.push(`TP2: -`);
+    lines.push(`Entry: -`, `SL: -`, `TP1: -`, `TP2: -`);
   }
   return lines.join("\n");
 }
@@ -143,8 +125,8 @@ function coerceTextIfJson(raw: string, userText: string): string {
     const parsed = JSON.parse(text);
     const lang = detectLanguage(userText);
     if (Array.isArray(parsed)) {
-      const maybe = parsed.map((chunk) => (typeof chunk === "string" ? chunk : JSON.stringify(chunk))).join("\n").trim();
-      return maybe || text;
+      const joined = parsed.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("\n").trim();
+      return joined || text;
     }
     const price = formatPriceFromJson(parsed, lang);
     if (price) return price;
@@ -156,88 +138,134 @@ function coerceTextIfJson(raw: string, userText: string): string {
   }
 }
 
-function collectResponseText(response: any): string {
-  if (!response) return "";
-  if (typeof response.output_text === "string" && response.output_text.trim()) return response.output_text.trim();
+function collectWorkflowOutput(run: any): string {
+  // Workflows may return either output.messages (content array) or a plain output_text
+  const out = run?.output ?? {};
   const pieces: string[] = [];
-  const outputs = Array.isArray(response.output) ? response.output : [];
-  const append = (segment: any) => {
-    if (!segment) return;
-    if (typeof segment === "string" && segment.trim()) { pieces.push(segment.trim()); return; }
-    if (Array.isArray(segment)) { segment.forEach((part) => append(part)); return; }
-    if (typeof segment === "object") {
-      if (typeof segment.text === "string") { append(segment.text); return; }
-      if (Array.isArray((segment as any).content)) { append((segment as any).content); return; }
+
+  const pushSeg = (seg: any) => {
+    if (!seg) return;
+    if (typeof seg === "string") {
+      if (seg.trim()) pieces.push(seg.trim());
+      return;
     }
+    if (Array.isArray(seg)) {
+      seg.forEach(pushSeg);
+      return;
+    }
+    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
+    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
+    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
   };
-  outputs.forEach((item: any) => append(item?.content ?? item?.output_text ?? item?.text ?? ""));
-  if (!pieces.length && typeof response.response === "string") append(response.response);
+
+  if (Array.isArray(out?.messages)) {
+    out.messages.forEach((m: any) => pushSeg(m?.content));
+  } else {
+    pushSeg(out);
+  }
   return pieces.join("\n").trim();
 }
 
-function normalizeCrapFallback(text: string, lang: "ar" | "en"): string {
-  const t = (text || "").trim();
-  if (!t) return t;
-  if (/news_unavailable/i.test(t) || /couldn\'t\s+find\s+news/i.test(t)) {
-    return lang === "ar" ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT." : "Data unavailable right now. Try: price BTCUSDT.";
+// ---------------------- workflow runner (fixed) -------------------
+
+async function runWorkflowMessage(opts: {
+  workflowId: string;
+  sessionId: string;
+  userText: string;
+}): Promise<string> {
+  const { workflowId, sessionId, userText } = opts;
+
+  // Optional: allow selecting a pinned workflow version
+  const version = process.env.OPENAI_WORKFLOW_VERSION
+    ? Number(process.env.OPENAI_WORKFLOW_VERSION)
+    : undefined;
+
+  // 1) Start run
+  // @ts-ignore (types may lag SDK)
+  let run = await (openai as any).workflows.runs.create({
+    workflow_id: workflowId,
+    session_id: sessionId,
+    ...(version ? { version } : {}),
+    input: { input_as_text: userText },
+  });
+
+  // 2) Poll until completion. If it ever asks for tool outputs we don't control, fail fast to fallback.
+  // Built-in tools (Web Search, hosted MCP) are executed server-side and should NOT require submit_tool_outputs.
+  // @ts-ignore
+  while (run && run.status !== "completed" && run.status !== "failed" && run.status !== "cancelled") {
+    const ra = (run as any).required_action?.submit_tool_outputs;
+    if (ra && Array.isArray(ra.tool_calls) && ra.tool_calls.length) {
+      // We don't own any external tool handlers here; bail to fallback.
+      throw new Error("workflow_requires_external_tool_outputs");
+    }
+    // @ts-ignore
+    run = await (openai as any).workflows.runs.get({ run_id: run.id });
   }
-  return t;
+
+  if (!run || run.status !== "completed") {
+    throw new Error(`workflow_not_completed:${run?.status || "unknown"}`);
+  }
+
+  const raw = collectWorkflowOutput(run);
+  return coerceTextIfJson(raw, userText).trim();
 }
 
-async function hardFallbackChat(text: string): Promise<string> {
-  try {
-    const r = await openai.chat.completions.create({
-      model: FALLBACK_CHAT_MODEL,
-      temperature: 0,
-      messages: [
-        { role: "system", content: "You are a minimal safe fallback that answers concisely." },
-        { role: "user", content: text || "" },
-      ],
-    });
-    return r.choices?.[0]?.message?.content?.trim() || "";
-  } catch (e) {
-    return "";
-  }
-}
+// ------------------------------ API ------------------------------
 
-// ---- API Route ----
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && token === VERIFY_TOKEN) { res.status(200).send(challenge ?? ""); return; }
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      res.status(200).send(challenge ?? "");
+      return;
+    }
     res.status(403).end("forbidden");
     return;
   }
 
-  if (req.method !== "POST") { res.status(405).json({ error: "method_not_allowed" }); return; }
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "method_not_allowed" });
+    return;
+  }
 
-  if (!req.body?.entry?.[0]?.changes?.[0]?.value) { res.status(200).json({ received: true }); return; }
+  if (!req.body?.entry?.[0]?.changes?.[0]?.value) {
+    res.status(200).json({ received: true });
+    return;
+  }
 
   const inbound = extractMessage(req.body);
-  if (!inbound.from) { res.status(200).json({ received: true }); return; }
+  if (!inbound.from) {
+    res.status(200).json({ received: true });
+    return;
+  }
 
-  if (processedMessageCache.has(inbound.id)) { res.status(200).json({ received: true }); return; }
+  if (processedMessageCache.has(inbound.id)) {
+    res.status(200).json({ received: true });
+    return;
+  }
   processedMessageCache.add(inbound.id);
-  if (processedMessageCache.size > 5000) { const firstKey = processedMessageCache.values().next().value; if (firstKey) processedMessageCache.delete(firstKey); }
+  if (processedMessageCache.size > 5000) {
+    const firstKey = processedMessageCache.values().next().value;
+    if (firstKey) processedMessageCache.delete(firstKey);
+  }
 
   const value = req.body?.entry?.[0]?.changes?.[0]?.value ?? {};
   const msg = (Array.isArray(value.messages) ? value.messages[0] : undefined) ?? {};
   const isImage = msg?.type === "image" && typeof msg?.image?.id === "string";
   const rawText = normaliseInboundText(msg) || inbound.text;
   const messageBody = typeof rawText === "string" ? rawText.trim() : "";
-  if (!messageBody && !isImage) { res.status(200).json({ received: true }); return; }
 
-  try { await markReadAndShowTyping(inbound.id); } catch (error) { console.warn("[WEBHOOK] markRead error", error); }
-
-  // ---- Early exact-identity handling (strict) ----
-  if (isExactIdentityQuery(messageBody)) {
-    const lang = detectLanguage(messageBody);
-    const identity = lang === "ar" ? "مساعد ليرات" : "I'm Liirat assistant.";
-    await sendText(inbound.from, identity);
+  if (!messageBody && !isImage) {
     res.status(200).json({ received: true });
     return;
+  }
+
+  try {
+    await markReadAndShowTyping(inbound.id);
+  } catch (e) {
+    console.warn("[WEBHOOK] markRead error", e);
   }
 
   try {
@@ -257,42 +285,31 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
       } catch (err) {
         console.warn("[WEBHOOK] image handling error", err);
-        const hasArabic = /[\u0600-\u06FF]/.test(messageBody || "");
-        replyText = hasArabic ? "تعذر قراءة الصورة حالياً." : "Couldn't read the image right now.";
+        replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+          ? "تعذر قراءة الصورة حالياً."
+          : "Couldn't read the image right now.";
       }
     } else {
       try {
-        // Prefer Responses API workflow invocation if available in SDK
-        const workflowResponse = await (openai.responses.create as unknown as (args: any) => Promise<any>)({
-          workflow_id: workflowId,
-          session_id: sessionId,
-          input: messageBody,
-        });
-        const rawOutput = collectResponseText(workflowResponse);
-        const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
-        replyText = (finalText || rawOutput || "").trim();
-        if (!replyText) throw new Error("empty_workflow_output");
-      } catch (err: any) {
+        // ✅ Correct Workflows call—no 'model' required.
+        replyText = await runWorkflowMessage({ workflowId, sessionId, userText: messageBody });
+      } catch (err) {
         console.error("[WEBHOOK] Agent error, falling back:", err);
-        const lang = detectLanguage(messageBody);
-        // 1) Preferred internal fallback
-        try {
-          const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
-          replyText = normalizeCrapFallback(result?.replyText || "", lang);
-        } catch {}
-        // 2) Hard fallback via Chat Completions with guaranteed model
+        // Stable fallback
+        const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
+        replyText = (result?.replyText || "").trim();
         if (!replyText) {
-          const hard = await hardFallbackChat(messageBody);
-          replyText = normalizeCrapFallback(hard || "", lang) || (lang === "ar" ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT." : "Data unavailable right now. Try: price BTCUSDT.");
+          replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+            ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
+            : "Data unavailable right now. Try: price BTCUSDT.";
         }
       }
     }
 
-    const finalText = (replyText || "").trim();
-    const sanitized = sanitizeNewsLinks(finalText);
-    if (sanitized) {
-      await sendText(inbound.from, sanitized);
-      void logMessageAsync(conversationId, "assistant", sanitized);
+    const finalText = sanitizeNewsLinks((replyText || "").trim());
+    if (finalText) {
+      await sendText(inbound.from, finalText);
+      void logMessageAsync(conversationId, "assistant", finalText);
     }
   } catch (error) {
     console.error("[WEBHOOK] Error:", error);
@@ -301,7 +318,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   res.status(200).json({ received: true });
 }
 
-// ---- Test-friendly injectable handler ----
+// ---------------- test-friendly injectable handler ----------------
+
 export function createWebhookHandler(deps: {
   markReadAndShowTyping: (id: string) => Promise<void>;
   sendText: (to: string, body: string) => Promise<void>;
@@ -319,22 +337,36 @@ export function createWebhookHandler(deps: {
   logMessage: (conversationId: string, role: "user" | "assistant", content: string) => Promise<void>;
   updateConversationMetadata: (conversationId: string, updates: any) => Promise<void>;
 }) {
-  const { markReadAndShowTyping: depMarkRead, sendText: depSendText, createOrGetConversation: depGetConv, getConversationMessageCount: depMsgCount } = deps;
+  const {
+    markReadAndShowTyping: depMarkRead,
+    sendText: depSendText,
+    createOrGetConversation: depGetConv,
+    getConversationMessageCount: depMsgCount,
+  } = deps;
 
   return async function handler(req: NextApiRequest, res: NextApiResponse) {
-    if (req.method !== "POST") { res.status(405).json({ error: "method_not_allowed" }); return; }
-    if (!req.body?.entry?.[0]?.changes?.[0]?.value) { res.status(200).json({ received: true }); return; }
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "method_not_allowed" });
+      return;
+    }
+    if (!req.body?.entry?.[0]?.changes?.[0]?.value) {
+      res.status(200).json({ received: true });
+      return;
+    }
     const inbound = extractMessage(req.body);
     const text = (inbound.text || "").trim();
-    if (!inbound.from || !text) { res.status(200).json({ received: true }); return; }
+    if (!inbound.from || !text) {
+      res.status(200).json({ received: true });
+      return;
+    }
 
     try { await depMarkRead(inbound.id); } catch {}
 
-    const isArabic = /[\u0600-\u06FF]/.test(text);
-
-    // strict identity check only (exact-match)
-    if (isExactIdentityQuery(text)) {
-      await depSendText(inbound.from, isArabic ? "مساعد ليرات" : "I'm Liirat assistant.");
+    // Exact-match identity only (doesn't catch other intents)
+    const isIdentity = /^(?:who\s*are\s*you\??|who\s*r\s*you\??|what\s*are\s*you\??|مين\s*انت\??|مين\s*أنت\??|مين\s*إنت\??)$/i.test(text);
+    if (isIdentity) {
+      const isAr = /[\u0600-\u06FF]/.test(text);
+      await depSendText(inbound.from, isAr ? "مساعد ليرات" : "I'm Liirat assistant.");
       res.status(200).json({ received: true });
       return;
     }
@@ -344,13 +376,14 @@ export function createWebhookHandler(deps: {
     const messageCount = convId ? await depMsgCount(convId) : 0;
 
     if (messageCount === 0 || conv?.isNew) {
-      await depSendText(inbound.from, isArabic ? "كيف فيني ساعدك؟" : "How can I help?");
+      const greet = /[\u0600-\u06FF]/.test(text) ? "كيف فيني ساعدك؟" : "How can I help?";
+      await depSendText(inbound.from, greet);
       res.status(200).json({ received: true });
       return;
     }
 
-    // simple default nudge
-    await depSendText(inbound.from, isArabic ? "حدّد الأداة أو الإطار الزمني." : "Specify the asset or timeframe.");
+    const fallback = /[\u0600-\u06FF]/.test(text) ? "حدّد الأداة أو الإطار الزمني." : "Specify the asset or timeframe.";
+    await depSendText(inbound.from, fallback);
     res.status(200).json({ received: true });
   };
 }
