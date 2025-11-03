@@ -3,21 +3,111 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
-// Sanity checks at module load
-const workflowId = process.env.OPENAI_WORKFLOW_ID;
-const apiKey = process.env.OPENAI_API_KEY;
-console.log("[WEBHOOK] WF", workflowId?.slice(0, 6)); // should start "wf_"
-console.log("[WEBHOOK] KEY", apiKey?.slice(0, 8)); // should start "sk-proj"
-
 const processedMessageCache = new Set<string>();
 
 type InboundMessage = { id: string; from: string; text: string };
+
+// ----------------------------- REST API Workflow Helpers -----------------------------
+
+function requireEnv() {
+  const key = process.env.OPENAI_API_KEY || "";
+  const wf = process.env.OPENAI_WORKFLOW_ID || "";
+  if (!key) throw new Error("OPENAI_API_KEY missing");
+  if (!key.startsWith("sk-proj-")) throw new Error("bad_api_key_scope_use_project_key");
+  if (!wf) throw new Error("OPENAI_WORKFLOW_ID missing");
+  if (!wf.startsWith("wf_")) throw new Error("bad_workflow_id");
+}
+
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function runWorkflowAndGetText(input: string, sessionId?: string): Promise<string> {
+  requireEnv();
+
+  const apiKey = process.env.OPENAI_API_KEY!;
+  const wfId = process.env.OPENAI_WORKFLOW_ID!;
+
+  // Create run
+  const create = await fetch("https://api.openai.com/v1/workflows/runs", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "OpenAI-Beta": "workflows=v1",
+    },
+    body: JSON.stringify({ workflow_id: wfId, session_id: sessionId, input }),
+  });
+
+  if (!create.ok) {
+    const errorText = await create.text();
+    throw new Error(`wf_create_failed_${create.status}: ${errorText}`);
+  }
+
+  const created = await create.json();
+  const runId = created.id;
+
+  // Poll
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const r = await fetch(`https://api.openai.com/v1/workflows/runs/${runId}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "OpenAI-Beta": "workflows=v1",
+      },
+    });
+
+    if (!r.ok) {
+      const errorText = await r.text();
+      throw new Error(`wf_get_failed_${r.status}: ${errorText}`);
+    }
+
+    const data = await r.json();
+
+    if (data.status === "completed") return extractTextFromWorkflow(data);
+
+    if (data.status === "failed" || data.status === "cancelled") {
+      throw new Error(`workflow_${data.status}`);
+    }
+
+    await sleep(500);
+  }
+
+  throw new Error("workflow_timeout");
+}
+
+// Robust extractor for various workflow outputs
+function extractTextFromWorkflow(run: any): string {
+  const chunks: string[] = [];
+
+  const push = (v: any) => {
+    if (!v) return;
+    if (typeof v === "string") {
+      chunks.push(v);
+      return;
+    }
+    if (Array.isArray(v)) {
+      v.forEach(push);
+      return;
+    }
+    if (typeof v === "object") {
+      if (typeof v.output_text === "string") chunks.push(v.output_text);
+      if (typeof v.text === "string") chunks.push(v.text);
+      if (Array.isArray(v.content)) v.content.forEach(push);
+      if (v.output) push(v.output);
+      if (v.value) push(v.value);
+    }
+  };
+
+  push(run);
+
+  return chunks.join("\n").trim();
+}
 
 // ----------------------------- utils -----------------------------
 
@@ -66,58 +156,6 @@ function extractMessage(payload: any): InboundMessage {
   return { id: idCandidate, from: fromCandidate, text };
 }
 
-function detectLanguage(text: string): "ar" | "en" {
-  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
-}
-
-function formatPriceFromJson(obj: any, lang: "ar" | "en"): string | null {
-  if (!obj || typeof obj !== "object") return null;
-  if (!obj.timeUtc || !obj.symbol || typeof obj.price !== "number") return null;
-  const time = String(obj.timeUtc);
-  const symbol = String(obj.symbol);
-  const price = Number(obj.price);
-  if (lang === "ar") return [`الوقت (UTC): ${time}`, `الرمز: ${symbol}`, `السعر: ${price}`].join("\n");
-  return [`time (UTC): ${time}`, `symbol: ${symbol}`, `price: ${price}`].join("\n");
-}
-
-const SIGNAL_REASON_MAP = {
-  ar: {
-    bullish_pressure: "ضغط شراء فوق المتوسطات",
-    bearish_pressure: "ضغط بيع تحت المتوسطات",
-    no_clear_bias: "السوق بدون اتجاه واضح حالياً",
-  },
-  en: {
-    bullish_pressure: "Buy pressure above short-term averages",
-    bearish_pressure: "Bearish momentum below resistance",
-    no_clear_bias: "No clear directional bias right now",
-  },
-} as const;
-
-function formatSignalFromJson(obj: any, lang: "ar" | "en"): string | null {
-  if (!obj || typeof obj !== "object") return null;
-  const required = obj.timeUtc && obj.symbol && obj.timeframe && obj.signal;
-  if (!required) return null;
-
-  const time = String(obj.timeUtc);
-  const symbol = String(obj.symbol);
-  const timeframe = String(obj.timeframe);
-  const decision = String(obj.signal);
-  const reasonKey = String(obj.reason || "no_clear_bias") as keyof typeof SIGNAL_REASON_MAP.en;
-  const reasonText = (SIGNAL_REASON_MAP as any)[lang]?.[reasonKey] || SIGNAL_REASON_MAP.en.no_clear_bias;
-
-  if (lang === "ar") {
-    return [
-      `الوقت (UTC): ${time}`,
-      `الرمز: ${symbol}`,
-      `الإطار الزمني: ${timeframe}`,
-      `الإشارة: ${decision}`,
-      `السبب: ${reasonText}`,
-    ].join("\n");
-  }
-
-  return [`time (UTC): ${time}`, `symbol: ${symbol}`, `timeframe: ${timeframe}`, `signal: ${decision}`, `reason: ${reasonText}`].join("\n");
-}
-
 function coerceTextIfJson(text: string, fallback: string): string {
   try {
     const parsed = JSON.parse(text);
@@ -127,99 +165,6 @@ function coerceTextIfJson(text: string, fallback: string): string {
     return text;
   } catch {
     return text;
-  }
-}
-
-function collectWorkflowOutput(run: any): string {
-  // Workflows may return either output.messages (content array) or a plain output_text
-  const out = run?.output ?? {};
-  const pieces: string[] = [];
-
-  const pushSeg = (seg: any) => {
-    if (!seg) return;
-    if (typeof seg === "string") {
-      if (seg.trim()) pieces.push(seg.trim());
-      return;
-    }
-    if (Array.isArray(seg)) {
-      seg.forEach(pushSeg);
-      return;
-    }
-    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
-    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
-    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
-  };
-
-  if (Array.isArray(out?.messages)) {
-    out.messages.forEach((m: any) => pushSeg(m?.content));
-  } else {
-    pushSeg(out);
-  }
-  return pieces.join("\n").trim();
-}
-
-// ---------------------- workflow runner (FIXED per official instructions) -------------------
-
-async function runWorkflowMessage(opts: {
-  workflowId: string;
-  sessionId: string;
-  userText: string;
-}): Promise<string> {
-  const { workflowId, sessionId, userText } = opts;
-
-  // Guard: Check if workflows API is available
-  if (!openai.workflows?.runs?.create) {
-    throw new Error("workflows_api_not_available");
-  }
-
-  // Optional: allow selecting a pinned workflow version
-  const version = process.env.OPENAI_WORKFLOW_VERSION
-    ? Number(process.env.OPENAI_WORKFLOW_VERSION)
-    : undefined;
-
-  try {
-    // Create workflow run
-    let run = await openai.workflows.runs.create({
-      workflow_id: workflowId,
-      session_id: sessionId,
-      ...(version ? { version } : {}),
-      input: { input_as_text: userText },
-    });
-
-    // Poll until completion
-    const start = Date.now();
-    const timeout = 25000; // 25 seconds max
-
-    while (run && !["completed", "failed", "cancelled"].includes(run.status)) {
-      if (Date.now() - start > timeout) {
-        throw new Error("workflow_timeout");
-      }
-
-      const ra = (run as any).required_action?.submit_tool_outputs;
-      if (ra && Array.isArray(ra.tool_calls) && ra.tool_calls.length) {
-        // We don't own any external tool handlers here; bail to fallback.
-        throw new Error("workflow_requires_external_tool_outputs");
-      }
-
-      // Wait before next poll
-      await new Promise((r) => setTimeout(r, 600));
-
-      // Get updated run status
-      run = await (openai.workflows.runs as any).get({ run_id: run.id });
-    }
-
-    if (!run || run.status !== "completed") {
-      throw new Error(`workflow_not_completed:${run?.status || "unknown"}`);
-    }
-
-    const raw = collectWorkflowOutput(run);
-    return coerceTextIfJson(raw, userText).trim();
-  } catch (error: any) {
-    // Re-throw with more context
-    if (error?.message?.includes("workflow")) {
-      throw error;
-    }
-    throw new Error(`workflow_execution_error: ${error?.message || String(error)}`);
   }
 }
 
@@ -296,11 +241,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       } else {
         try {
-          // ✅ Correct Workflows call—no 'model' required.
-          replyText = await runWorkflowMessage({ workflowId, sessionId, userText: messageBody });
+          // ✅ Use REST API instead of SDK
+          const wfText = await runWorkflowAndGetText(messageBody, sessionId);
+          const final = coerceTextIfJson(wfText, messageBody).trim();
+          replyText = final || wfText || null;
+          if (!replyText) throw new Error("empty_workflow_output");
         } catch (err) {
           console.error("[WEBHOOK] Agent error, falling back:", err);
-          // Stable fallback
           const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
           replyText = (result?.replyText || "").trim();
           if (!replyText) {
