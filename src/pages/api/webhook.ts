@@ -1,18 +1,34 @@
 // pages/api/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import OpenAI from "openai";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { detectArabic } from "../../utils/formatters";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
 const processedMessageCache = new Set<string>();
-const WORKFLOW_ID = process.env.OPENAI_WORKFLOW_ID ?? "";
-const WORKFLOW_VERSION = (process.env.OPENAI_WORKFLOW_VERSION ?? "production").trim() || "production";
+
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error("Missing OPENAI_API_KEY");
+}
+
+const OPENAI_PROJECT = process.env.OPENAI_PROJECT;
+if (!OPENAI_PROJECT) {
+  throw new Error("Missing OPENAI_PROJECT");
+}
+
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+  project: OPENAI_PROJECT,
+  ...(process.env.OPENAI_ORG ? { organization: process.env.OPENAI_ORG } : {}),
+});
+
+const WORKFLOW_ID = "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
+const WORKFLOW_VERSION = "production";
 
 type InboundMessage = { id: string; from: string; text: string };
 
@@ -157,8 +173,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (!workflowId) {
         throw new Error("Missing OPENAI_WORKFLOW_ID");
       }
-      const workflowVersion = WORKFLOW_VERSION;
-      console.info("[WEBHOOK] Using workflow", { workflowId, workflowVersion });
+      console.log(
+        "[WEBHOOK] Using project",
+        OPENAI_PROJECT,
+        "workflow",
+        WORKFLOW_ID,
+        "version",
+        WORKFLOW_VERSION,
+      );
 
       const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
 
@@ -179,16 +201,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       } else {
         try {
-          const workflowsApi: any = (openai as any)?.workflows;
-          if (!workflowsApi?.runs?.create) {
+          const workflowsClient = (openaiClient as any)?.workflows;
+          if (!workflowsClient?.runs?.create) {
             throw new Error("workflows_api_not_available");
           }
 
-          const run = await workflowsApi.runs.create({
-            workflow_id: workflowId,
-            workflow_version: workflowVersion,
+          const run = await workflowsClient.runs.create({
+            workflow_id: WORKFLOW_ID,
+            version: WORKFLOW_VERSION,
             session_id: sessionId,
-            input: { message: messageBody, from: inbound.from },
+            inputs: {
+              input: {
+                message: messageBody,
+                from: inbound.from,
+              },
+            },
             user: `wa_${inbound.from}`,
           });
 

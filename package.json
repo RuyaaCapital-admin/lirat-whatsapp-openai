@@ -10,8 +10,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@openai/agents": "latest",
-    "openai": "latest",
+    "openai": "^4.71.1",
     "next": "^14.0.0",
     "@supabase/supabase-js": "^2.0.0",
     "@upstash/redis": "^1.34.0",
