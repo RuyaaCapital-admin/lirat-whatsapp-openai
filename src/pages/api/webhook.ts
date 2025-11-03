@@ -151,7 +151,7 @@ function collectWorkflowOutput(run: any): string {
   return pieces.join("\n").trim();
 }
 
-// ---------------------- workflow runner (FIXED with safe checks) -------------------
+// ---------------------- workflow runner (FIXED - uses beta.workflows) -------------------
 
 async function runWorkflowMessage(opts: {
   workflowId: string;
@@ -160,10 +160,11 @@ async function runWorkflowMessage(opts: {
 }): Promise<string> {
   const { workflowId, sessionId, userText } = opts;
 
-  // Safe check: Verify workflows API is available
-  const wf: any = (openai as any).workflows;
-  
-  if (!wf || !wf.runs) {
+  // Try multiple API paths: beta.workflows, workflows, or direct API call
+  const workflowsAPI = (openai as any).beta?.workflows || (openai as any).workflows;
+
+  if (!workflowsAPI || !workflowsAPI.runs) {
+    // If workflows API not available, throw to trigger fallback
     throw new Error("workflows_api_not_available");
   }
 
@@ -176,17 +177,17 @@ async function runWorkflowMessage(opts: {
     // 1) Start run - try createAndPoll first (if available), then fallback to create + poll
     let run: any;
 
-    if (wf.runs?.createAndPoll) {
+    if (workflowsAPI.runs?.createAndPoll) {
       // Use createAndPoll if available (newer SDK versions)
-      run = await wf.runs.createAndPoll({
+      run = await workflowsAPI.runs.createAndPoll({
         workflow_id: workflowId,
         session_id: sessionId,
         ...(version ? { version } : {}),
         input: { input_as_text: userText },
       });
-    } else if (wf.runs?.create && wf.runs?.get) {
+    } else if (workflowsAPI.runs?.create && workflowsAPI.runs?.get) {
       // Fallback: create + manual polling
-      run = await wf.runs.create({
+      run = await workflowsAPI.runs.create({
         workflow_id: workflowId,
         session_id: sessionId,
         ...(version ? { version } : {}),
@@ -212,7 +213,7 @@ async function runWorkflowMessage(opts: {
         await new Promise((r) => setTimeout(r, 600));
 
         // Get updated run status
-        run = await wf.runs.get({ run_id: run.id });
+        run = await workflowsAPI.runs.get({ run_id: run.id });
       }
     } else {
       throw new Error("workflows_api_methods_not_available");
