@@ -121,14 +121,13 @@ export const TOOL_SCHEMAS = [
   {
     type: "function",
     function: {
-      name: "search_web_news",
-      description: "Search top market/economic headlines.",
+      name: "agent_reuters_news",
+      description: "Fetch Reuters market/economic headlines via the Agent Builder.",
       parameters: {
         type: "object",
         properties: {
           query: { type: "string" },
           lang: { type: "string", enum: ["ar", "en"] },
-          count: { type: "integer", minimum: 1, maximum: 5, default: 3 }
         },
         required: ["query"],
         additionalProperties: false

@@ -10,10 +10,10 @@ import {
   get_ohlc,
   compute_trading_signal,
   type TradingSignal,
-  search_web_news,
   about_liirat_knowledge,
   get_time_now,
 } from "../tools/agentTools";
+import { normaliseAgentNewsItems, runAgentNews } from "./newsAgent";
 
 export type ToolResult = any;
 
@@ -167,11 +167,14 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
       stale: Boolean(signal.stale),
     };
   },
-  async search_web_news(args) {
+  async agent_reuters_news(args) {
     const query = String(args.query || "").trim();
-    const lang = String(args.lang || "en");
-    const count = Number.isFinite(args.count) ? Number(args.count) : 3;
-    return await search_web_news(query, lang, count);
+    if (!query) {
+      return { news: { items: [] } };
+    }
+    const payload = await runAgentNews(query);
+    const items = normaliseAgentNewsItems(payload);
+    return { news: { items } };
   },
   async about_liirat_knowledge(args) {
     const query = String(args.query || "").trim();
