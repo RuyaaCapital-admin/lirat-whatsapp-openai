@@ -72,6 +72,7 @@ export type ReasonToken = "bullish_pressure" | "bearish_pressure" | "no_clear_bi
 export interface SignalFormatterInput {
   symbol: string;
   timeframe: string;
+  displayTimeframe?: string;
   timeUTC: string;
   decision: "BUY" | "SELL" | "NEUTRAL";
   reason: ReasonToken;
@@ -101,19 +102,15 @@ const REASON_MAP: Record<LanguageCode, Record<ReasonToken, string>> = {
 };
 
 export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode): string {
-  const age = Math.max(0, Math.round(input.ageMinutes));
   const reasonText = REASON_MAP[lang][input.reason] ?? REASON_MAP.en.no_clear_bias;
   const lines: string[] = [];
-
-  if (lang === "ar" && input.stale) {
-    lines.push(`تنبيه: البيانات متأخرة بحوالي ${age} دقيقة`);
-  }
 
   // Header
   lines.push(`time (UTC): ${input.timeUTC}`);
   lines.push(`symbol: ${input.symbol}`);
   // Optional timeframe hint to satisfy format expectations in tests
-  lines.push(`timeframe: ${input.timeframe}`);
+  const printedTimeframe = input.displayTimeframe ?? input.timeframe;
+  lines.push(`timeframe: ${printedTimeframe}`);
 
   // Decision and reason
   if (input.decision === "NEUTRAL") {
@@ -133,12 +130,6 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
     lines.push(`SL: ${formatLevel(input.levels.sl, input.symbol)}`);
     lines.push(`TP1: ${formatLevel(input.levels.tp1, input.symbol)}`);
     lines.push(`TP2: ${formatLevel(input.levels.tp2, input.symbol)}`);
-  }
-
-  // Age line (English only as per prior expectations)
-  if (lang !== "ar") {
-    const freshness = input.stale ? "stale" : "fresh";
-    lines.splice(4, 0, `Data age: ${age}m ${freshness}`);
   }
 
   return lines.join("\n");

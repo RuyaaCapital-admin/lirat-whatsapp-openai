@@ -156,9 +156,9 @@ async function testTradingSignalFlow() {
   const expectedBlock = [
     `time (UTC): ${signalResult.lastISO.slice(0, 10)} ${signalResult.lastISO.slice(11, 16)}`,
     "symbol: XAUUSD",
+    "timeframe: 5min",
     "SIGNAL: SELL",
-    `Reason: ${expectedReason}`,
-    "Data age: 2m (fresh)",
+    `السبب: ${expectedReason}`,
     "Entry: 2350.20",
     "SL: 2355.80",
     "TP1: 2345.00",

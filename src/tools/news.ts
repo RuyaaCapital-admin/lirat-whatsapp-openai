@@ -74,29 +74,44 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
         json_schema: {
           name: "news_items",
           schema: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                date: { type: "string", description: "YYYY-MM-DD" },
-                description: { type: "string" },
-                effect: { type: "string" },
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              items: {
+                type: "array",
+                minItems: 1,
+                maxItems: 5,
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+                    title: { type: "string" },
+                    effect: { type: "string" },
+                  },
+                  required: ["date", "title", "effect"],
+                },
               },
-              required: ["date", "description", "effect"],
-              additionalProperties: false,
             },
-            minItems: 1,
-            maxItems: 5,
+            required: ["items"],
           },
-          strict: true,
         },
       },
     });
 
-    const raw = response.choices?.[0]?.message?.content ?? "[]";
-    const items = JSON.parse(raw) as Array<{ date: string; description: string; effect: string }>;
+    const raw = response.choices?.[0]?.message?.content ?? "{}";
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      console.warn("[NEWS] invalid JSON payload", error);
+      return [];
+    }
+
+    const items = Array.isArray((parsed as any)?.items) ? ((parsed as any).items as Array<{ date: string; title: string; effect: string }>) : [];
 
     const filtered = items
+      .filter((item) => item && typeof item.date === "string" && typeof item.title === "string" && typeof item.effect === "string")
       .filter((item) => isValidDate(item.date) && withinScope(item.date, scope, now))
       .slice(0, safeCount);
 
@@ -107,12 +122,12 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
     return filtered.map((item) => {
       const dt = DateTime.fromISO(item.date, { zone: "Asia/Dubai" });
       const isoDate = dt.isValid ? dt.toISODate() ?? item.date : item.date;
-      const description = ensureText(item.description);
+      const title = ensureText(item.title);
       const effect = ensureText(item.effect);
       return {
         date: isoDate,
         source: "www.liiratnews.com",
-        title: description || effect,
+        title: title || effect,
         url: "",
         impact: effect || undefined,
       };

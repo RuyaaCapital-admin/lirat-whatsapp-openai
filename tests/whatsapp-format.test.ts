@@ -22,7 +22,11 @@ async function runWhatsappFormatTests() {
   assert.ok(english.includes("Reason: Buy pressure above short-term averages"));
 
   const arabicStale = signalFormatter(makeSignal({ stale: true, ageMinutes: 244 }), "ar");
-  assert.ok(arabicStale.startsWith("تنبيه: البيانات متأخرة بحوالي 244 دقيقة"));
+  const arabicLines = arabicStale.split("\n");
+  assert.strictEqual(arabicLines.length, 9);
+  assert.ok(!arabicStale.includes("تنبيه"));
+  assert.ok(arabicLines[0].startsWith("time (UTC): "));
+  assert.ok(arabicLines[2].startsWith("timeframe: "));
   assert.ok(arabicStale.includes("السبب: ضغط شراء فوق المتوسطات"));
 
   const neutral = signalFormatter(

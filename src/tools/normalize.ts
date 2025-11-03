@@ -158,44 +158,55 @@ export function forPriceSource(sym: string): string {
   return s.length === 6 ? `${s.slice(0, 3)}/${s.slice(3)}` : s.replace(/USD$/, "/USD");
 }
 
-export function toTimeframe(user?: string): TF {
+export interface ParsedTimeframe {
+  timeframe: TF;
+  explicit: boolean;
+}
+
+export function parseTimeframe(user?: string): ParsedTimeframe {
   const t = normalizeArabic((user || "").toLowerCase());
-  
-  // 1 minute patterns
+
   if (
     /(\b1\s*(m|min|minute)\b|\b1m\b|\b1\s*min\b|\bدقيقة\b|\bعلى دقيقة\b|\bعالدقيقة\b|\b1\s*دقيقة\b)/.test(t)
-  )
-    return "1min";
-    
-  // 5 minutes patterns  
+  ) {
+    return { timeframe: "1min", explicit: true };
+  }
+
   if (
     /(\b5\s*(m|min)\b|\b5m\b|\b٥\s*m\b|\b5\s*(دقايق|دقائق)\b|\b٥\s*(دقايق|دقائق)\b|\bخمس دقائق\b|\b5\s*دقايق\b)/.test(t)
-  )
-    return "5min";
-    
-  // 15 minutes patterns
-  if (/(\b15\s*(m|min)?\b|\b15m\b|\b١٥\s*(دقيقة|دقايق)\b|\b15\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)) 
-    return "15min";
-    
-  // 30 minutes patterns
+  ) {
+    return { timeframe: "5min", explicit: true };
+  }
+
+  if (
+    /(\b15\s*(m|min)?\b|\b15m\b|\b١٥\s*(دقيقة|دقايق)\b|\b15\s*(دقيقة|دقايق)\b|\bربع ساعة\b)/.test(t)
+  ) {
+    return { timeframe: "15min", explicit: true };
+  }
+
   if (
     /(\b30\s*(m|min)?\b|\b30m\b|\b٣٠\s*(دقيقة|دقايق)\b|\b30\s*(دقيقة|دقايق)\b|\bنص ساعة\b|\bنصف ساعة\b)/.test(t)
-  )
-    return "30min";
-    
-  // 1 hour patterns
-  if (/(\b1\s*(hour|h)\b|\b1h\b|\bساعة\b|\bساعه\b|\b1\s*ساعة\b|\bعالساعة\b)/.test(t)) 
-    return "1hour";
-    
-  // 4 hours patterns
-  if (/(\b4\s*(hour|h)\b|\b4h\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b|\b4\s*ساعات\b)/.test(t)) 
-    return "4hour";
-    
-  // Daily patterns
-  if (/(\b1d\b|\b1\s*day\b|\bdaily\b|\bday\b|\bيومي\b|\bيوم\b|\bعلى اليومي\b|\bعلى اليوم\b)/.test(t)) 
-    return "1day";
-    
-  return "5min";
+  ) {
+    return { timeframe: "30min", explicit: true };
+  }
+
+  if (/(\b1\s*(hour|h)\b|\b1h\b|\bساعة\b|\bساعه\b|\b1\s*ساعة\b|\bعالساعة\b)/.test(t)) {
+    return { timeframe: "1hour", explicit: true };
+  }
+
+  if (/(\b4\s*(hour|h)\b|\b4h\b|\b٤\s*س\b|\b4\s*س\b|\bاربع ساعات\b|\b٤ ساعات\b|\b4\s*ساعات\b)/.test(t)) {
+    return { timeframe: "4hour", explicit: true };
+  }
+
+  if (/(\b1d\b|\b1\s*day\b|\bdaily\b|\bday\b|\bيومي\b|\bيوم\b|\bعلى اليومي\b|\bعلى اليوم\b)/.test(t)) {
+    return { timeframe: "1day", explicit: true };
+  }
+
+  return { timeframe: "5min", explicit: false };
+}
+
+export function toTimeframe(user?: string): TF {
+  return parseTimeframe(user).timeframe;
 }
 
 export const TIMEFRAME_FALLBACKS: Record<TF, TF[]> = {
