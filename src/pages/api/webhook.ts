@@ -205,7 +205,7 @@ async function runWorkflowMessage(opts: {
       await new Promise((r) => setTimeout(r, 600));
 
       // Get updated run status
-      run = await openai.workflows.runs.retrieve({ run_id: run.id });
+      run = await (openai.workflows.runs as any).get({ run_id: run.id });
     }
 
     if (!run || run.status !== "completed") {
