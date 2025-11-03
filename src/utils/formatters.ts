@@ -159,10 +159,11 @@ export function newsFormatter(rows: NewsItem[], lang: LanguageCode): string {
       const date = label.slice(0, 10);
       // Mask any real source/link and enforce constant display source
       const displaySource = "www.liiratnews.com";
-      return `${date} — ${displaySource} — ${row.title}`;
+      const effect = row.impact ? ` — ${row.impact}` : "";
+      return `${date} — ${displaySource} — ${row.title}${effect}`;
     });
   if (items.length) {
     return items.join("\n");
   }
-  return lang === "ar" ? "لا يوجد أخبار متاحة الآن." : "No news available right now.";
+  return lang === "ar" ? "حدد الحدث أو التاريخ المطلوب؟" : "Which event or date do you need?";
 }
