@@ -3,6 +3,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
+import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
@@ -11,103 +12,6 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 const processedMessageCache = new Set<string>();
 
 type InboundMessage = { id: string; from: string; text: string };
-
-// ----------------------------- REST API Workflow Helpers -----------------------------
-
-function requireEnv() {
-  const key = process.env.OPENAI_API_KEY || "";
-  const wf = process.env.OPENAI_WORKFLOW_ID || "";
-  if (!key) throw new Error("OPENAI_API_KEY missing");
-  if (!key.startsWith("sk-proj-")) throw new Error("bad_api_key_scope_use_project_key");
-  if (!wf) throw new Error("OPENAI_WORKFLOW_ID missing");
-  if (!wf.startsWith("wf_")) throw new Error("bad_workflow_id");
-}
-
-async function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function runWorkflowAndGetText(input: string, sessionId?: string): Promise<string> {
-  requireEnv();
-
-  const apiKey = process.env.OPENAI_API_KEY!;
-  const wfId = process.env.OPENAI_WORKFLOW_ID!;
-
-  // Create run
-  const create = await fetch("https://api.openai.com/v1/workflows/runs", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "OpenAI-Beta": "workflows=v1",
-    },
-    body: JSON.stringify({ workflow_id: wfId, session_id: sessionId, input }),
-  });
-
-  if (!create.ok) {
-    const errorText = await create.text();
-    throw new Error(`wf_create_failed_${create.status}: ${errorText}`);
-  }
-
-  const created = await create.json();
-  const runId = created.id;
-
-  // Poll
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    const r = await fetch(`https://api.openai.com/v1/workflows/runs/${runId}`, {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "OpenAI-Beta": "workflows=v1",
-      },
-    });
-
-    if (!r.ok) {
-      const errorText = await r.text();
-      throw new Error(`wf_get_failed_${r.status}: ${errorText}`);
-    }
-
-    const data = await r.json();
-
-    if (data.status === "completed") return extractTextFromWorkflow(data);
-
-    if (data.status === "failed" || data.status === "cancelled") {
-      throw new Error(`workflow_${data.status}`);
-    }
-
-    await sleep(500);
-  }
-
-  throw new Error("workflow_timeout");
-}
-
-// Robust extractor for various workflow outputs
-function extractTextFromWorkflow(run: any): string {
-  const chunks: string[] = [];
-
-  const push = (v: any) => {
-    if (!v) return;
-    if (typeof v === "string") {
-      chunks.push(v);
-      return;
-    }
-    if (Array.isArray(v)) {
-      v.forEach(push);
-      return;
-    }
-    if (typeof v === "object") {
-      if (typeof v.output_text === "string") chunks.push(v.output_text);
-      if (typeof v.text === "string") chunks.push(v.text);
-      if (Array.isArray(v.content)) v.content.forEach(push);
-      if (v.output) push(v.output);
-      if (v.value) push(v.value);
-    }
-  };
-
-  push(run);
-
-  return chunks.join("\n").trim();
-}
 
 // ----------------------------- utils -----------------------------
 
@@ -166,6 +70,34 @@ function coerceTextIfJson(text: string, fallback: string): string {
   } catch {
     return text;
   }
+}
+
+function collectResponseText(run: any): string {
+  // Workflows may return either output.messages (content array) or a plain output_text
+  const out = run?.output ?? {};
+  const pieces: string[] = [];
+
+  const pushSeg = (seg: any) => {
+    if (!seg) return;
+    if (typeof seg === "string") {
+      if (seg.trim()) pieces.push(seg.trim());
+      return;
+    }
+    if (Array.isArray(seg)) {
+      seg.forEach(pushSeg);
+      return;
+    }
+    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
+    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
+    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
+  };
+
+  if (Array.isArray(out?.messages)) {
+    out.messages.forEach((m: any) => pushSeg(m?.content));
+  } else {
+    pushSeg(out);
+  }
+  return pieces.join("\n").trim();
 }
 
 // ------------------------------ API ------------------------------
@@ -241,12 +173,28 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       } else {
         try {
-          // ✅ Use REST API instead of SDK
-          const wfText = await runWorkflowAndGetText(messageBody, sessionId);
-          const final = coerceTextIfJson(wfText, messageBody).trim();
-          replyText = final || wfText || null;
-          if (!replyText) throw new Error("empty_workflow_output");
-        } catch (err) {
+          // Hard guard: ensure Workflows is available on this SDK
+          // @ts-expect-error – property exists in >=4.67
+          if (!openai.workflows?.runs?.create) throw new Error("workflows_api_not_available");
+
+          // @ts-expect-error – types present in >=4.67
+          const run = await openai.workflows.runs.create({
+            workflow_id: workflowId,
+            session_id: sessionId,
+            // Send a simple input object; your Workflow should read `input.message`
+            input: { message: messageBody, from: inbound.from },
+            // optional but helpful for traceability
+            user: `wa_${inbound.from}`,
+          });
+
+          const rawOutput = collectResponseText(run);
+          const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
+          if (!finalText) throw new Error("empty_workflow_output");
+          replyText = finalText;
+        } catch (err: any) {
+          // If key scope or API not available, you'll see specific errors:
+          // - bad_api_key_scope_use_project_key  -> wrong key type
+          // - workflows_api_not_available        -> old SDK or feature unavailable
           console.error("[WEBHOOK] Agent error, falling back:", err);
           const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
           replyText = (result?.replyText || "").trim();
