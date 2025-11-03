@@ -55,14 +55,17 @@ export async function runAgentNews(userText: string): Promise<AgentNewsPayload |
     input: [{ role: "user", content: input }],
   } as any);
 
-  for (const out of resp.output ?? []) {
-    if (out.type === "message") {
-      for (const c of out.content ?? []) {
-        if (c.type === "output_json") {
-          return (c.output_json ?? null) as AgentNewsPayload | null;
+  const outputs: any[] = Array.isArray((resp as any)?.output) ? (resp as any).output : [];
+  for (const out of outputs) {
+    if (out?.type === "message") {
+      const chunks: any[] = Array.isArray(out.content) ? out.content : [];
+      for (const chunk of chunks) {
+        const chunkType = (chunk as any)?.type;
+        if (chunkType === "output_json") {
+          return ((chunk as any)?.output_json ?? null) as AgentNewsPayload | null;
         }
-        if (c.type === "text") {
-          const text = (c.text ?? "").trim();
+        if (chunkType === "text") {
+          const text = String((chunk as any)?.text ?? "").trim();
           if (!text) continue;
           try {
             return JSON.parse(text) as AgentNewsPayload;
