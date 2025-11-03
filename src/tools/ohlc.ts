@@ -264,29 +264,29 @@ function buildSnapshot(
   };
 }
 
-function pickFreshest(snapshots: ProviderSnapshot[]): ProviderSnapshot | null {
+function pickNewestByLastTs(snapshots: ProviderSnapshot[]): ProviderSnapshot | null {
   if (!snapshots.length) {
     return null;
   }
-  return [...snapshots].sort((a, b) => a.ageMinutes - b.ageMinutes)[0] ?? null;
+  return [...snapshots].sort((a, b) => b.lastTs - a.lastTs)[0] ?? null;
 }
 
-export async function get_ohlc(
+async function fetchOhlcFromSources(
   symbol: string,
   timeframe: TF,
-  limit = 60,
-  opts: GetOhlcOptions = {},
-): Promise<GetOhlcResponse> {
-  const safeLimit = Math.max(20, Math.min(limit, 120));
-  const nowMs = resolveNowMs(opts.nowMs);
+  limit: number,
+  nowMs: number,
+): Promise<ProviderSnapshot | null> {
   const order = getProviderOrder(symbol);
   const snapshots: ProviderSnapshot[] = [];
 
   for (const fetcher of order) {
     try {
-      const result = await fetcher(symbol, timeframe, safeLimit);
-      if (!result) continue;
-      const snapshot = buildSnapshot(symbol, timeframe, result, safeLimit, nowMs);
+      const result = await fetcher(symbol, timeframe, limit);
+      if (!result) {
+        continue;
+      }
+      const snapshot = buildSnapshot(symbol, timeframe, result, limit, nowMs);
       if (snapshot) {
         snapshots.push(snapshot);
       }
@@ -298,7 +298,19 @@ export async function get_ohlc(
     }
   }
 
-  const chosen = pickFreshest(snapshots);
+  return pickNewestByLastTs(snapshots);
+}
+
+export async function get_ohlc(
+  symbol: string,
+  timeframe: TF,
+  limit = 60,
+  opts: GetOhlcOptions = {},
+): Promise<GetOhlcResponse> {
+  const safeLimit = Math.max(20, Math.min(limit, 120));
+  const nowMs = resolveNowMs(opts.nowMs);
+  const chosen = await fetchOhlcFromSources(symbol, timeframe, safeLimit, nowMs);
+
   if (!chosen) {
     return { ok: false, reason: "NO_DATA" };
   }

@@ -35,6 +35,26 @@ export interface TradingSignal {
 // Require a reasonable history but not too strict; 25 gives ~2h on 5min
 const MIN_CANDLES = 25;
 
+const PERIOD_BY_TF: Record<TF, "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d"> = {
+  "1min": "1m",
+  "5min": "5m",
+  "15min": "15m",
+  "30min": "30m",
+  "1hour": "1h",
+  "4hour": "4h",
+  "1day": "1d",
+};
+
+const THRESH_BY_PERIOD: Record<"1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d", number> = {
+  "1m": 2,
+  "5m": 2,
+  "15m": 2,
+  "30m": 2,
+  "1h": 1,
+  "4h": 1,
+  "1d": 1,
+};
+
 function ensureSorted(candles: Candle[]): Candle[] {
   return candles
     .map((candle) => ({
@@ -167,20 +187,20 @@ function computeTargets(
   };
 }
 
-function deriveDecision(
+function computeDirectionalScore(
   lastClose: number,
   fastEma: number,
   slowEma: number,
   momentum: number,
   rsiValue: number,
-): SignalDecision {
+): number {
   if (
     !Number.isFinite(lastClose) ||
     !Number.isFinite(fastEma) ||
     !Number.isFinite(slowEma) ||
     !Number.isFinite(rsiValue)
   ) {
-    return "NEUTRAL";
+    return 0;
   }
 
   let buyScore = 0;
@@ -199,10 +219,7 @@ function deriveDecision(
   // Momentum direction
   if (momentum > 0) buyScore += 1; else if (momentum < 0) sellScore += 1;
 
-  const diff = buyScore - sellScore;
-  if (diff >= 1) return "BUY";
-  if (diff <= -1) return "SELL";
-  return "NEUTRAL";
+  return buyScore - sellScore;
 }
 
 function formatUtcLabel(iso: string): string {
@@ -222,6 +239,58 @@ function deriveMomentum(closes: number[]): number {
   if (closes.length < 2) return 0;
   const window = Math.min(6, closes.length - 1);
   return closes[closes.length - 1] - closes[closes.length - 1 - window];
+}
+
+function computeDonchianMid(candles: Candle[], period = 20): number {
+  if (!candles.length) {
+    return Number.NaN;
+  }
+  const length = Math.min(period, candles.length);
+  let highest = -Infinity;
+  let lowest = Infinity;
+  for (let i = candles.length - length; i < candles.length; i += 1) {
+    const candle = candles[i];
+    if (!candle) continue;
+    if (Number.isFinite(candle.h) && candle.h > highest) {
+      highest = candle.h;
+    }
+    if (Number.isFinite(candle.l) && candle.l < lowest) {
+      lowest = candle.l;
+    }
+  }
+  if (!Number.isFinite(highest) || !Number.isFinite(lowest)) {
+    return Number.NaN;
+  }
+  return (highest + lowest) / 2;
+}
+
+function forceDirectionFallback(params: {
+  ema20: number;
+  ema50: number;
+  ema200: number;
+  lastClose: number;
+  donchianMid: number;
+  macd: number;
+}): SignalDecision {
+  const { ema20, ema50, ema200, lastClose, donchianMid, macd } = params;
+
+  if (Number.isFinite(ema20) && Number.isFinite(ema50) && ema20 !== ema50) {
+    return ema20 > ema50 ? "BUY" : "SELL";
+  }
+
+  if (Number.isFinite(lastClose) && Number.isFinite(ema200) && lastClose !== ema200) {
+    return lastClose > ema200 ? "BUY" : "SELL";
+  }
+
+  if (Number.isFinite(lastClose) && Number.isFinite(donchianMid) && lastClose !== donchianMid) {
+    return lastClose > donchianMid ? "BUY" : "SELL";
+  }
+
+  if (Number.isFinite(macd) && macd !== 0) {
+    return macd >= 0 ? "BUY" : "SELL";
+  }
+
+  return "BUY";
 }
 
 export function compute_trading_signal(input: TradingSignalInput): TradingSignal {
@@ -251,11 +320,37 @@ export function compute_trading_signal(input: TradingSignalInput): TradingSignal
   const momentum = deriveMomentum(closes);
   const fastEma = ema(closes, 20);
   const slowEma = ema(closes, 50);
+  const ema200 = ema(closes, 200);
   const rsiValue = rsi(closes, 14);
   const atrValue = atr(highs, lows, closes, 14);
-  const decision = candles.length < MIN_CANDLES
-    ? "NEUTRAL"
-    : deriveDecision(lastClose, fastEma, slowEma, momentum, rsiValue);
+  const donchianMid = computeDonchianMid(candles, 20);
+  const macdFast = ema(closes, 12);
+  const macdSlow = ema(closes, 26);
+  const macdValue = Number.isFinite(macdFast) && Number.isFinite(macdSlow)
+    ? macdFast - macdSlow
+    : Number.NaN;
+
+  const periodKey = PERIOD_BY_TF[input.timeframe] ?? "1m";
+  const threshold = THRESH_BY_PERIOD[periodKey] ?? 2;
+  const score = computeDirectionalScore(lastClose, fastEma, slowEma, momentum, rsiValue);
+
+  let decision: SignalDecision;
+  if (candles.length < MIN_CANDLES) {
+    decision = "NEUTRAL";
+  } else if (score >= threshold) {
+    decision = "BUY";
+  } else if (score <= -threshold) {
+    decision = "SELL";
+  } else {
+    decision = forceDirectionFallback({
+      ema20: fastEma,
+      ema50: slowEma,
+      ema200,
+      lastClose,
+      donchianMid,
+      macd: macdValue,
+    });
+  }
   const targets = computeTargets(decision, lastClose, previousClose, atrValue);
 
   const timeUTC = formatUtcLabel(input.lastISO);
