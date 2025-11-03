@@ -18,7 +18,9 @@ const processedMessageCache = new Set<string>();
 setDefaultOpenAIClient(openai as any);
 
 const AGENT_SESSION_SCOPE = process.env.OPENAI_WORKFLOW_ID || "liirat_whatsapp_agent";
-const TIME_CONNECTOR_ID = process.env.OPENAI_MCP_TIME_CONNECTOR_ID?.trim();
+const TIME_CONNECTOR_ID = process.env.OPENAI_MCP_TIME_CONNECTOR_ID?.trim() || null;
+const TIME_SERVER_URL = process.env.OPENAI_MCP_TIME_SERVER_URL?.trim() || null;
+const TIME_SERVER_AUTH = process.env.OPENAI_MCP_TIME_AUTHORIZATION?.trim() || null;
 
 const SignalSchema = z
   .object({
@@ -67,14 +69,30 @@ const webSearch = webSearchTool({
   searchContextSize: "medium",
 });
 
-const timeNow = TIME_CONNECTOR_ID
-  ? hostedMcpTool({
+const timeNow = (() => {
+  if (TIME_CONNECTOR_ID && TIME_SERVER_URL) {
+    console.warn(
+      "[WEBHOOK] Both OPENAI_MCP_TIME_CONNECTOR_ID and OPENAI_MCP_TIME_SERVER_URL are set. Using connector ID and ignoring server URL.",
+    );
+  }
+  if (TIME_CONNECTOR_ID) {
+    return hostedMcpTool({
       serverLabel: "time-now",
       connectorId: TIME_CONNECTOR_ID,
-    })
-  : hostedMcpTool({
-      serverLabel: "time-now",
     });
+  }
+  if (TIME_SERVER_URL) {
+    return hostedMcpTool({
+      serverLabel: "time-now",
+      serverUrl: TIME_SERVER_URL,
+      ...(TIME_SERVER_AUTH ? { authorization: TIME_SERVER_AUTH } : {}),
+    });
+  }
+  console.info("[WEBHOOK] Time MCP tool disabled: no OPENAI_MCP_TIME_CONNECTOR_ID or OPENAI_MCP_TIME_SERVER_URL set.");
+  return null;
+})();
+
+const liiratTools = timeNow ? [webSearch, timeNow] : [webSearch];
 
 const LIIRAT_AGENT_INSTRUCTIONS = `${SYSTEM_PROMPT}
 
@@ -120,7 +138,7 @@ const liiratAi = new Agent({
   name: "Liirat AI",
   instructions: LIIRAT_AGENT_INSTRUCTIONS,
   model: "gpt-5-nano",
-  tools: [webSearch, timeNow],
+  tools: liiratTools,
   outputType: LiiratAiSchema,
 });
 
