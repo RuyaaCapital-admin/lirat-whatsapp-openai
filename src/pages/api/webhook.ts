@@ -20,39 +20,43 @@ setDefaultOpenAIClient(openai as any);
 const AGENT_SESSION_SCOPE = process.env.OPENAI_WORKFLOW_ID || "liirat_whatsapp_agent";
 const TIME_CONNECTOR_ID = process.env.OPENAI_MCP_TIME_CONNECTOR_ID?.trim();
 
+const SignalSchema = z
+  .object({
+    symbol: z.string(),
+    timeframe: z.string(),
+    timeUtc: z.string(),
+    decision: z.enum(["BUY", "SELL", "NEUTRAL"]),
+    reason: z.string(),
+    entry: z.union([z.number(), z.string()]).nullable(),
+    sl: z.union([z.number(), z.string()]).nullable(),
+    tp1: z.union([z.number(), z.string()]).nullable(),
+    tp2: z.union([z.number(), z.string()]).nullable(),
+  })
+  .strict();
+
+const NewsItemSchema = z
+  .object({
+    title: z.string(),
+    url: z.string().url(),
+    summary: z.string().nullable(),
+    publishedAt: z.string().nullable(),
+  })
+  .strict();
+
+const NewsSchema = z
+  .object({
+    items: z.array(NewsItemSchema).min(1),
+  })
+  .strict();
+
 const LiiratAiSchema = z
   .object({
     kind: z.enum(["text", "signal", "news"]),
-    text: z.string().optional(),
-    symbol: z.string().optional(),
-    signal: z
-      .object({
-        symbol: z.string(),
-        timeframe: z.string(),
-        timeUtc: z.string(),
-        decision: z.enum(["BUY", "SELL", "NEUTRAL"]),
-        reason: z.string(),
-        entry: z.union([z.number(), z.string()]).nullable().optional(),
-        sl: z.union([z.number(), z.string()]).nullable().optional(),
-        tp1: z.union([z.number(), z.string()]).nullable().optional(),
-        tp2: z.union([z.number(), z.string()]).nullable().optional(),
-      })
-      .optional(),
-    news: z
-      .object({
-        items: z
-          .array(
-            z.object({
-              title: z.string(),
-              url: z.string().url(),
-              summary: z.string().optional(),
-              publishedAt: z.string().optional(),
-            }),
-          )
-          .min(1),
-      })
-      .optional(),
-    language: z.enum(["ar", "en"]).optional(),
+    text: z.string().nullable(),
+    symbol: z.string().nullable(),
+    signal: SignalSchema.nullable(),
+    news: NewsSchema.nullable(),
+    language: z.enum(["ar", "en"]).nullable(),
   })
   .strict();
 
@@ -109,6 +113,7 @@ Rules:
 - Always populate signal.symbol/timeframe/timeUtc/decision/reason when kind is "signal".
 - Keep Reuters URLs unchanged; never include other domains.
 - Prefer ISO-like timestamps (YYYY-MM-DD HH:MM) for timeUtc.
+- Any field that does not apply MUST be present with the value null (do not omit fields).
 `;
 
 const liiratAi = new Agent({
@@ -138,6 +143,7 @@ Formatting rules:
     6) SL: {sl or "-"}
     7) Targets: TP1 {tp1 or "-"} | TP2 {tp2 or "-"}
 - When kind = "text" or the payload is incomplete: return the text field trimmed.
+- Fields may be null; treat null as missing/unused data and do not print literal "null".
 - If URLs are present, keep them exactly as provided.
 - Never mention schema names, tools, or internal notes.`;
 
@@ -200,14 +206,17 @@ function extractMessage(payload: any): InboundMessage {
 function prepareFormatterPayload(output: LiiratAiOutput, userMessage: string): LiiratAiOutput {
   const inferredLanguage = detectArabic(userMessage) ? "ar" : "en";
   const language = output.language ?? inferredLanguage;
-  const symbol = output.symbol ?? output.signal?.symbol;
-  const newsItems = output.news?.items?.slice(0, 3);
+  const symbol = output.symbol ?? output.signal?.symbol ?? null;
+  const newsItems = output.news?.items?.slice(0, 3) ?? null;
 
   const enriched: LiiratAiOutput = {
     ...output,
+    kind: output.kind,
+    text: output.text ?? (output.kind === "text" ? "" : null),
     language,
-    ...(symbol ? { symbol } : {}),
-    ...(newsItems && newsItems.length ? { news: { items: newsItems } } : {}),
+    symbol,
+    news: newsItems && newsItems.length ? { items: newsItems } : null,
+    signal: output.signal ?? null,
   };
 
   if (enriched.signal) {
