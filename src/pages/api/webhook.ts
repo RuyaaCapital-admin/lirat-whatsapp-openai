@@ -178,7 +178,7 @@ function collectResponseText(response: any): string {
     }
   };
 
-  outputs.forEach((item) => {
+  outputs.forEach((item: any) => {
     append(item?.content ?? item?.output_text ?? item?.text ?? "");
   });
 
@@ -268,9 +268,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } else {
       try {
-        const workflowResponse = await openai.responses.create({
+        const workflowResponse = await (openai.responses.create as unknown as (args: any) => Promise<any>)({
           workflow_id: workflowId,
-          session: sessionId,
+          session_id: sessionId,
           input: messageBody,
         });
         const rawOutput = collectResponseText(workflowResponse);
