@@ -8,6 +8,13 @@ import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
+
+// Sanity checks at module load
+const workflowId = process.env.OPENAI_WORKFLOW_ID;
+const apiKey = process.env.OPENAI_API_KEY;
+console.log("[WEBHOOK] WF", workflowId?.slice(0, 6)); // should start "wf_"
+console.log("[WEBHOOK] KEY", apiKey?.slice(0, 8)); // should start "sk-proj"
+
 const processedMessageCache = new Set<string>();
 
 type InboundMessage = { id: string; from: string; text: string };
@@ -151,7 +158,7 @@ function collectWorkflowOutput(run: any): string {
   return pieces.join("\n").trim();
 }
 
-// ---------------------- workflow runner (FIXED - uses beta.workflows) -------------------
+// ---------------------- workflow runner (FIXED per official instructions) -------------------
 
 async function runWorkflowMessage(opts: {
   workflowId: string;
@@ -160,11 +167,8 @@ async function runWorkflowMessage(opts: {
 }): Promise<string> {
   const { workflowId, sessionId, userText } = opts;
 
-  // Try multiple API paths: beta.workflows, workflows, or direct API call
-  const workflowsAPI = (openai as any).beta?.workflows || (openai as any).workflows;
-
-  if (!workflowsAPI || !workflowsAPI.runs) {
-    // If workflows API not available, throw to trigger fallback
+  // Guard: Check if workflows API is available
+  if (!openai.workflows?.runs?.create) {
     throw new Error("workflows_api_not_available");
   }
 
@@ -174,49 +178,34 @@ async function runWorkflowMessage(opts: {
     : undefined;
 
   try {
-    // 1) Start run - try createAndPoll first (if available), then fallback to create + poll
-    let run: any;
+    // Create workflow run
+    let run = await openai.workflows.runs.create({
+      workflow_id: workflowId,
+      session_id: sessionId,
+      ...(version ? { version } : {}),
+      input: { input_as_text: userText },
+    });
 
-    if (workflowsAPI.runs?.createAndPoll) {
-      // Use createAndPoll if available (newer SDK versions)
-      run = await workflowsAPI.runs.createAndPoll({
-        workflow_id: workflowId,
-        session_id: sessionId,
-        ...(version ? { version } : {}),
-        input: { input_as_text: userText },
-      });
-    } else if (workflowsAPI.runs?.create && workflowsAPI.runs?.get) {
-      // Fallback: create + manual polling
-      run = await workflowsAPI.runs.create({
-        workflow_id: workflowId,
-        session_id: sessionId,
-        ...(version ? { version } : {}),
-        input: { input_as_text: userText },
-      });
+    // Poll until completion
+    const start = Date.now();
+    const timeout = 25000; // 25 seconds max
 
-      // Poll until completion
-      const start = Date.now();
-      const timeout = 25000; // 25 seconds max
-
-      while (run && !["completed", "failed", "cancelled"].includes(run.status)) {
-        if (Date.now() - start > timeout) {
-          throw new Error("workflow_timeout");
-        }
-
-        const ra = (run as any).required_action?.submit_tool_outputs;
-        if (ra && Array.isArray(ra.tool_calls) && ra.tool_calls.length) {
-          // We don't own any external tool handlers here; bail to fallback.
-          throw new Error("workflow_requires_external_tool_outputs");
-        }
-
-        // Wait before next poll
-        await new Promise((r) => setTimeout(r, 600));
-
-        // Get updated run status
-        run = await workflowsAPI.runs.get({ run_id: run.id });
+    while (run && !["completed", "failed", "cancelled"].includes(run.status)) {
+      if (Date.now() - start > timeout) {
+        throw new Error("workflow_timeout");
       }
-    } else {
-      throw new Error("workflows_api_methods_not_available");
+
+      const ra = (run as any).required_action?.submit_tool_outputs;
+      if (ra && Array.isArray(ra.tool_calls) && ra.tool_calls.length) {
+        // We don't own any external tool handlers here; bail to fallback.
+        throw new Error("workflow_requires_external_tool_outputs");
+      }
+
+      // Wait before next poll
+      await new Promise((r) => setTimeout(r, 600));
+
+      // Get updated run status
+      run = await openai.workflows.runs.retrieve({ run_id: run.id });
     }
 
     if (!run || run.status !== "completed") {
