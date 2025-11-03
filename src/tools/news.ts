@@ -69,8 +69,6 @@ export async function fetchNews(query: string, count: number, lang = "en"): Prom
           content: `Topic: ${query}\nScope: ${scope}\nReturn ${safeCount} items at most following the schema.`,
         },
       ],
-      tools: [{ type: "web_search" as any }],
-      tool_choice: "auto",
       response_format: {
         type: "json_schema",
         json_schema: {

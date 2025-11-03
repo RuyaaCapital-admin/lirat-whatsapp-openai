@@ -148,6 +148,7 @@ export interface NewsItem {
   date: string | number | Date;
   source: string;
   title: string;
+  impact?: string;
 }
 
 export function newsFormatter(rows: NewsItem[], lang: LanguageCode): string {
