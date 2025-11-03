@@ -17,6 +17,8 @@ import {
 
 export type ToolResult = any;
 
+const FALLBACK_MODEL = process.env.OPENAI_FALLBACK_MODEL?.trim() || "gpt-4o-mini";
+
 function detectLanguage(text: string): "ar" | "en" {
   return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
 }
@@ -66,7 +68,7 @@ function formatSignalFromJson(obj: any, lang: "ar" | "en"): string | null {
   lines.push(lang === "ar" ? `الرمز: ${symbol}` : `symbol: ${symbol}`);
   lines.push(lang === "ar" ? `الإطار الزمني: ${timeframe}` : `timeframe: ${timeframe}`);
   lines.push(`SIGNAL: ${decision}`);
-  lines.push((lang === "ar" ? "السبب" : "Reason") + ": " + reasonText);
+  lines.push((lang === "ar" ? "Reason".replace("Reason", "السبب") : "Reason") + ": " + reasonText);
   if (String(decision).toUpperCase() !== "NEUTRAL") {
     lines.push(`Entry: ${entry ?? "-"}`);
     lines.push(`SL: ${sl ?? "-"}`);
@@ -90,7 +92,6 @@ function coerceTextIfJson(raw: string, userText: string): string {
     const parsed = JSON.parse(text);
     const lang = detectLanguage(userText);
     if (Array.isArray(parsed)) {
-      // Join any array of strings
       const maybe = parsed.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join("\n");
       if (maybe.trim()) return maybe.trim();
       return text;
@@ -129,10 +130,10 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
     return await get_ohlc(symbol, timeframe, limit);
   },
   async compute_trading_signal(args) {
-    // Accept either a full OHLC payload or symbol/timeframe and fetch candles through get_ohlc
     let ohlc = args.ohlc || args;
     const desiredSymbol = String(ohlc.symbol || args.symbol || "").trim();
     const desiredTf = String(ohlc.timeframe || args.timeframe || "").trim();
+
     if (!ohlc?.candles || !Array.isArray(ohlc.candles)) {
       const sym = String(ohlc.symbol || args.symbol || "").trim();
       const tf = String(ohlc.timeframe || args.timeframe || "").trim();
@@ -143,7 +144,6 @@ const toolHandlers: Record<string, (args: Record<string, any>) => Promise<ToolRe
         }
       }
     }
-    // If too few candles, fetch a larger window to make a decision
     if (!ohlc?.candles || ohlc.candles.length < 30) {
       if (desiredSymbol && desiredTf) {
         const fetched = await get_ohlc(desiredSymbol, desiredTf, 150);
@@ -190,45 +190,49 @@ function serialiseToolResult(result: ToolResult): string {
   try { return JSON.stringify(result); } catch { return String(result); }
 }
 
-export async function runWorkflowMessage(
-  {
-    sessionId,
-    workflowId,
-    version,
-    userText,
-  }: {
-    sessionId: string;
-    workflowId: string;
-    version?: number;
-    userText: string;
-  },
-): Promise<string> {
+export async function runWorkflowMessage({
+  sessionId,
+  workflowId,
+  version,
+  userText,
+}: {
+  sessionId: string;
+  workflowId: string;
+  version?: number;
+  userText: string;
+}): Promise<string> {
   const wf: any = (openai as any).workflows;
+
+  // --- If Workflows API not available, use Chat-Completions tool loop -----------
   if (!wf?.runs?.create) {
-    // Fallback to Chat Completions tool-call loop with persistent memory keyed by sessionId
     const smartReply = createSmartReply({
       chat: {
         create: (params: ChatCompletionCreateParams): Promise<ChatCompletion> =>
           openai.chat.completions
-            .create({ ...(params as any), stream: false })
+            .create({
+              // CRITICAL: ensure model is present to avoid 400
+              model: (params as any).model || FALLBACK_MODEL,
+              ...(params as any),
+              stream: false,
+            })
             .then((r: any) => r as ChatCompletion),
       },
       toolSchemas: TOOL_SCHEMAS,
       toolHandlers,
       systemPrompt: SYSTEM_PROMPT,
       memory,
-      model: "gpt-4o",
+      // also tell smartReply our preferred model for any calls it creates
+      model: FALLBACK_MODEL,
       temperature: 0,
       maxTokens: 700,
     });
     return await smartReply({ userId: sessionId, text: userText });
   }
 
-  // Send user message into the workflow session
-  // Prefer official Agent Builder runner if present
+  // --- Prefer official Workflows runner ----------------------------------------
+  // Optional dynamic user entrypoint (if provided)
   if ((openai as any).agents?.Runner) {
     try {
-      // Dynamically import user-provided workflow entrypoint when available in env
       const modulePath = process.env.OPENAI_WORKFLOW_ENTRY || "";
       if (modulePath) {
         const mod = await import(modulePath);
@@ -238,11 +242,12 @@ export async function runWorkflowMessage(
           if (out) return out;
         }
       }
-    } catch (e) {
-      // Fallthrough to Workflows API path
+    } catch {
+      // fall through to workflows API
     }
   }
 
+  // Run workflow
   let run = await wf.runs.create({
     workflow_id: workflowId,
     version,
@@ -250,9 +255,8 @@ export async function runWorkflowMessage(
     input: { input_as_text: userText },
   });
 
-  // Loop until final
+  // Poll + handle required tool calls
   while (true) {
-    // Handle tool calls if any
     const toolCalls: any[] = Array.isArray(run?.required_action?.submit_tool_outputs?.tool_calls)
       ? run.required_action.submit_tool_outputs.tool_calls
       : [];
@@ -265,15 +269,10 @@ export async function runWorkflowMessage(
         let args: Record<string, any> = {};
         try {
           const raw = (call as any)?.function?.arguments;
-          if (typeof raw === "string") {
-            args = raw ? JSON.parse(raw) : {};
-          } else if (raw && typeof raw === "object") {
-            args = raw as Record<string, any>;
-          } else {
-            args = {};
-          }
-        } catch (e) {
-          // Attempt salvage for truncated JSON: extract symbol/timeframe and proceed
+          if (typeof raw === "string") args = raw ? JSON.parse(raw) : {};
+          else if (raw && typeof raw === "object") args = raw as Record<string, any>;
+          else args = {};
+        } catch {
           const raw = (call as any)?.function?.arguments;
           const rescued = typeof raw === "string" ? salvageArgs(raw) : null;
           args = rescued || {};
@@ -293,28 +292,34 @@ export async function runWorkflowMessage(
       continue;
     }
 
-    // If the run has an output, extract final assistant text
-    const isCompleted = run?.status === "completed" || run?.status === "requires_action" && !toolCalls.length;
-    if (isCompleted) {
+    // Completed? extract assistant output robustly
+    const completed = run?.status === "completed" || (run?.status === "requires_action" && !toolCalls.length);
+    if (completed) {
+      // Prefer explicit output_text if present
+      const outText = (run as any).output_text;
+      if (typeof outText === "string" && outText.trim()) {
+        return coerceTextIfJson(outText.trim(), userText);
+      }
+
       const messages = (run?.output?.messages ?? run?.output ?? []) as any[];
       let finalText = "";
       const collect = (msg: any) => {
         if (!msg) return;
-        const content = msg.content ?? msg.text ?? msg.output_text ?? "";
-        if (typeof content === "string") {
-          finalText += (finalText ? "\n" : "") + content;
-        } else if (Array.isArray(content)) {
-          for (const chunk of content) {
+        const c = msg.content ?? msg.text ?? msg.output_text ?? "";
+        if (typeof c === "string") {
+          finalText += (finalText ? "\n" : "") + c;
+        } else if (Array.isArray(c)) {
+          for (const chunk of c) {
             if (typeof chunk === "string") finalText += (finalText ? "\n" : "") + chunk;
             else if (chunk?.text) finalText += (finalText ? "\n" : "") + chunk.text;
           }
         }
       };
-      if (Array.isArray(messages)) messages.forEach(collect); else collect(messages);
+      if (Array.isArray(messages)) messages.forEach(collect);
+      else collect(messages);
       return coerceTextIfJson(finalText, userText);
     }
 
-    // Poll next state
     run = await wf.runs.get({ run_id: run.id });
   }
 }
