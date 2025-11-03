@@ -5,7 +5,6 @@ import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
 import { getOrCreateConversationByTitle, fetchRecentContext, insertMessage } from "./supabaseLite";
 import { classifyIntent, type ClassifiedIntent } from "./intentClassifier";
-import { normaliseAgentNewsItems, runAgentNews } from "./newsAgent";
 
 export interface SmartReplyInput {
   phone: string;
@@ -179,21 +178,12 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
         tool_result = { type: "signal_error", symbol: null, timeframe } as any;
       }
     } else if (classified.intent === "news") {
-      try {
-        const payload = await runAgentNews(normalizedText || text || "");
-        const items = normaliseAgentNewsItems(payload)
-          .slice(0, 3)
-          .map((item) => ({
-            date: item.date,
-            source: "www.liiratnews.com",
-            title: item.title,
-            impact: item.expected_effect,
-          }));
-        tool_result = { type: "news", items } as any;
-      } catch (err) {
-        console.warn("[NEWS_AGENT] failed", err);
-        tool_result = { type: "news", items: [] } as any;
-      }
+      const query = (classified.query && classified.query.trim())
+        ? classified.query
+        : classified.symbol
+          ? (language === "ar" ? `أخبار ${classified.symbol}` : `${classified.symbol} news`)
+          : (language === "ar" ? "أخبار السوق" : "market news");
+      tool_result = { type: "news_unavailable", query, language } as any;
     } else if (classified.intent === "liirat_info") {
       const q = classified.query || normalizedText;
       const { tool_result: tr } = await buildLiiratToolResult(q, language);

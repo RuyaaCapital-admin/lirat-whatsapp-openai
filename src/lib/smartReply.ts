@@ -18,7 +18,6 @@ import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode 
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
 import { hardMapSymbol, parseTimeframe, toTimeframe } from "../tools/normalize";
 import { priceFormatter, signalFormatter } from "../utils/formatters";
-import { formatAgentNewsLines, normaliseAgentNewsItems, runAgentNews } from "./newsAgent";
 import type { GetOhlcSuccess } from "../tools/ohlc";
 
 const SYSTEM_PROMPT = `You are Liirat Assistant (مساعد ليرات)، a concise professional trading assistant for Liirat clients.
@@ -36,7 +35,6 @@ General conduct:
 - إذا لم يحدّد إطارًا → استخدم SWEEP بالترتيب ["5min","15min","30min","1hour","4hour","daily"] وتوقف عند أول BUY/SELL واطبع نفس TF المستخدم.
 - If the user does not provide a timeframe, sweep in order ["5min","15min","30min","1hour","4hour","daily"], stop at the first BUY/SELL, and report the timeframe used.
 - For price questions: call get_price and return ONLY that price text, no greeting.
-- For economic news / market news: call agent_reuters_news(query, lang). Return 3 bullet lines: "YYYY-MM-DD — Title — impact".
 - For Liirat company / platform / support questions: call about_liirat_knowledge(query, lang) and return that text directly.
 - If the user message is empty or whitespace, ask them what they need: Arabic "ما الرسالة؟" / English "How can I help?".
 - Do not mention tools or internal logic.
@@ -140,22 +138,6 @@ const TOOL_SCHEMAS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
-      name: "agent_reuters_news",
-      description: "Fetch Reuters market headlines via the Agent Builder.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string" },
-          lang: { type: "string", enum: ["ar", "en"], default: "en" },
-        },
-        required: ["query"],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "about_liirat_knowledge",
       description: "Answer Liirat company/support questions.",
       parameters: {
@@ -222,11 +204,6 @@ export interface SmartReplyDeps {
   supabase: {
     loadHistory: (phone: string, limit?: number) => Promise<ConversationHistory>;
     ensureConversation: (phone: string, contactName?: string) => Promise<string | null>;
-  };
-  newsAgent?: {
-    run?: typeof runAgentNews;
-    normalise?: typeof normaliseAgentNewsItems;
-    format?: typeof formatAgentNewsLines;
   };
   model?: string;
   maxIterations?: number;
@@ -361,7 +338,6 @@ export function createSmartReply(deps: SmartReplyDeps) {
     chat,
     tools,
     supabase,
-    newsAgent,
     model = "gpt-4o-mini",
     maxIterations = 8,
   } = deps;
@@ -369,10 +345,6 @@ export function createSmartReply(deps: SmartReplyDeps) {
   if (!chat?.create) {
     throw new Error("smartReply requires chat.create");
   }
-
-  const runNewsAgent = newsAgent?.run ?? runAgentNews;
-  const normaliseNewsAgent = newsAgent?.normalise ?? normaliseAgentNewsItems;
-  const formatNewsAgent = newsAgent?.format ?? formatAgentNewsLines;
 
   return async function smartReply({ phone, text, contactName }: SmartReplyInput): Promise<SmartReplyOutput> {
     const normalisedText = normaliseDigits(text ?? "").trim();
@@ -530,16 +502,6 @@ export function createSmartReply(deps: SmartReplyDeps) {
                 const block = formatSignalBlock(signal, language, toolContext.requestedTimeframe);
                 const replyText = applyGreeting(block, isNewConversation, language);
                 return { replyText, language, conversationId: ensured };
-              } else if (toolName === "agent_reuters_news") {
-                const query = String(parsed.query ?? normalisedText).trim() || normalisedText;
-                const payload = await runNewsAgent(query);
-                const items = normaliseNewsAgent(payload);
-                const lines = formatNewsAgent(items, 3);
-                if (!lines.length) {
-                  throw new Error("insufficient_news");
-                }
-                console.log("[TOOL] agent_reuters_news -> ok", { query });
-                pushToolOrAssistantMessage(messages, call.id, lines.join("\n"));
               } else if (toolName === "about_liirat_knowledge") {
                 const query = String(parsed.query ?? normalisedText).trim();
                 const content = await tools.about_liirat_knowledge(query, language);

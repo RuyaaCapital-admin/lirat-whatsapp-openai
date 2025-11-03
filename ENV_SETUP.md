@@ -16,6 +16,12 @@ Set these in your Vercel dashboard under Settings → Environment Variables:
 - `OPENAI_WORKFLOW_ID` - Your Workflow ID from Agent Builder (recommended) - **Get from Agent Builder "Get code" modal**
 - `USE_WORKFLOW` - Set to "true" to enable workflow (default: true)
 
+### Agent Builder Web Search Configuration
+- In Agent Builder, open your workflow graph and edit the Web Search tool node.
+- Enter one domain per line in the allowed domains list (start with `reuters.com`).
+- Leave the location field empty and set context size to Medium.
+- Save and redeploy the workflow after any change so the webhook picks up the new configuration.
+
 ### Price Data
 - `FCS_API_KEY` - FCS API key for live price data
 
