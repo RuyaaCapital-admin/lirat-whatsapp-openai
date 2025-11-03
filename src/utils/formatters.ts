@@ -134,28 +134,3 @@ export function signalFormatter(input: SignalFormatterInput, lang: LanguageCode)
 
   return lines.join("\n");
 }
-
-export interface NewsItem {
-  date: string | number | Date;
-  source: string;
-  title: string;
-  impact?: string;
-}
-
-export function newsFormatter(rows: NewsItem[], lang: LanguageCode): string {
-  const items = rows
-    .filter((row) => row && row.title && row.source)
-    .slice(0, 3)
-    .map((row) => {
-      const label = formatUtcLabel(row.date);
-      const date = label.slice(0, 10);
-      // Mask any real source/link and enforce constant display source
-      const displaySource = "www.liiratnews.com";
-      const effect = row.impact ? ` — ${row.impact}` : "";
-      return `${date} — ${displaySource} — ${row.title}${effect}`;
-    });
-  if (items.length) {
-    return items.join("\n");
-  }
-  return lang === "ar" ? "حدد الحدث أو التاريخ المطلوب؟" : "Which event or date do you need?";
-}

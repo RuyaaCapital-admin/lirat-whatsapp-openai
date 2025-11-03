@@ -118,22 +118,6 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "agent_reuters_news",
-      description: "Fetch Reuters market/economic headlines via the Agent Builder.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string" },
-          lang: { type: "string", enum: ["ar", "en"] },
-        },
-        required: ["query"],
-        additionalProperties: false
-      }
-    }
-  }
 ] as const;
 
 export type ToolSchemas = typeof TOOL_SCHEMAS;
