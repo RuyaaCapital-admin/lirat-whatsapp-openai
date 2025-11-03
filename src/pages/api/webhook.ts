@@ -1,15 +1,152 @@
 // pages/api/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import { Agent, Runner, hostedMcpTool, setDefaultOpenAIClient, webSearchTool } from "@openai/agents";
+import { z } from "zod";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
+import { detectArabic } from "../../utils/formatters";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
 import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
+import SYSTEM_PROMPT from "../../lib/systemPrompt";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
 const processedMessageCache = new Set<string>();
+
+setDefaultOpenAIClient(openai as any);
+
+const AGENT_SESSION_SCOPE = process.env.OPENAI_WORKFLOW_ID || "liirat_whatsapp_agent";
+const TIME_CONNECTOR_ID = process.env.OPENAI_MCP_TIME_CONNECTOR_ID?.trim();
+
+const LiiratAiSchema = z
+  .object({
+    kind: z.enum(["text", "signal", "news"]),
+    text: z.string().optional(),
+    symbol: z.string().optional(),
+    signal: z
+      .object({
+        symbol: z.string(),
+        timeframe: z.string(),
+        timeUtc: z.string(),
+        decision: z.enum(["BUY", "SELL", "NEUTRAL"]),
+        reason: z.string(),
+        entry: z.union([z.number(), z.string()]).nullable().optional(),
+        sl: z.union([z.number(), z.string()]).nullable().optional(),
+        tp1: z.union([z.number(), z.string()]).nullable().optional(),
+        tp2: z.union([z.number(), z.string()]).nullable().optional(),
+      })
+      .optional(),
+    news: z
+      .object({
+        items: z
+          .array(
+            z.object({
+              title: z.string(),
+              url: z.string().url(),
+              summary: z.string().optional(),
+              publishedAt: z.string().optional(),
+            }),
+          )
+          .min(1),
+      })
+      .optional(),
+    language: z.enum(["ar", "en"]).optional(),
+  })
+  .strict();
+
+type LiiratAiOutput = z.infer<typeof LiiratAiSchema>;
+
+const webSearch = webSearchTool({
+  filters: { allowedDomains: ["reuters.com"] },
+  searchContextSize: "medium",
+});
+
+const timeNow = TIME_CONNECTOR_ID
+  ? hostedMcpTool({
+      serverLabel: "time-now",
+      connectorId: TIME_CONNECTOR_ID,
+    })
+  : hostedMcpTool({
+      serverLabel: "time-now",
+    });
+
+const LIIRAT_AGENT_INSTRUCTIONS = `${SYSTEM_PROMPT}
+
+When you finish a task, emit your final answer strictly as JSON matching this schema:
+{
+  "kind": "text" | "signal" | "news",
+  "text"?: string,
+  "symbol"?: string,
+  "signal"?: {
+    "symbol": string,
+    "timeframe": string,
+    "timeUtc": string,
+    "decision": "BUY" | "SELL" | "NEUTRAL",
+    "reason": string,
+    "entry"?: number | string | null,
+    "sl"?: number | string | null,
+    "tp1"?: number | string | null,
+    "tp2"?: number | string | null
+  },
+  "news"?: {
+    "items": Array<{
+      "title": string,
+      "url": string,
+      "summary"?: string,
+      "publishedAt"?: string
+    }>
+  },
+  "language"?: "ar" | "en"
+}
+
+Rules:
+- Mirror the user's language; set language to "ar" or "en".
+- Use kind "signal" only when you have a full structured trading signal.
+- Use kind "news" only for Reuters search updates (max 3 most relevant links).
+- Use kind "text" for any other response and populate text.
+- Always populate signal.symbol/timeframe/timeUtc/decision/reason when kind is "signal".
+- Keep Reuters URLs unchanged; never include other domains.
+- Prefer ISO-like timestamps (YYYY-MM-DD HH:MM) for timeUtc.
+`;
+
+const liiratAi = new Agent({
+  name: "Liirat AI",
+  instructions: LIIRAT_AGENT_INSTRUCTIONS,
+  model: "gpt-5-nano",
+  tools: [webSearch, timeNow],
+  outputType: LiiratAiSchema,
+});
+
+const FORMATTER_INSTRUCTIONS = `You format Liirat agent structured outputs for WhatsApp.
+You receive the user's latest message and a JSON payload with keys: kind, text, symbol, signal, news, language.
+
+Formatting rules:
+- Output plain text only. Never emit JSON, quotes, markdown, or explanations.
+- Mirror the language field if provided ("ar" for Arabic, otherwise default to English). If the field is missing, infer from the user message.
+- When kind = "news":
+  • Return one line per item as "• <title> — <url>". If a summary exists, append " — <summary>" in the same line.
+  • List at most three items.
+- When kind = "signal":
+  • Produce exactly seven lines in this order:
+    1) time (UTC): {timeUtc}
+    2) symbol: {symbol}
+    3) timeframe: {timeframe}
+    4) SIGNAL: {decision} — Reason: {reason}
+    5) Entry: {entry or "-"}
+    6) SL: {sl or "-"}
+    7) Targets: TP1 {tp1 or "-"} | TP2 {tp2 or "-"}
+- When kind = "text" or the payload is incomplete: return the text field trimmed.
+- If URLs are present, keep them exactly as provided.
+- Never mention schema names, tools, or internal notes.`;
+
+const formatter = new Agent({
+  name: "Liirat Formatter",
+  instructions: FORMATTER_INSTRUCTIONS,
+  model: "gpt-4.1-mini",
+  outputType: "text",
+});
 
 type InboundMessage = { id: string; from: string; text: string };
 
@@ -60,44 +197,47 @@ function extractMessage(payload: any): InboundMessage {
   return { id: idCandidate, from: fromCandidate, text };
 }
 
-function coerceTextIfJson(text: string, fallback: string): string {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null) {
-      return fallback;
-    }
-    return text;
-  } catch {
-    return text;
-  }
-}
+function prepareFormatterPayload(output: LiiratAiOutput, userMessage: string): LiiratAiOutput {
+  const inferredLanguage = detectArabic(userMessage) ? "ar" : "en";
+  const language = output.language ?? inferredLanguage;
+  const symbol = output.symbol ?? output.signal?.symbol;
+  const newsItems = output.news?.items?.slice(0, 3);
 
-function collectResponseText(run: any): string {
-  // Workflows may return either output.messages (content array) or a plain output_text
-  const out = run?.output ?? {};
-  const pieces: string[] = [];
-
-  const pushSeg = (seg: any) => {
-    if (!seg) return;
-    if (typeof seg === "string") {
-      if (seg.trim()) pieces.push(seg.trim());
-      return;
-    }
-    if (Array.isArray(seg)) {
-      seg.forEach(pushSeg);
-      return;
-    }
-    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
-    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
-    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
+  const enriched: LiiratAiOutput = {
+    ...output,
+    language,
+    ...(symbol ? { symbol } : {}),
+    ...(newsItems && newsItems.length ? { news: { items: newsItems } } : {}),
   };
 
-  if (Array.isArray(out?.messages)) {
-    out.messages.forEach((m: any) => pushSeg(m?.content));
-  } else {
-    pushSeg(out);
+  if (enriched.signal) {
+    const sig = enriched.signal;
+    enriched.signal = {
+      ...sig,
+      symbol: sig.symbol,
+      timeframe: sig.timeframe,
+      timeUtc: sig.timeUtc,
+      decision: sig.decision,
+      reason: sig.reason,
+      entry: sig.entry ?? null,
+      sl: sig.sl ?? null,
+      tp1: sig.tp1 ?? null,
+      tp2: sig.tp2 ?? null,
+    };
   }
-  return pieces.join("\n").trim();
+
+  return enriched;
+}
+
+function buildFormatterPrompt(userMessage: string, output: LiiratAiOutput): string {
+  const payload = prepareFormatterPayload(output, userMessage);
+  return [
+    "User message:",
+    userMessage || "(empty)",
+    "",
+    "Liirat structured output JSON:",
+    JSON.stringify(payload, null, 2),
+  ].join("\n");
 }
 
 // ------------------------------ API ------------------------------
@@ -151,10 +291,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
-      const workflowId = process.env.OPENAI_WORKFLOW_ID;
-      if (!workflowId) throw new Error("Missing OPENAI_WORKFLOW_ID");
-
-      const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
+      const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, AGENT_SESSION_SCOPE);
 
       // Log user message (non-blocking)
       void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
@@ -167,39 +304,35 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
         } catch (err) {
           console.warn("[WEBHOOK] image handling error", err);
-          replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+          replyText = detectArabic(messageBody || "")
             ? "تعذر قراءة الصورة حالياً."
             : "Couldn't read the image right now.";
         }
       } else {
         try {
-          // Hard guard: ensure Workflows is available on this SDK
-          // @ts-expect-error – property exists in >=4.67
-          if (!openai.workflows?.runs?.create) throw new Error("workflows_api_not_available");
-
-          // @ts-expect-error – types present in >=4.67
-          const run = await openai.workflows.runs.create({
-            workflow_id: workflowId,
-            session_id: sessionId,
-            // Send a simple input object; your Workflow should read `input.message`
-            input: { message: messageBody, from: inbound.from },
-            // optional but helpful for traceability
-            user: `wa_${inbound.from}`,
+          const runnerConfig = inbound.from ? { groupId: `wa:${inbound.from}` } : {};
+          const liiratRun = await new Runner(runnerConfig).run(liiratAi, messageBody, {
+            conversationId: sessionId,
           });
 
-          const rawOutput = collectResponseText(run);
-          const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
-          if (!finalText) throw new Error("empty_workflow_output");
-          replyText = finalText;
-        } catch (err: any) {
-          // If key scope or API not available, you'll see specific errors:
-          // - bad_api_key_scope_use_project_key  -> wrong key type
-          // - workflows_api_not_available        -> old SDK or feature unavailable
+          const structured = liiratRun.finalOutput;
+          if (!structured) {
+            throw new Error("liirat_agent_no_output");
+          }
+
+          const formatterInput = buildFormatterPrompt(messageBody, structured);
+          const formatterRun = await new Runner().run(formatter, formatterInput);
+          const formattedText = typeof formatterRun.finalOutput === "string" ? formatterRun.finalOutput.trim() : "";
+          if (!formattedText) {
+            throw new Error("formatter_empty_output");
+          }
+          replyText = formattedText;
+        } catch (err) {
           console.error("[WEBHOOK] Agent error, falling back:", err);
           const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
           replyText = (result?.replyText || "").trim();
           if (!replyText) {
-            replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+            replyText = detectArabic(messageBody || "")
               ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
               : "Data unavailable right now. Try: price BTCUSDT.";
           }
