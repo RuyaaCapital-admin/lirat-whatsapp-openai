@@ -189,10 +189,22 @@ function pushToolOrAssistantMessage(
   content: string,
 ) {
   const payload = typeof content === "string" ? content : JSON.stringify(content);
-  const last = messages[messages.length - 1];
-  if (last && last.role === "assistant" && Array.isArray((last as any).tool_calls) && last.tool_calls?.length) {
+  let originIndex = messages.length - 1;
+  while (originIndex >= 0 && messages[originIndex]?.role === "tool") {
+    originIndex -= 1;
+  }
+
+  const origin = originIndex >= 0 ? messages[originIndex] : null;
+  const toolCalls = Array.isArray((origin as any)?.tool_calls) ? ((origin as any).tool_calls as any[]) : [];
+  const hasMatchingToolCall = toolCalls.some((call) => call?.id === callId);
+
+  if (origin && origin.role === "assistant" && hasMatchingToolCall) {
     messages.push({ role: "tool", tool_call_id: callId, content: payload } as ChatCompletionMessageParam);
   } else {
+    console.warn("[WHATSAPP_AGENT] Missing matching assistant tool_call for tool message", {
+      callId,
+      originRole: origin?.role,
+    });
     messages.push({ role: "assistant", content: payload } as ChatCompletionMessageParam);
   }
 }

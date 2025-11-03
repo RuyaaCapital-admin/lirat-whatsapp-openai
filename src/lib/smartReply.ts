@@ -17,7 +17,7 @@ import {
 } from "../tools/agentTools";
 import { detectLanguage, normaliseDigits, normaliseSymbolKey, type LanguageCode } from "../utils/webhookHelpers";
 import { getOrCreateConversation, loadConversationHistory, type ConversationHistory } from "./supabase";
-import { hardMapSymbol, toTimeframe } from "../tools/normalize";
+import { hardMapSymbol, parseTimeframe, toTimeframe } from "../tools/normalize";
 import { newsFormatter, priceFormatter, signalFormatter } from "../utils/formatters";
 import type { GetOhlcSuccess } from "../tools/ohlc";
 
@@ -193,11 +193,12 @@ function signalUnavailable(language: LanguageCode): string {
   return SIGNAL_UNUSABLE[language] ?? SIGNAL_UNUSABLE.en;
 }
 
-function formatSignalBlock(result: TradingSignal, lang: LanguageCode): string {
+function formatSignalBlock(result: TradingSignal, lang: LanguageCode, requestedTimeframe?: string | null): string {
   return signalFormatter(
     {
       symbol: result.symbol,
       timeframe: result.timeframe,
+      displayTimeframe: requestedTimeframe ?? result.timeframe,
       timeUTC: result.timeUTC,
       decision: result.decision,
       reason: result.reason,
@@ -323,16 +324,29 @@ function pushToolOrAssistantMessage(
   content: string,
 ) {
   const payload = typeof content === "string" ? content : JSON.stringify(content);
-  const last = messages[messages.length - 1];
-  if (last && last.role === "assistant" && Array.isArray((last as any).tool_calls) && last.tool_calls?.length) {
+  let originIndex = messages.length - 1;
+  while (originIndex >= 0 && messages[originIndex]?.role === "tool") {
+    originIndex -= 1;
+  }
+
+  const origin = originIndex >= 0 ? messages[originIndex] : null;
+  const toolCalls = Array.isArray((origin as any)?.tool_calls) ? ((origin as any).tool_calls as any[]) : [];
+  const hasMatchingToolCall = toolCalls.some((call) => call?.id === callId);
+
+  if (origin && origin.role === "assistant" && hasMatchingToolCall) {
     messages.push({ role: "tool", tool_call_id: callId, content: payload } as ChatCompletionMessageParam);
   } else {
+    console.warn("[SMART_REPLY] Missing matching assistant tool_call for tool message", {
+      callId,
+      originRole: origin?.role,
+    });
     messages.push({ role: "assistant", content: payload } as ChatCompletionMessageParam);
   }
 }
 
 interface ToolContext {
   lastOhlcBySymbolTimeframe: Record<string, GetOhlcSuccess>;
+  requestedTimeframe: string | null;
 }
 
 function keyFor(symbol: string, timeframe: string) {
@@ -355,6 +369,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
   return async function smartReply({ phone, text, contactName }: SmartReplyInput): Promise<SmartReplyOutput> {
     const normalisedText = normaliseDigits(text ?? "").trim();
     const language = detectLanguage(normalisedText);
+    const { timeframe: inferredTimeframe, explicit: explicitTimeframe } = parseTimeframe(normalisedText);
 
     const history = await supabase.loadHistory(phone, 20);
     const isNewConversation = !history.conversationId || history.messages.length === 0;
@@ -375,7 +390,10 @@ export function createSmartReply(deps: SmartReplyDeps) {
       { role: "user", content: userMessageContent },
     ];
 
-    const toolContext: ToolContext = { lastOhlcBySymbolTimeframe: {} };
+    const toolContext: ToolContext = {
+      lastOhlcBySymbolTimeframe: {},
+      requestedTimeframe: explicitTimeframe ? inferredTimeframe : null,
+    };
     const messages = [...baseMessages];
 
     const respondWithFallback = async (fallback: string, greet: boolean) => {
@@ -501,7 +519,7 @@ export function createSmartReply(deps: SmartReplyDeps) {
                   ageMinutes: signal.ageMinutes,
                 });
                 const ensured = await ensureConversation();
-                const block = formatSignalBlock(signal, language);
+                const block = formatSignalBlock(signal, language, toolContext.requestedTimeframe);
                 const replyText = applyGreeting(block, isNewConversation, language);
                 return { replyText, language, conversationId: ensured };
               } else if (toolName === "search_web_news") {
