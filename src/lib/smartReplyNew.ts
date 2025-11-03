@@ -1,5 +1,5 @@
 // src/lib/smartReplyNew.ts
-import { get_price, get_ohlc, compute_trading_signal, search_web_news, about_liirat_knowledge, get_time_now } from "../tools/agentTools";
+import { get_price, get_ohlc, compute_trading_signal, about_liirat_knowledge, get_time_now } from "../tools/agentTools";
 import { hardMapSymbol, toTimeframe } from "../tools/normalize";
 import { type LanguageCode } from "../utils/formatters";
 import generateReply from "./generateReply";
@@ -177,25 +177,13 @@ export async function smartReply(input: SmartReplyInput): Promise<SmartReplyOutp
       } else {
         tool_result = { type: "signal_error", symbol: null, timeframe } as any;
       }
-  } else if (classified.intent === "news") {
-      // Prefer explicit query; else build from symbol if available; else generic
+    } else if (classified.intent === "news") {
       const query = (classified.query && classified.query.trim())
         ? classified.query
-        : (classified.symbol
-            ? (language === "ar" ? `أخبار ${classified.symbol}` : `${classified.symbol} news`)
-            : (language === "ar" ? "أخبار السوق" : "market news"));
-      try {
-        const news = await search_web_news(query, language, 3);
-        const items = (news.rows || []).slice(0, 3).map((row) => ({
-          date: String(row.date).slice(0, 10),
-          source: row.source,
-          title: row.title,
-          impact: (row as any).impact ?? undefined,
-        }));
-        tool_result = { type: "news", items } as any;
-      } catch (e) {
-        tool_result = { type: "news", items: [] } as any;
-      }
+        : classified.symbol
+          ? (language === "ar" ? `أخبار ${classified.symbol}` : `${classified.symbol} news`)
+          : (language === "ar" ? "أخبار السوق" : "market news");
+      tool_result = { type: "news_unavailable", query, language } as any;
     } else if (classified.intent === "liirat_info") {
       const q = classified.query || normalizedText;
       const { tool_result: tr } = await buildLiiratToolResult(q, language);

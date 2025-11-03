@@ -29,7 +29,6 @@ export async function runSmartReplyTests() {
   await testTradingSignalFlow();
   await testFollowUpReply();
   await testKnowledgeQuery();
-  await testNewsToolLanguage();
   console.log("smartReply behaviour tests passed");
 }
 
@@ -39,7 +38,6 @@ async function testPriceQuery() {
     get_price: 0,
     get_ohlc: 0,
     compute: 0,
-    news: 0,
     knowledge: 0,
   };
 
@@ -89,10 +87,6 @@ async function testPriceQuery() {
       compute_trading_signal: async () => {
         toolUsage.compute += 1;
         throw new Error("compute_trading_signal should not be called");
-      },
-      search_web_news: async () => {
-        toolUsage.news += 1;
-        throw new Error("search_web_news should not be called");
       },
       about_liirat_knowledge: async () => {
         toolUsage.knowledge += 1;
@@ -231,9 +225,6 @@ async function testTradingSignalFlow() {
         assert.strictEqual(input.candles.length, candles.length);
         return signalResult;
       },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async () => {
         throw new Error("about_liirat_knowledge should not be called");
       },
@@ -289,9 +280,6 @@ async function testFollowUpReply() {
       },
       compute_trading_signal: async () => {
         throw new Error("compute_trading_signal should not be called");
-      },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
       },
       about_liirat_knowledge: async () => {
         throw new Error("about_liirat_knowledge should not be called");
@@ -359,9 +347,6 @@ async function testKnowledgeQuery() {
       compute_trading_signal: async () => {
         throw new Error("compute_trading_signal should not be called");
       },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async (query: string) => {
         knowledgeCalls += 1;
         assert.strictEqual(query, "وين مكاتب ليرات؟");
@@ -379,82 +364,5 @@ async function testKnowledgeQuery() {
 
   assert.strictEqual(result.replyText, "أنا مساعد ليرات، كيف فيني ساعدك؟\nمكاتب ليرات في دبي مارينا.");
   assert.strictEqual(knowledgeCalls, 1);
-}
-
-async function testNewsToolLanguage() {
-  const newsLines = [
-    "2024-01-01 — Bloomberg — Gold steadies — medium",
-    "2024-01-02 — Reuters — Dollar slips — low",
-    "2024-01-03 — CNBC — Fed minutes in focus — high",
-  ];
-
-  const responses = [
-    {
-      choices: [
-        {
-          message: {
-            role: "assistant",
-            content: null,
-            tool_calls: [
-              {
-                id: "news-1",
-                type: "function",
-                function: {
-                  name: "search_web_news",
-                  arguments: JSON.stringify({ query: "اخبار الذهب", lang: "en" }),
-                },
-              },
-            ],
-          },
-        },
-      ],
-    },
-    {
-      choices: [
-        {
-          message: { role: "assistant", content: newsLines.join("\n") },
-          finish_reason: "stop",
-        },
-      ],
-    },
-  ];
-
-  let receivedLang: string | null = null;
-  let receivedCount: number | null = null;
-
-  const deps: SmartReplyDeps = {
-    chat: { create: createChatMock(responses, []) },
-    tools: {
-      get_price: async () => {
-        throw new Error("get_price should not be called");
-      },
-      get_ohlc: async () => {
-        throw new Error("get_ohlc should not be called");
-      },
-      compute_trading_signal: async () => {
-        throw new Error("compute_trading_signal should not be called");
-      },
-      search_web_news: async (query: string, lang: string, count: number) => {
-        receivedLang = lang;
-        receivedCount = count;
-        assert.strictEqual(query, "اخبار الذهب");
-        return newsLines.join("\n");
-      },
-      about_liirat_knowledge: async () => {
-        throw new Error("about_liirat_knowledge should not be called");
-      },
-    },
-    supabase: {
-      loadHistory: async () => makeHistory([], "conv-news"),
-      ensureConversation: async () => "conv-news",
-    },
-  };
-
-  const smart = createSmartReply(deps);
-  const result = await smart({ phone: "971500", text: "اخبار الذهب" });
-
-  assert.strictEqual(receivedLang, "ar");
-  assert.strictEqual(receivedCount, 3);
-  assert.strictEqual(result.replyText, `أنا مساعد ليرات، كيف فيني ساعدك؟\n${newsLines.join("\n")}`);
 }
 

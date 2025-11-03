@@ -118,23 +118,6 @@ export const TOOL_SCHEMAS = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "search_web_news",
-      description: "Search top market/economic headlines.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: { type: "string" },
-          lang: { type: "string", enum: ["ar", "en"] },
-          count: { type: "integer", minimum: 1, maximum: 5, default: 3 }
-        },
-        required: ["query"],
-        additionalProperties: false
-      }
-    }
-  }
 ] as const;
 
 export type ToolSchemas = typeof TOOL_SCHEMAS;

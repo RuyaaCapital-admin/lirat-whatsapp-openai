@@ -20,8 +20,8 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     candles?: Candle[];
   };
 
-  if (!symbol || !period || !Array.isArray(candles) || candles.length < 100) {
-    return res.status(400).json({ error: "Missing {symbol,period,candles>=100}" });
+  if (!symbol || !period || !Array.isArray(candles) || candles.length < 2) {
+    return res.status(400).json({ error: "Missing {symbol,period,candles>=2}" });
   }
 
   const n = candles.length;
@@ -40,11 +40,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
 
   return res.status(200).json({
     symbol,
-    interval: period,
+    period,
     pivot: round(pivot),
-    r1: round(r1),
-    r2: round(r2),
     s1: round(s1),
     s2: round(s2),
+    r1: round(r1),
+    r2: round(r2),
   });
 }

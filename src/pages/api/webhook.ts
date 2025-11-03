@@ -2,7 +2,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { runWorkflowMessage } from "../../lib/workflowRunner";
+import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
@@ -64,6 +64,131 @@ function extractMessage(payload: any): InboundMessage {
   return { id: idCandidate, from: fromCandidate, text };
 }
 
+function detectLanguage(text: string): "ar" | "en" {
+  return /[\u0600-\u06FF]/.test(text) ? "ar" : "en";
+}
+
+function formatPriceFromJson(obj: any, lang: "ar" | "en"): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  if (!obj.timeUtc || !obj.symbol || typeof obj.price !== "number") return null;
+  const time = String(obj.timeUtc);
+  const symbol = String(obj.symbol);
+  const price = Number(obj.price);
+  if (lang === "ar") {
+    return [`الوقت (UTC): ${time}`, `الرمز: ${symbol}`, `السعر: ${price}`].join("\n");
+  }
+  return [`time (UTC): ${time}`, `symbol: ${symbol}`, `price: ${price}`].join("\n");
+}
+
+const SIGNAL_REASON_MAP = {
+  ar: {
+    bullish_pressure: "ضغط شراء فوق المتوسطات",
+    bearish_pressure: "ضغط بيع تحت المتوسطات",
+    no_clear_bias: "السوق بدون اتجاه واضح حالياً",
+  },
+  en: {
+    bullish_pressure: "Buy pressure above short-term averages",
+    bearish_pressure: "Bearish momentum below resistance",
+    no_clear_bias: "No clear directional bias right now",
+  },
+} as const;
+
+function formatSignalFromJson(obj: any, lang: "ar" | "en"): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  const required = obj.timeUtc && obj.symbol && obj.timeframe && obj.signal;
+  if (!required) return null;
+  const time = String(obj.timeUtc);
+  const symbol = String(obj.symbol);
+  const timeframe = String(obj.timeframe);
+  const decision = String(obj.signal);
+  const reasonKey = String(obj.reason || "no_clear_bias") as keyof typeof SIGNAL_REASON_MAP.en;
+  const reasonText = (SIGNAL_REASON_MAP as any)[lang]?.[reasonKey] || SIGNAL_REASON_MAP.en.no_clear_bias;
+  const lines: string[] = [];
+  lines.push(lang === "ar" ? `الوقت (UTC): ${time}` : `time (UTC): ${time}`);
+  lines.push(lang === "ar" ? `الرمز: ${symbol}` : `symbol: ${symbol}`);
+  lines.push(lang === "ar" ? `الإطار الزمني: ${timeframe}` : `timeframe: ${timeframe}`);
+  lines.push(`SIGNAL: ${decision}`);
+  lines.push((lang === "ar" ? "السبب" : "Reason") + ": " + reasonText);
+  if (decision.toUpperCase() !== "NEUTRAL") {
+    lines.push(`Entry: ${obj.entry ?? "-"}`);
+    lines.push(`SL: ${obj.sl ?? "-"}`);
+    lines.push(`TP1: ${obj.tp1 ?? "-"}`);
+    lines.push(`TP2: ${obj.tp2 ?? "-"}`);
+  } else {
+    lines.push(`Entry: -`);
+    lines.push(`SL: -`);
+    lines.push(`TP1: -`);
+    lines.push(`TP2: -`);
+  }
+  return lines.join("\n");
+}
+
+function coerceTextIfJson(raw: string, userText: string): string {
+  const text = (raw || "").trim();
+  if (!text) return text;
+  const first = text[0];
+  if (first !== "{" && first !== "[") return text;
+  try {
+    const parsed = JSON.parse(text);
+    const lang = detectLanguage(userText);
+    if (Array.isArray(parsed)) {
+      const maybe = parsed
+        .map((chunk) => (typeof chunk === "string" ? chunk : JSON.stringify(chunk)))
+        .join("\n")
+        .trim();
+      return maybe || text;
+    }
+    const price = formatPriceFromJson(parsed, lang);
+    if (price) return price;
+    const signal = formatSignalFromJson(parsed, lang);
+    if (signal) return signal;
+    return text;
+  } catch {
+    return text;
+  }
+}
+
+function collectResponseText(response: any): string {
+  if (!response) return "";
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text.trim();
+  }
+  const pieces: string[] = [];
+  const outputs = Array.isArray(response.output) ? response.output : [];
+
+  const append = (segment: any) => {
+    if (!segment) return;
+    if (typeof segment === "string" && segment.trim()) {
+      pieces.push(segment.trim());
+      return;
+    }
+    if (Array.isArray(segment)) {
+      segment.forEach((part) => append(part));
+      return;
+    }
+    if (typeof segment === "object") {
+      if (typeof segment.text === "string") {
+        append(segment.text);
+        return;
+      }
+      if (Array.isArray((segment as any).content)) {
+        append((segment as any).content);
+        return;
+      }
+    }
+  };
+
+  outputs.forEach((item) => {
+    append(item?.content ?? item?.output_text ?? item?.text ?? "");
+  });
+
+  if (!pieces.length && typeof response.response === "string") {
+    append(response.response);
+  }
+
+  return pieces.join("\n").trim();
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
@@ -122,7 +247,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const workflowId = process.env.OPENAI_WORKFLOW_ID || "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
+    const workflowId = process.env.OPENAI_WORKFLOW_ID;
+    if (!workflowId) {
+      throw new Error("Missing OPENAI_WORKFLOW_ID");
+    }
     const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
 
     // Log user message (non-blocking) — include placeholder for image caption if any
@@ -140,16 +268,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     } else {
       try {
-        // Preferred: full agent workflow runner (tools + memory)
-        replyText = await runWorkflowMessage({
-          sessionId,
-          workflowId,
-          version: 56,
-          userText: messageBody,
+        const workflowResponse = await openai.responses.create({
+          workflow_id: workflowId,
+          session: sessionId,
+          input: messageBody,
         });
+        const rawOutput = collectResponseText(workflowResponse);
+        const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
+        if (finalText) {
+          replyText = finalText;
+        } else if (rawOutput.trim()) {
+          replyText = rawOutput.trim();
+        } else {
+          throw new Error("empty_workflow_output");
+        }
       } catch (err: any) {
-        const msgErr = String(err?.message || err);
-        const isToolRoleError = /messages with role 'tool'/i.test(msgErr) || /invalid_request_error/i.test(String(err?.type));
         console.error("[WEBHOOK] Agent error, falling back:", err);
         // Fallback: stable smart reply path to guarantee a response
         const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
