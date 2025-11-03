@@ -48,10 +48,12 @@ export async function runAgentNews(userText: string): Promise<AgentNewsPayload |
   }
 
   const openai = getClient();
+  // Agent Builder Responses API currently ships the "agent" param ahead of typed SDK support,
+  // so cast to any until the official typings include it.
   const resp = await openai.responses.create({
     agent: requireAgentId(),
     input: [{ role: "user", content: input }],
-  });
+  } as any);
 
   for (const out of resp.output ?? []) {
     if (out.type === "message") {
