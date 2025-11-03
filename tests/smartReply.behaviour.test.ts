@@ -90,13 +90,15 @@ async function testPriceQuery() {
         toolUsage.compute += 1;
         throw new Error("compute_trading_signal should not be called");
       },
-      search_web_news: async () => {
-        toolUsage.news += 1;
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async () => {
         toolUsage.knowledge += 1;
         throw new Error("about_liirat_knowledge should not be called");
+      },
+    },
+    newsAgent: {
+      run: async () => {
+        toolUsage.news += 1;
+        throw new Error("news agent should not be called");
       },
     },
     supabase: {
@@ -231,11 +233,13 @@ async function testTradingSignalFlow() {
         assert.strictEqual(input.candles.length, candles.length);
         return signalResult;
       },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async () => {
         throw new Error("about_liirat_knowledge should not be called");
+      },
+    },
+    newsAgent: {
+      run: async () => {
+        throw new Error("news agent should not be called");
       },
     },
     supabase: {
@@ -290,11 +294,13 @@ async function testFollowUpReply() {
       compute_trading_signal: async () => {
         throw new Error("compute_trading_signal should not be called");
       },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async () => {
         throw new Error("about_liirat_knowledge should not be called");
+      },
+    },
+    newsAgent: {
+      run: async () => {
+        throw new Error("news agent should not be called");
       },
     },
     supabase: {
@@ -359,13 +365,15 @@ async function testKnowledgeQuery() {
       compute_trading_signal: async () => {
         throw new Error("compute_trading_signal should not be called");
       },
-      search_web_news: async () => {
-        throw new Error("search_web_news should not be called");
-      },
       about_liirat_knowledge: async (query: string) => {
         knowledgeCalls += 1;
         assert.strictEqual(query, "وين مكاتب ليرات؟");
         return "مكاتب ليرات في دبي مارينا.";
+      },
+    },
+    newsAgent: {
+      run: async () => {
+        throw new Error("news agent should not be called");
       },
     },
     supabase: {
@@ -382,10 +390,19 @@ async function testKnowledgeQuery() {
 }
 
 async function testNewsToolLanguage() {
+  const newsPayload = {
+    news: {
+      items: [
+        { date: "2024-01-01", title: "Gold steadies", expected_effect: "medium" },
+        { date: "2024-01-02", title: "Dollar slips", expected_effect: "low" },
+        { date: "2024-01-03", title: "Fed minutes in focus", expected_effect: "high" },
+      ],
+    },
+  };
   const newsLines = [
-    "2024-01-01 — Bloomberg — Gold steadies — medium",
-    "2024-01-02 — Reuters — Dollar slips — low",
-    "2024-01-03 — CNBC — Fed minutes in focus — high",
+    "2024-01-01 — Gold steadies — medium",
+    "2024-01-02 — Dollar slips — low",
+    "2024-01-03 — Fed minutes in focus — high",
   ];
 
   const responses = [
@@ -400,8 +417,8 @@ async function testNewsToolLanguage() {
                 id: "news-1",
                 type: "function",
                 function: {
-                  name: "search_web_news",
-                  arguments: JSON.stringify({ query: "اخبار الذهب", lang: "en" }),
+                  name: "agent_reuters_news",
+                  arguments: JSON.stringify({ query: "اخبار الذهب", lang: "ar" }),
                 },
               },
             ],
@@ -419,8 +436,7 @@ async function testNewsToolLanguage() {
     },
   ];
 
-  let receivedLang: string | null = null;
-  let receivedCount: number | null = null;
+  let receivedQuery: string | null = null;
 
   const deps: SmartReplyDeps = {
     chat: { create: createChatMock(responses, []) },
@@ -434,14 +450,15 @@ async function testNewsToolLanguage() {
       compute_trading_signal: async () => {
         throw new Error("compute_trading_signal should not be called");
       },
-      search_web_news: async (query: string, lang: string, count: number) => {
-        receivedLang = lang;
-        receivedCount = count;
-        assert.strictEqual(query, "اخبار الذهب");
-        return newsLines.join("\n");
-      },
       about_liirat_knowledge: async () => {
         throw new Error("about_liirat_knowledge should not be called");
+      },
+    },
+    newsAgent: {
+      run: async (query: string) => {
+        receivedQuery = query;
+        assert.strictEqual(query, "اخبار الذهب");
+        return newsPayload;
       },
     },
     supabase: {
@@ -453,8 +470,7 @@ async function testNewsToolLanguage() {
   const smart = createSmartReply(deps);
   const result = await smart({ phone: "971500", text: "اخبار الذهب" });
 
-  assert.strictEqual(receivedLang, "ar");
-  assert.strictEqual(receivedCount, 3);
+  assert.strictEqual(receivedQuery, "اخبار الذهب");
   assert.strictEqual(result.replyText, `أنا مساعد ليرات، كيف فيني ساعدك؟\n${newsLines.join("\n")}`);
 }
 

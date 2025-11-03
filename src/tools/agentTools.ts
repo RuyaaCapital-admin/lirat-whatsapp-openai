@@ -3,7 +3,6 @@ import { openai } from "../lib/openai";
 import { getCurrentPrice } from "./price";
 import { get_ohlc as loadOhlc, type GetOhlcOptions, type GetOhlcResponse } from "./ohlc";
 import { compute_trading_signal as computeSignal, type TradingSignal } from "./compute_trading_signal";
-import { fetchNews } from "./news";
 import axios from "axios";
 import { hardMapSymbol, toTimeframe, TF } from "./normalize";
 
@@ -12,17 +11,6 @@ export interface PriceResult {
   price: number;
   ts_utc: string;
   source: string;
-}
-
-export interface NewsRow {
-  date: string;
-  source: string;
-  title: string;
-  impact?: string;
-}
-
-export interface NewsResult {
-  rows: NewsRow[];
 }
 
 function toUtcIso(input: number | string | null | undefined): string {
@@ -138,19 +126,6 @@ export async function about_liirat_knowledge(query: string, lang?: string): Prom
     text = text.replace(/\s+/g, " ").trim();
   }
   return text;
-}
-
-export async function search_web_news(query: string, lang = "en", count = 3): Promise<NewsResult> {
-  const language = lang === "ar" ? "ar" : "en";
-  const safeCount = Math.max(1, Math.min(count, 5));
-  const rawItems = await fetchNews(query, safeCount, language);
-  const rows: NewsRow[] = rawItems.slice(0, safeCount).map((item) => ({
-    date: toUtcIso(item.date ?? Date.now()),
-    source: "www.liiratnews.com",
-    title: item.title ?? "",
-    impact: item.impact || undefined,
-  }));
-  return { rows };
 }
 
 export async function get_time_now(timezone?: string): Promise<{ tz: string; iso: string; unixtime: number; source: string }> {
