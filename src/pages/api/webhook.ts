@@ -27,6 +27,8 @@ const openaiClient = new OpenAI({
   ...(process.env.OPENAI_ORG ? { organization: process.env.OPENAI_ORG } : {}),
 });
 
+console.log("[WEBHOOK] Using project", OPENAI_PROJECT);
+
 const WORKFLOW_ID = "wf_68fa5dfe9d2c8190a491802fdc61f86201d5df9b9d3ae103";
 const WORKFLOW_VERSION = "production";
 
@@ -211,10 +213,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             version: WORKFLOW_VERSION,
             session_id: sessionId,
             inputs: {
-              input: {
-                message: messageBody,
-                from: inbound.from,
-              },
+              input: messageBody,
             },
             user: `wa_${inbound.from}`,
           });
