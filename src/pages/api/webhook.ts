@@ -1,73 +1,38 @@
 // pages/api/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
+import OpenAI from "openai";
 import { markReadAndShowTyping, sendWhatsApp, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
+export const config = { runtime: "nodejs" } as const;
+
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error("Missing OPENAI_API_KEY");
+}
+
+const openAIConfig: { apiKey: string; project?: string } = {
+  apiKey: process.env.OPENAI_API_KEY,
+};
+
+if (process.env.OPENAI_PROJECT) {
+  openAIConfig.project = process.env.OPENAI_PROJECT;
+}
+
+const client = new OpenAI(openAIConfig);
+console.log("[WEBHOOK] OpenAI project:", process.env.OPENAI_PROJECT ?? "(none)");
+
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
-const NEWS_RE = /(news|اقتصاد|أخبار|الاخبار|الأخبار|economic)/i;
+const NEWS_RE = /(news|economic\s*calendar|economy|calendar|econ)|أخبار|الاخبار|الأخبار|اقتصاد(?:ي|ية)?|الاقتصاد/iu;
 
 const processedMessageCache = new Set<string>();
 
 type InboundMessage = { id: string; from: string; text: string };
 
 // ----------------------------- utils -----------------------------
-
-async function getTopEcon(scope: "next" | "last" | "today" = "next", symbol?: string) {
-  const ymd = (d: Date) => new Date(d).toISOString().slice(0, 10);
-  const now = new Date();
-  const start = new Date(now);
-  const end = new Date(now);
-
-  if (scope === "last") {
-    start.setDate(now.getDate() - 3);
-  } else if (scope === "today") {
-    end.setDate(now.getDate() + 1);
-  } else {
-    end.setDate(now.getDate() + 7);
-  }
-
-  const regionsForSymbol = (s?: string): string[] => {
-    if (!s) return ["United States", "Euro Area"];
-    const u = s.toUpperCase();
-    if (u.includes("USD") && !/(XAU|XAG|XTI|XBR)/.test(u)) return ["United States"];
-    if (u.includes("EUR")) return ["Euro Area"];
-    if (u.includes("GBP")) return ["United Kingdom"];
-    if (u.includes("JPY")) return ["Japan"];
-    if (u.includes("AUD")) return ["Australia"];
-    if (u.includes("NZD")) return ["New Zealand"];
-    if (u.includes("CAD")) return ["Canada"];
-    return ["United States", "Euro Area"];
-  };
-
-  const countries = regionsForSymbol(symbol);
-  const apiKey = process.env.TE_API_KEY ?? "";
-  if (!apiKey) return [];
-
-  const url = `https://api.tradingeconomics.com/calendar/country/${encodeURIComponent(
-    countries.join(","),
-  )}/${ymd(start)}/${ymd(end)}?c=${encodeURIComponent(apiKey)}&importance=3&f=json`;
-
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (Array.isArray(data) ? data : [])
-      .filter((item: any) => item?.Date && item?.Event)
-      .sort((a: any, b: any) => new Date(a.Date).getTime() - new Date(b.Date).getTime())
-      .slice(0, 3)
-      .map((item: any) => `${String(item.Date).slice(0, 10)} — ${item.Event}${item.Reference ? ` ${item.Reference}` : ""} — High impact`);
-  } catch (error) {
-    console.warn("[WEBHOOK] getTopEcon error", error);
-    return [];
-  }
-}
 
 function normaliseInboundText(message: any): string {
   if (!message || typeof message !== "object") return "";
@@ -126,34 +91,6 @@ function coerceTextIfJson(text: string, fallback: string): string {
   }
 }
 
-function collectResponseText(run: any): string {
-  // Workflows may return either output.messages (content array) or a plain output_text
-  const out = run?.output ?? {};
-  const pieces: string[] = [];
-
-  const pushSeg = (seg: any) => {
-    if (!seg) return;
-    if (typeof seg === "string") {
-      if (seg.trim()) pieces.push(seg.trim());
-      return;
-    }
-    if (Array.isArray(seg)) {
-      seg.forEach(pushSeg);
-      return;
-    }
-    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
-    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
-    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
-  };
-
-  if (Array.isArray(out?.messages)) {
-    out.messages.forEach((m: any) => pushSeg(m?.content));
-  } else {
-    pushSeg(out);
-  }
-  return pieces.join("\n").trim();
-}
-
 // ------------------------------ API ------------------------------
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -199,6 +136,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const msg = payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     const from = inbound.from;
     const text = messageBody;
+    const origin =
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
+      (typeof req !== "undefined" && req.headers?.host ? `http://${req.headers.host}` : "http://localhost:3000");
 
     try {
       await markReadAndShowTyping(inbound.id);
@@ -206,30 +146,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.warn("[WEBHOOK] markRead error", e);
     }
 
-      if (req.method === "POST" && NEWS_RE.test(text || "")) {
-        try {
-          const lines = await getTopEcon("next");
-          const isTodayQuery = /(?:اليوم|today)/i.test(text) || /[اأإ]ل(?:يوم|آن)/.test(text);
-          await sendWhatsApp(
-            from,
-            lines.length
-              ? lines.join("\n")
-              : isTodayQuery
-              ? "لا أحداث مهمة اليوم."
-              : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?",
-          );
-          return res.status(200).end();
-        } catch {
-          await sendWhatsApp(from, "Data unavailable right now. Try later.");
-          return res.status(200).end();
-        }
+    if (req.method === "POST" && NEWS_RE.test(text || "")) {
+      const wantsToday = /(?:اليوم|today)/i.test(text) || /[اأإ]ل(?:يوم|آن)/.test(text);
+      const scope = wantsToday ? "today" : "next";
+      try {
+        const url = new URL(`/api/econ-news`, origin);
+        url.searchParams.set("scope", scope);
+        const response = await fetch(url.toString());
+        const payload = response.ok ? await response.json().catch(() => null) : null;
+        const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+        await sendWhatsApp(
+          from,
+          lines.length
+            ? lines.join("\n")
+            : wantsToday
+            ? "لا أحداث مهمة اليوم."
+            : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?",
+        );
+        return res.status(200).end();
+      } catch (err) {
+        console.warn("[WEBHOOK] econ-news fetch failed", err);
+        await sendWhatsApp(from, "Data unavailable right now. Try later.");
+        return res.status(200).end();
       }
+    }
 
     try {
       const workflowId = process.env.OPENAI_WORKFLOW_ID;
       if (!workflowId) throw new Error("Missing OPENAI_WORKFLOW_ID");
 
-      const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
+      const { conversationId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
 
       // Log user message (non-blocking)
       void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
@@ -237,61 +183,100 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       let replyText: string | null = null;
       let workflowResponse: any = null;
 
-      if (isImage && msg?.image?.id) {
-        try {
-          const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
-          replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
-        } catch (err) {
-          console.warn("[WEBHOOK] image handling error", err);
-          replyText = /[\u0600-\u06FF]/.test(messageBody || "")
-            ? "تعذر قراءة الصورة حالياً."
-            : "Couldn't read the image right now.";
-        }
-      } else {
-        try {
-          // Hard guard: ensure Workflows is available on this SDK
-          // @ts-expect-error – property exists in >=4.67
-          if (!openai.workflows?.runs?.create) throw new Error("workflows_api_not_available");
-
-          // @ts-expect-error – types present in >=4.67
-          const run = await openai.workflows.runs.create({
-            workflow_id: workflowId,
-            session_id: sessionId,
-            // Send a simple input object; your Workflow should read `input.message`
-            input: { message: messageBody, from: inbound.from },
-            // optional but helpful for traceability
-            user: `wa_${inbound.from}`,
-          });
-
-          workflowResponse = run?.output?.response ?? run?.output?.data ?? run?.output ?? null;
-          const rawOutput = collectResponseText(run);
-          const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
-          if (!finalText) throw new Error("empty_workflow_output");
-          replyText = finalText;
-        } catch (err: any) {
-          // If key scope or API not available, you'll see specific errors:
-          // - bad_api_key_scope_use_project_key  -> wrong key type
-          // - workflows_api_not_available        -> old SDK or feature unavailable
-          console.error("[WEBHOOK] Agent error, falling back:", err);
-          const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
-          replyText = (result?.replyText || "").trim();
-          if (!replyText) {
+        if (isImage && msg?.image?.id) {
+          try {
+            const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
+            replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
+          } catch (err) {
+            console.warn("[WEBHOOK] image handling error", err);
             replyText = /[\u0600-\u06FF]/.test(messageBody || "")
-              ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
-              : "Data unavailable right now. Try: price BTCUSDT.";
+              ? "تعذر قراءة الصورة حالياً."
+              : "Couldn't read the image right now.";
+          }
+        } else {
+          try {
+            const run = await client.workflows.runs.create({
+              workflow_id: workflowId,
+              version: "production",
+              inputs: { input: messageBody },
+            });
+
+            let workflowRun = run;
+            const terminalStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
+            const maxPolls = 30;
+
+            for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+              const status = workflowRun?.status ?? "";
+              if (terminalStatuses.has(status)) break;
+              await new Promise((resolve) => setTimeout(resolve, 1000));
+              workflowRun = await client.workflows.runs.get(workflowRun.id);
+            }
+
+            const finalStatus = workflowRun?.status ?? "unknown";
+            if (finalStatus !== "completed") {
+              throw new Error(`workflow_run_not_completed:${finalStatus}`);
+            }
+
+            const outputs = (workflowRun?.outputs ?? {}) as any;
+            workflowResponse = outputs?.response ?? outputs;
+
+            const textCandidates: Array<string | undefined> = [];
+            if (typeof outputs?.text === "string") textCandidates.push(outputs.text);
+            if (typeof outputs?.response?.text === "string") textCandidates.push(outputs.response.text);
+            if (typeof outputs?.response === "string") textCandidates.push(outputs.response);
+            if (typeof outputs === "string") textCandidates.push(outputs);
+
+            if (Array.isArray(outputs)) {
+              for (const item of outputs) {
+                if (typeof item === "string") textCandidates.push(item);
+                else if (item && typeof item === "object" && typeof item.text === "string") {
+                  textCandidates.push(item.text);
+                }
+              }
+            } else if (outputs && typeof outputs === "object") {
+              for (const value of Object.values(outputs)) {
+                if (typeof value === "string") {
+                  textCandidates.push(value);
+                } else if (value && typeof value === "object" && typeof (value as any).text === "string") {
+                  textCandidates.push((value as any).text);
+                }
+              }
+            }
+
+            const outputText = textCandidates.find((candidate) => typeof candidate === "string" && candidate.trim());
+            if (!outputText) {
+              throw new Error("empty_workflow_output");
+            }
+
+            const finalText = coerceTextIfJson(outputText, messageBody).trim();
+            if (!finalText) throw new Error("empty_workflow_output");
+            replyText = finalText;
+          } catch (err: any) {
+            console.error("[WEBHOOK] Agent error, falling back:", err);
+            const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
+            replyText = (result?.replyText || "").trim();
+            if (!replyText) {
+              replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+                ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
+                : "Data unavailable right now. Try: price BTCUSDT.";
+            }
           }
         }
-      }
 
-      const finalText = sanitizeNewsLinks((replyText || "").trim());
-      if (finalText) {
-        await sendWhatsApp(from, finalText);
-        void logMessageAsync(conversationId, "assistant", finalText);
-      }
+        const finalText = sanitizeNewsLinks((replyText || "").trim());
+        if (finalText) {
+          await sendWhatsApp(from, finalText);
+          void logMessageAsync(conversationId, "assistant", finalText);
+        }
 
         try {
           if (workflowResponse?.kind === "signal" && typeof workflowResponse?.symbol === "string") {
-            const lines = await getTopEcon("next", workflowResponse.symbol);
+            const url = new URL(`/api/econ-news`, origin);
+            url.searchParams.set("scope", "next");
+            url.searchParams.set("symbol", String(workflowResponse.symbol));
+            const response = await fetch(url.toString());
+            const payload = response.ok ? await response.json().catch(() => null) : null;
+            const lines = Array.isArray(payload?.lines) ? payload.lines : [];
             if (lines.length) {
               await sendWhatsApp(from, lines.join("\n"));
             }
@@ -299,11 +284,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         } catch (error) {
           console.warn("[WEBHOOK] post-signal econ fetch error", error);
         }
-    } catch (error) {
-      console.error("[WEBHOOK] Error:", error);
-    }
-
-    return res.status(200).json({ received: true });
+      } catch (error) {
+        console.error("[WEBHOOK] Error:", error);
+      }
+      return res.status(200).json({ received: true });
   } catch (error) {
     console.error("[WEBHOOK] Fatal error:", error);
     return res.status(500).json({ error: "Internal Server Error" });
