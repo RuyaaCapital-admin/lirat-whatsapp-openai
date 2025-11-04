@@ -1,6 +1,6 @@
 // pages/api/webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { markReadAndShowTyping, sendText, downloadMediaBase64 } from "../../lib/waba";
+import { markReadAndShowTyping, sendWhatsApp, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
 import { openai } from "../../lib/openai";
@@ -8,6 +8,9 @@ import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
+const ORIGIN = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+
+const NEWS_RE = /(news|اقتصاد|أخبار|الاخبار|الأخبار|economic)/i;
 
 const processedMessageCache = new Set<string>();
 
@@ -150,6 +153,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.warn("[WEBHOOK] markRead error", e);
     }
 
+    if (NEWS_RE.test(messageBody || "")) {
+      try {
+        const u = new URL(`/api/econ-news`, ORIGIN);
+        u.searchParams.set("scope", "next");      // or infer from text later
+        // optional: if you extract a symbol from the text, also do: u.searchParams.set("symbol", SYMBOL);
+        const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
+        const lines = j?.lines?.length ? j.lines.join("\n") : (messageBody.match(/[اأإ]ل(?:يوم|آن)/) ? "لا أحداث مهمة اليوم." : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?");
+        await sendWhatsApp(inbound.from, lines);
+        return res.status(200).end();
+      } catch {
+        await sendWhatsApp(inbound.from, "Data unavailable right now. Try later.");
+        return res.status(200).end();
+      }
+    }
+
     try {
       const workflowId = process.env.OPENAI_WORKFLOW_ID;
       if (!workflowId) throw new Error("Missing OPENAI_WORKFLOW_ID");
@@ -160,6 +178,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
 
       let replyText: string | null = null;
+      let workflowResponse: any = null;
 
       if (isImage && msg?.image?.id) {
         try {
@@ -187,6 +206,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             user: `wa_${inbound.from}`,
           });
 
+          workflowResponse = run?.output?.response ?? run?.output?.data ?? run?.output ?? null;
           const rawOutput = collectResponseText(run);
           const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
           if (!finalText) throw new Error("empty_workflow_output");
@@ -208,9 +228,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const finalText = sanitizeNewsLinks((replyText || "").trim());
       if (finalText) {
-        await sendText(inbound.from, finalText);
+        await sendWhatsApp(inbound.from, finalText);
         void logMessageAsync(conversationId, "assistant", finalText);
       }
+
+      try {
+        if (workflowResponse?.kind === "signal" && typeof workflowResponse?.symbol === "string") {
+          const u = new URL(`/api/econ-news`, ORIGIN);
+          u.searchParams.set("scope", "next");
+          u.searchParams.set("symbol", workflowResponse.symbol);
+          const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
+          if (j?.lines?.length) {
+            await sendWhatsApp(inbound.from, j.lines.join("\n"));
+          }
+        }
+      } catch {}
     } catch (error) {
       console.error("[WEBHOOK] Error:", error);
     }

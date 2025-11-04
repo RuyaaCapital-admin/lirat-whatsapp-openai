@@ -86,6 +86,10 @@ export async function sendText(to: string, body: string): Promise<void> {
   }
 }
 
+export async function sendWhatsApp(to: string, body: string): Promise<void> {
+  await sendText(to, body);
+}
+
 // --- Media helpers (WhatsApp Cloud API) ---
 // Docs: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/
 
