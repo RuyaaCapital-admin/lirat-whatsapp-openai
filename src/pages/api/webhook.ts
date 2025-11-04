@@ -28,6 +28,15 @@ console.log(
   !!process.env.OPENAI_BASE_URL,
 );
 
+type WorkflowRunsApi = {
+  create: (args: {
+    workflow_id: string;
+    version?: string;
+    inputs?: Record<string, unknown>;
+  }) => Promise<{ id: string }>;
+  get: (id: string) => Promise<{ id: string; status: string; outputs?: unknown }>;
+};
+
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
 const NEWS_RE = /(news|اقتصاد|أخبار|الاخبار|الأخبار|economic)/i;
@@ -175,8 +184,17 @@ function findSignalPayload(outputs: any): any {
   return result;
 }
 
+function getWorkflowRunsApi(): WorkflowRunsApi {
+  const runs = (client as any)?.workflows?.runs;
+  if (!runs?.create || !runs?.get) {
+    throw new Error("workflows_api_not_available");
+  }
+  return runs as WorkflowRunsApi;
+}
+
 async function runWorkflowWithPolling(workflowId: string, text: string) {
-  const run = await client.workflows.runs.create({
+  const runsApi = getWorkflowRunsApi();
+  const run = await runsApi.create({
     workflow_id: workflowId,
     version: "production",
     inputs: { input_as_text: text ?? "" },
@@ -184,7 +202,7 @@ async function runWorkflowWithPolling(workflowId: string, text: string) {
 
   let outputs: any = null;
   for (let i = 0; i < 40; i++) {
-    const status = await client.workflows.runs.get(run.id);
+    const status = await runsApi.get(run.id);
     if (status.status === "completed") {
       outputs = (status.outputs as any) ?? {};
       break;
