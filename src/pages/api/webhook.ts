@@ -8,7 +8,6 @@ import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
-const ORIGIN = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
 
 const NEWS_RE = /(news|اقتصاد|أخبار|الاخبار|الأخبار|economic)/i;
 
@@ -119,8 +118,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(403).send("Forbidden");
   }
 
-  if (req.method !== "POST") {
-    return res.status(405).send("Method Not Allowed");
+  if (req.method !== "POST" && req.method !== "GET") {
+    return res.status(405).end();
   }
 
   try {
@@ -146,6 +145,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const isImage = messageBody === "[image]";
     const msg = payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+    const from = inbound.from;
+    const text = messageBody;
+    const ORIGIN =
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
+      (typeof req !== "undefined" && req.headers?.host ? `http://${req.headers.host}` : "http://localhost:3000");
 
     try {
       await markReadAndShowTyping(inbound.id);
@@ -153,17 +157,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.warn("[WEBHOOK] markRead error", e);
     }
 
-    if (NEWS_RE.test(messageBody || "")) {
+    if (req.method === "POST" && NEWS_RE.test(text || "")) {
       try {
         const u = new URL(`/api/econ-news`, ORIGIN);
         u.searchParams.set("scope", "next");      // or infer from text later
         // optional: if you extract a symbol from the text, also do: u.searchParams.set("symbol", SYMBOL);
         const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
-        const lines = j?.lines?.length ? j.lines.join("\n") : (messageBody.match(/[اأإ]ل(?:يوم|آن)/) ? "لا أحداث مهمة اليوم." : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?");
-        await sendWhatsApp(inbound.from, lines);
+        const lines = j?.lines?.length ? j.lines.join("\n")
+          : (text.match(/[اأإ]ل(?:يوم|آن)/) ? "لا أحداث مهمة اليوم." : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?");
+        await sendWhatsApp(from, lines);
         return res.status(200).end();
       } catch {
-        await sendWhatsApp(inbound.from, "Data unavailable right now. Try later.");
+        await sendWhatsApp(from, "Data unavailable right now. Try later.");
         return res.status(200).end();
       }
     }
@@ -228,7 +233,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const finalText = sanitizeNewsLinks((replyText || "").trim());
       if (finalText) {
-        await sendWhatsApp(inbound.from, finalText);
+        await sendWhatsApp(from, finalText);
         void logMessageAsync(conversationId, "assistant", finalText);
       }
 
@@ -239,7 +244,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           u.searchParams.set("symbol", workflowResponse.symbol);
           const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
           if (j?.lines?.length) {
-            await sendWhatsApp(inbound.from, j.lines.join("\n"));
+            await sendWhatsApp(from, j.lines.join("\n"));
           }
         }
       } catch {}

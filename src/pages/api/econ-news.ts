@@ -23,17 +23,22 @@ function regionsForSymbol(sym?: string){
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse){
   try{
-    const scope = String(req.query.scope || "next").toLowerCase(); // next|today|last
+    const scope = String((req.query.scope ?? "next")).toLowerCase(); // next|today|last
     const symbol = typeof req.query.symbol === "string" ? req.query.symbol : undefined;
-    const countries = (typeof req.query.region==="string" ? req.query.region.split(",").map(s=>s.trim()).filter(Boolean) : regionsForSymbol(symbol));
+    const countries =
+      typeof req.query.region === "string"
+        ? req.query.region.split(",").map(s=>s.trim()).filter(Boolean)
+        : regionsForSymbol(symbol);
+
     const { d1, d2 } = windowFor(scope);
     const c = process.env.TE_API_KEY!;
     const url = `https://api.tradingeconomics.com/calendar/country/${encodeURIComponent(countries.join(","))}/${d1}/${d2}?c=${encodeURIComponent(c)}&importance=3&f=json`;
+
     const r = await fetch(url, { headers: { "Accept":"application/json" }});
     if (!r.ok) throw new Error(`te_${r.status}`);
     const data:any[] = await r.json();
 
-    const items = (Array.isArray(data)?data:[])
+    const items = (Array.isArray(data) ? data : [])
       .filter(x => x?.Date && x?.Event)
       .sort((a,b)=> new Date(a.Date).getTime() - new Date(b.Date).getTime())
       .slice(0,3)
