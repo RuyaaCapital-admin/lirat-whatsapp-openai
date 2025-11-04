@@ -1,11 +1,32 @@
 // pages/api/webhook.ts
+import OpenAI from "openai";
 import type { NextApiRequest, NextApiResponse } from "next";
 import { markReadAndShowTyping, sendWhatsApp, downloadMediaBase64 } from "../../lib/waba";
 import { sanitizeNewsLinks } from "../../utils/replySanitizer";
 import { getOrCreateWorkflowSession, logMessageAsync } from "../../lib/sessionManager";
-import { openai } from "../../lib/openai";
 import { smartReply as smartReplyNew } from "../../lib/smartReplyNew";
 import generateImageReply from "../../lib/imageReply";
+
+export const config = { runtime: "nodejs" };
+
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error("Missing OPENAI_API_KEY");
+}
+if (!process.env.OPENAI_PROJECT) {
+  throw new Error("Missing OPENAI_PROJECT");
+}
+
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+  project: process.env.OPENAI_PROJECT!,
+});
+
+console.log(
+  "[BOOT] OPENAI_PROJECT =",
+  process.env.OPENAI_PROJECT,
+  "BASE_URL set?",
+  !!process.env.OPENAI_BASE_URL,
+);
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN ?? "";
 
@@ -74,9 +95,7 @@ function coerceTextIfJson(text: string, fallback: string): string {
   }
 }
 
-function collectResponseText(run: any): string {
-  // Workflows may return either output.messages (content array) or a plain output_text
-  const out = run?.output ?? {};
+function collectWorkflowOutputText(outputs: any): string {
   const pieces: string[] = [];
 
   const pushSeg = (seg: any) => {
@@ -89,17 +108,98 @@ function collectResponseText(run: any): string {
       seg.forEach(pushSeg);
       return;
     }
-    const txt = seg.output_text ?? seg.text ?? seg.content ?? "";
-    if (typeof txt === "string" && txt.trim()) pieces.push(txt.trim());
-    else if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
+    if (typeof seg !== "object") return;
+    const candidates = [
+      seg.output_text,
+      seg.text,
+      seg.value,
+      seg.content,
+      seg.output,
+      seg.message,
+      seg.response,
+    ];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.trim()) {
+        pieces.push(c.trim());
+        return;
+      }
+    }
+    if (Array.isArray(seg.content)) seg.content.forEach(pushSeg);
+    if (Array.isArray(seg.messages)) seg.messages.forEach(pushSeg);
+    if (Array.isArray(seg.outputs)) seg.outputs.forEach(pushSeg);
+    if (typeof seg.output === "object") pushSeg(seg.output);
+    if (typeof seg.value === "object") pushSeg(seg.value);
   };
 
-  if (Array.isArray(out?.messages)) {
-    out.messages.forEach((m: any) => pushSeg(m?.content));
+  if (Array.isArray(outputs)) {
+    outputs.forEach((entry) => {
+      if (entry && typeof entry === "object" && "output" in entry) {
+        pushSeg((entry as any).output);
+      } else if (entry && typeof entry === "object" && "value" in entry) {
+        pushSeg((entry as any).value);
+      } else {
+        pushSeg(entry);
+      }
+    });
   } else {
-    pushSeg(out);
+    pushSeg(outputs);
   }
+
   return pieces.join("\n").trim();
+}
+
+function findSignalPayload(outputs: any): any {
+  let result: any = null;
+
+  const visit = (node: any) => {
+    if (result || node == null) return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (typeof node !== "object") return;
+    if ((node as any).kind === "signal" && typeof (node as any).symbol === "string") {
+      result = node;
+      return;
+    }
+    if ("value" in node) visit((node as any).value);
+    if ("output" in node) visit((node as any).output);
+    if ("response" in node) visit((node as any).response);
+    if ("data" in node) visit((node as any).data);
+    if ("messages" in node) visit((node as any).messages);
+    if ("content" in node) visit((node as any).content);
+    if ("outputs" in node) visit((node as any).outputs);
+  };
+
+  visit(outputs);
+  return result;
+}
+
+async function runWorkflowWithPolling(workflowId: string, text: string) {
+  const run = await client.workflows.runs.create({
+    workflow_id: workflowId,
+    version: "production",
+    inputs: { input_as_text: text ?? "" },
+  });
+
+  let outputs: any = null;
+  for (let i = 0; i < 40; i++) {
+    const status = await client.workflows.runs.get(run.id);
+    if (status.status === "completed") {
+      outputs = (status.outputs as any) ?? {};
+      break;
+    }
+    if (status.status === "failed" || status.status === "cancelled") {
+      throw new Error(`workflow_${status.status}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  }
+
+  if (!outputs) {
+    throw new Error("workflow_timeout");
+  }
+
+  return outputs;
 }
 
 // ------------------------------ API ------------------------------
@@ -173,81 +273,65 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    try {
-      const workflowId = process.env.OPENAI_WORKFLOW_ID;
-      if (!workflowId) throw new Error("Missing OPENAI_WORKFLOW_ID");
-
-      const { conversationId, sessionId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
-
-      // Log user message (non-blocking)
-      void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
-
-      let replyText: string | null = null;
-      let workflowResponse: any = null;
-
-      if (isImage && msg?.image?.id) {
-        try {
-          const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
-          replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
-        } catch (err) {
-          console.warn("[WEBHOOK] image handling error", err);
-          replyText = /[\u0600-\u06FF]/.test(messageBody || "")
-            ? "تعذر قراءة الصورة حالياً."
-            : "Couldn't read the image right now.";
-        }
-      } else {
-        try {
-          // Hard guard: ensure Workflows is available on this SDK
-          // @ts-expect-error – property exists in >=4.67
-          if (!openai.workflows?.runs?.create) throw new Error("workflows_api_not_available");
-
-          // @ts-expect-error – types present in >=4.67
-          const run = await openai.workflows.runs.create({
-            workflow_id: workflowId,
-            session_id: sessionId,
-            // Send a simple input object; your Workflow should read `input.message`
-            input: { message: messageBody, from: inbound.from },
-            // optional but helpful for traceability
-            user: `wa_${inbound.from}`,
-          });
-
-          workflowResponse = run?.output?.response ?? run?.output?.data ?? run?.output ?? null;
-          const rawOutput = collectResponseText(run);
-          const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
-          if (!finalText) throw new Error("empty_workflow_output");
-          replyText = finalText;
-        } catch (err: any) {
-          // If key scope or API not available, you'll see specific errors:
-          // - bad_api_key_scope_use_project_key  -> wrong key type
-          // - workflows_api_not_available        -> old SDK or feature unavailable
-          console.error("[WEBHOOK] Agent error, falling back:", err);
-          const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
-          replyText = (result?.replyText || "").trim();
-          if (!replyText) {
-            replyText = /[\u0600-\u06FF]/.test(messageBody || "")
-              ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
-              : "Data unavailable right now. Try: price BTCUSDT.";
-          }
-        }
-      }
-
-      const finalText = sanitizeNewsLinks((replyText || "").trim());
-      if (finalText) {
-        await sendWhatsApp(from, finalText);
-        void logMessageAsync(conversationId, "assistant", finalText);
-      }
-
       try {
-        if (workflowResponse?.kind === "signal" && typeof workflowResponse?.symbol === "string") {
-          const u = new URL(`/api/econ-news`, ORIGIN);
-          u.searchParams.set("scope", "next");
-          u.searchParams.set("symbol", workflowResponse.symbol);
-          const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
-          if (j?.lines?.length) {
-            await sendWhatsApp(from, j.lines.join("\n"));
+        const workflowId = process.env.WORKFLOW_ID ?? process.env.OPENAI_WORKFLOW_ID;
+        if (!workflowId) throw new Error("Missing WORKFLOW_ID");
+
+        const { conversationId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
+
+        // Log user message (non-blocking)
+        void logMessageAsync(conversationId, "user", messageBody || (isImage ? "[image]" : ""));
+
+        let replyText: string | null = null;
+        let workflowResponse: any = null;
+
+        if (isImage && msg?.image?.id) {
+          try {
+            const { base64, mimeType } = await downloadMediaBase64(String(msg.image.id));
+            replyText = await generateImageReply({ base64, mimeType, caption: messageBody });
+          } catch (err) {
+            console.warn("[WEBHOOK] image handling error", err);
+            replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+              ? "تعذر قراءة الصورة حالياً."
+              : "Couldn't read the image right now.";
+          }
+        } else {
+          try {
+            workflowResponse = await runWorkflowWithPolling(workflowId, text);
+            const rawOutput = collectWorkflowOutputText(workflowResponse);
+            const finalText = coerceTextIfJson(rawOutput, messageBody).trim();
+            if (!finalText) throw new Error("empty_workflow_output");
+            replyText = finalText;
+          } catch (err: any) {
+            console.error("[WEBHOOK] Workflow error, falling back:", err);
+            const result = await smartReplyNew({ phone: inbound.from, text: messageBody });
+            replyText = (result?.replyText || "").trim();
+            if (!replyText) {
+              replyText = /[\u0600-\u06FF]/.test(messageBody || "")
+                ? "البيانات غير متاحة حالياً. جرّب: price BTCUSDT."
+                : "Data unavailable right now. Try: price BTCUSDT.";
+            }
           }
         }
-      } catch {}
+
+        const finalText = sanitizeNewsLinks((replyText || "").trim());
+        if (finalText) {
+          await sendWhatsApp(from, finalText);
+          void logMessageAsync(conversationId, "assistant", finalText);
+        }
+
+        try {
+          const signalPayload = findSignalPayload(workflowResponse);
+          if (signalPayload?.kind === "signal" && typeof signalPayload?.symbol === "string") {
+            const u = new URL(`/api/econ-news`, ORIGIN);
+            u.searchParams.set("scope", "next");
+            u.searchParams.set("symbol", signalPayload.symbol);
+            const j = await fetch(u.toString()).then(r => r.json()).catch(() => null);
+            if (j?.lines?.length) {
+              await sendWhatsApp(from, j.lines.join("\n"));
+            }
+          }
+        } catch {}
     } catch (error) {
       console.error("[WEBHOOK] Error:", error);
     }
