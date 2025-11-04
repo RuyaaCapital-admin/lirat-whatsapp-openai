@@ -175,6 +175,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const workflowId = process.env.OPENAI_WORKFLOW_ID;
       if (!workflowId) throw new Error("Missing OPENAI_WORKFLOW_ID");
 
+      const workflows = (client as any)?.workflows;
+      if (!workflows?.runs?.create || !workflows?.runs?.get) {
+        throw new Error("workflows_api_not_available");
+      }
+
       const { conversationId } = await getOrCreateWorkflowSession(inbound.from, workflowId);
 
       // Log user message (non-blocking)
@@ -195,7 +200,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           }
         } else {
           try {
-            const run = await client.workflows.runs.create({
+            const run = await workflows.runs.create({
               workflow_id: workflowId,
               version: "production",
               inputs: { input: messageBody },
@@ -209,7 +214,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
               const status = workflowRun?.status ?? "";
               if (terminalStatuses.has(status)) break;
               await new Promise((resolve) => setTimeout(resolve, 1000));
-              workflowRun = await client.workflows.runs.get(workflowRun.id);
+              workflowRun = await workflows.runs.get(workflowRun.id);
             }
 
             const finalStatus = workflowRun?.status ?? "unknown";
