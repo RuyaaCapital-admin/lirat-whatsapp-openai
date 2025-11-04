@@ -17,6 +17,58 @@ type InboundMessage = { id: string; from: string; text: string };
 
 // ----------------------------- utils -----------------------------
 
+async function getTopEcon(scope: "next" | "last" | "today" = "next", symbol?: string) {
+  const ymd = (d: Date) => new Date(d).toISOString().slice(0, 10);
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+
+  if (scope === "last") {
+    start.setDate(now.getDate() - 3);
+  } else if (scope === "today") {
+    end.setDate(now.getDate() + 1);
+  } else {
+    end.setDate(now.getDate() + 7);
+  }
+
+  const regionsForSymbol = (s?: string): string[] => {
+    if (!s) return ["United States", "Euro Area"];
+    const u = s.toUpperCase();
+    if (u.includes("USD") && !/(XAU|XAG|XTI|XBR)/.test(u)) return ["United States"];
+    if (u.includes("EUR")) return ["Euro Area"];
+    if (u.includes("GBP")) return ["United Kingdom"];
+    if (u.includes("JPY")) return ["Japan"];
+    if (u.includes("AUD")) return ["Australia"];
+    if (u.includes("NZD")) return ["New Zealand"];
+    if (u.includes("CAD")) return ["Canada"];
+    return ["United States", "Euro Area"];
+  };
+
+  const countries = regionsForSymbol(symbol);
+  const apiKey = process.env.TE_API_KEY ?? "";
+  if (!apiKey) return [];
+
+  const url = `https://api.tradingeconomics.com/calendar/country/${encodeURIComponent(
+    countries.join(","),
+  )}/${ymd(start)}/${ymd(end)}?c=${encodeURIComponent(apiKey)}&importance=3&f=json`;
+
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (Array.isArray(data) ? data : [])
+      .filter((item: any) => item?.Date && item?.Event)
+      .sort((a: any, b: any) => new Date(a.Date).getTime() - new Date(b.Date).getTime())
+      .slice(0, 3)
+      .map((item: any) => `${String(item.Date).slice(0, 10)} — ${item.Event}${item.Reference ? ` ${item.Reference}` : ""} — High impact`);
+  } catch (error) {
+    console.warn("[WEBHOOK] getTopEcon error", error);
+    return [];
+  }
+}
+
 function normaliseInboundText(message: any): string {
   if (!message || typeof message !== "object") return "";
   const candidates = [
@@ -147,9 +199,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const msg = payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     const from = inbound.from;
     const text = messageBody;
-    const ORIGIN =
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "") ||
-      (typeof req !== "undefined" && req.headers?.host ? `http://${req.headers.host}` : "http://localhost:3000");
 
     try {
       await markReadAndShowTyping(inbound.id);
@@ -157,21 +206,24 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.warn("[WEBHOOK] markRead error", e);
     }
 
-    if (req.method === "POST" && NEWS_RE.test(text || "")) {
-      try {
-        const u = new URL(`/api/econ-news`, ORIGIN);
-        u.searchParams.set("scope", "next");      // or infer from text later
-        // optional: if you extract a symbol from the text, also do: u.searchParams.set("symbol", SYMBOL);
-        const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
-        const lines = j?.lines?.length ? j.lines.join("\n")
-          : (text.match(/[اأإ]ل(?:يوم|آن)/) ? "لا أحداث مهمة اليوم." : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?");
-        await sendWhatsApp(from, lines);
-        return res.status(200).end();
-      } catch {
-        await sendWhatsApp(from, "Data unavailable right now. Try later.");
-        return res.status(200).end();
+      if (req.method === "POST" && NEWS_RE.test(text || "")) {
+        try {
+          const lines = await getTopEcon("next");
+          const isTodayQuery = /(?:اليوم|today)/i.test(text) || /[اأإ]ل(?:يوم|آن)/.test(text);
+          await sendWhatsApp(
+            from,
+            lines.length
+              ? lines.join("\n")
+              : isTodayQuery
+              ? "لا أحداث مهمة اليوم."
+              : "Which region/topic (US/EU/Global, FOMC/CPI/NFP)?",
+          );
+          return res.status(200).end();
+        } catch {
+          await sendWhatsApp(from, "Data unavailable right now. Try later.");
+          return res.status(200).end();
+        }
       }
-    }
 
     try {
       const workflowId = process.env.OPENAI_WORKFLOW_ID;
@@ -237,17 +289,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         void logMessageAsync(conversationId, "assistant", finalText);
       }
 
-      try {
-        if (workflowResponse?.kind === "signal" && typeof workflowResponse?.symbol === "string") {
-          const u = new URL(`/api/econ-news`, ORIGIN);
-          u.searchParams.set("scope", "next");
-          u.searchParams.set("symbol", workflowResponse.symbol);
-          const j = await fetch(u.toString()).then(r=>r.json()).catch(()=>null);
-          if (j?.lines?.length) {
-            await sendWhatsApp(from, j.lines.join("\n"));
+        try {
+          if (workflowResponse?.kind === "signal" && typeof workflowResponse?.symbol === "string") {
+            const lines = await getTopEcon("next", workflowResponse.symbol);
+            if (lines.length) {
+              await sendWhatsApp(from, lines.join("\n"));
+            }
           }
+        } catch (error) {
+          console.warn("[WEBHOOK] post-signal econ fetch error", error);
         }
-      } catch {}
     } catch (error) {
       console.error("[WEBHOOK] Error:", error);
     }
